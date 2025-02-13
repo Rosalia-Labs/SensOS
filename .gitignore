@@ -1,0 +1,30 @@
+# Ignore environment variable files
+.env
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore logs and temp files
+logs/
+*.log
+*.out
+*.err
+/tmp/
+
+# Ignore Docker build files
+*.tar
+
+# Ignore database data
+/db_data/
+
+# Ignore editor/IDE settings
+.vscode/
+.idea/
+*.swp
+
+# Ignore system files
+.DS_Store
+Thumbs.db
