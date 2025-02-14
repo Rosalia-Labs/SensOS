@@ -21,8 +21,8 @@ services:
     restart: always
     depends_on:
       - sensos-database
-    environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD}
+    # environment:
+    #      PGPASSWORD: ${POSTGRES_PASSWORD}
     cap_add:
       - NET_ADMIN
     ports:
