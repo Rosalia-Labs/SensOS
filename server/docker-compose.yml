@@ -4,8 +4,6 @@ services:
     container_name: sensos-database
     restart: always
     environment:
-      POSTGRES_DB: sensos
-      POSTGRES_USER: sensos
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - sensos_database:/var/lib/postgresql/data
