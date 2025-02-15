@@ -21,12 +21,35 @@ services:
     restart: always
     depends_on:
       - sensos-database
-    # environment:
-    #      PGPASSWORD: ${POSTGRES_PASSWORD}
+      - wireguard
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     cap_add:
       - NET_ADMIN
+    volumes:
+      - wireguard_config:/etc/wireguard
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8000:8000"
+
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - LOG_CONFS=true
+    volumes:
+      - wireguard_config:/config
     ports:
       - "51820:51820/udp"
+    healthcheck:
+      test: ["CMD", "wg", "show"]
+      interval: 10s
+      retries: 5
+      start_period: 10s
 
 volumes:
   sensos_database:
+  wireguard_config:

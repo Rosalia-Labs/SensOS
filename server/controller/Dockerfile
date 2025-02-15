@@ -3,7 +3,12 @@ FROM debian:bookworm-slim
 # Install required packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    ca-certificates
+    iproute2 \
+    wireguard \
+    ca-certificates \
+    python3 \
+    python3-venv \
+    python3-pip
 
 # Get Debian codename using /etc/os-release instead of lsb_release
 RUN install -d /usr/share/postgresql-common/pgdg && \
@@ -12,7 +17,22 @@ RUN install -d /usr/share/postgresql-common/pgdg && \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client-17 \
-    wireguard \
     && rm -rf /var/lib/apt/lists/*
 
-CMD ["bash", "-c", "while true; do sleep 3600; done"]
+# Set up a virtual environment
+WORKDIR /app
+RUN python3 -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+
+# Install Python dependencies inside the venv
+RUN /app/venv/bin/pip install --upgrade pip && \
+    /app/venv/bin/pip install fastapi uvicorn python-multipart psycopg logging docker
+
+# Copy application files
+COPY . /app
+
+# Expose API port
+EXPOSE 8000
+
+# Run FastAPI with the virtual environment
+CMD ["/app/venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
