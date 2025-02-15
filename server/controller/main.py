@@ -4,6 +4,7 @@ import logging
 import psycopg
 import docker
 import time
+import re
 
 from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -63,7 +64,7 @@ def init_db():
                     id SERIAL PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
                     ip_range CIDR UNIQUE NOT NULL,
-                    wg_public_key TEXT NOT NULL
+                    wg_public_key TEXT UNIQUE NOT NULL
                 );
                 """)
 
@@ -75,7 +76,7 @@ def init_db():
                     network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
                     hostname TEXT UNIQUE NOT NULL,
                     wg_ip INET UNIQUE NOT NULL,
-                    wg_public_key TEXT NOT NULL
+                    wg_public_key TEXT UNIQUE NOT NULL
                 );
                 """)
 
@@ -159,3 +160,107 @@ PrivateKey = {private_key}
 
     return {"id": network_id, "name": name, "ip_range": ip_range, "wg_public_key": public_key}
 
+
+def extract_server_config(wg_config_path):
+    """Extracts the server's WireGuard config from an existing file, preserving PrivateKey."""
+    if not os.path.exists(wg_config_path):
+        raise FileNotFoundError(f"Config file {wg_config_path} does not exist. Cannot regenerate configuration.")
+
+    with open(wg_config_path, "r") as f:
+        config = f.read()
+
+    match = re.search(r"\[Interface\].*?PrivateKey\s*=\s*(\S+).*?\n\n", config, re.DOTALL)
+    if not match:
+        raise ValueError(f"PrivateKey not found in {wg_config_path}. Check the file format.")
+
+    return match.group(0)  # Return the whole `[Interface]` section
+
+def regenerate_wireguard_config():
+    """Regenerates all WireGuard configuration files based on the database."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, ip_range, wg_public_key FROM sensos.networks;")
+            networks = cur.fetchall()
+
+            for network_id, network_name, ip_range, server_public_key in networks:
+                wg_config_path = f"{WG_CONFIG_DIR}{network_name}.conf"
+                
+                # Extract existing server config to preserve the PrivateKey
+                server_config = extract_server_config(wg_config_path)
+
+                # Collect all clients for this network
+                cur.execute("""
+                    SELECT wg_ip, wg_public_key FROM sensos.devices WHERE network_id = %s;
+                """, (network_id,))
+                clients = cur.fetchall()
+
+                # Write the new config
+                with open(wg_config_path, "w") as f:
+                    f.write(server_config)
+                    
+                    for wg_ip, wg_public_key in clients:
+                        f.write(f"""
+[Peer]
+PublicKey = {wg_public_key}
+AllowedIPs = {wg_ip}/32
+""")
+
+    logger.info("WireGuard configuration regenerated for all networks.")
+
+@app.post("/register-client")
+def register_client(network_name: str = Form(...), wg_public_key: str = Form(...)):
+    """Registers a client, assigns a WireGuard IP, updates the WireGuard config, and returns network details."""
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Get network details
+            cur.execute("SELECT id, ip_range, wg_public_key FROM sensos.networks WHERE name = %s;", (network_name,))
+            network = cur.fetchone()
+
+            if not network:
+                return JSONResponse(status_code=404, content={"error": "Network not found"})
+
+            network_id, ip_range, server_public_key = network
+
+            base_ip = ".".join(str(ip_range.network_address).split(".")[:2])
+
+            # ✅ Get the highest assigned IP
+            cur.execute("SELECT wg_ip FROM sensos.devices WHERE network_id = %s ORDER BY wg_ip DESC LIMIT 1;", (network_id,))
+            last_ip = cur.fetchone()
+
+            if last_ip and last_ip[0]:
+                last_ip_parts = str(last_ip[0]).split(".")
+                third_octet = int(last_ip_parts[-2])
+                fourth_octet = int(last_ip_parts[-1])
+
+                # Increment the last assigned IP
+                if fourth_octet < 254:
+                    new_third_octet = third_octet
+                    new_fourth_octet = fourth_octet + 1
+                else:
+                    new_third_octet = third_octet + 1
+                    new_fourth_octet = 1  # Reset fourth octet
+
+            else:
+                new_third_octet = 1  # Start at x.x.1.x
+                new_fourth_octet = 1  # Start at x.x.x.1
+
+            # ✅ Ensure we don't exceed x.x.255.254
+            if new_third_octet > 255:
+                return JSONResponse(status_code=400, content={"error": "No available IP addresses"})
+
+            new_ip = f"{base_ip}.{new_third_octet}.{new_fourth_octet}"
+
+            third_octet, fourth_octet = map(int, new_ip.split(".")[-2:])
+            hostname = f"{network_name}-{third_octet}-{fourth_octet}"
+
+            # ✅ Insert new client into the database
+            cur.execute("""
+                INSERT INTO sensos.devices (network_id, hostname, wg_ip, wg_public_key)
+                VALUES (%s, %s, %s, %s);
+            """, (network_id, hostname, new_ip, wg_public_key))
+
+    regenerate_wireguard_config()
+    restart_wireguard_container()
+
+    return {"wg_ip": new_ip, "hostname": hostname, "server_public_key": server_public_key}
