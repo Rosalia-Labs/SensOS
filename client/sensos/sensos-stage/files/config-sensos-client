@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+import os
+import sys
+import requests
+import json
+import subprocess
+
+# Configuration
+SERVER_URL = "http://localhost:8000/register-client"
+NETWORK_NAME = "sensos"
+CONFIG_DIR = "/tmp/wireguard"  # Change to "/etc/wireguard" for production
+PRIVATE_KEY_FILE = os.path.join(CONFIG_DIR, "private.key")
+PUBLIC_KEY_FILE = os.path.join(CONFIG_DIR, "public.key")
+WG_CONFIG_FILE = os.path.join(CONFIG_DIR, "wg0.conf")
+
+
+def run_command(cmd):
+    """Runs a shell command and returns its output."""
+    return subprocess.run(
+        cmd, shell=True, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def generate_wireguard_keys():
+    """Generate WireGuard key pair if not already present."""
+    if os.path.exists(PRIVATE_KEY_FILE) and os.path.exists(PUBLIC_KEY_FILE):
+        print("✅ WireGuard keys already exist.")
+    else:
+        print("🔑 Generating new WireGuard key pair...")
+        private_key = run_command("wg genkey")
+        public_key = run_command(f"echo {private_key} | wg pubkey")
+
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(PRIVATE_KEY_FILE, "w") as f:
+            f.write(private_key)
+        with open(PUBLIC_KEY_FILE, "w") as f:
+            f.write(public_key)
+
+        print(f"  - Private Key stored in: {PRIVATE_KEY_FILE}")
+        print(f"  - Public Key: {public_key}")
+
+
+def register_client():
+    """Register the device with the WireGuard server."""
+    with open(PUBLIC_KEY_FILE, "r") as f:
+        public_key = f.read().strip()
+
+    print(f"📡 Registering device on network '{NETWORK_NAME}'...")
+    response = requests.post(
+        SERVER_URL, data={"network_name": NETWORK_NAME, "wg_public_key": public_key}
+    )
+
+    if response.status_code == 409:  # Already registered
+        existing_data = response.json()
+        print(
+            f"⚠️ Device already registered as {existing_data['hostname']} with IP {existing_data['wg_ip']}"
+        )
+        choice = (
+            input("Would you like to **reconfigure** the device? (y/N): ")
+            .strip()
+            .lower()
+        )
+        if choice != "y":
+            print("🚫 Aborting to prevent accidental reconfiguration.")
+            sys.exit(0)
+
+    elif response.status_code != 200:
+        print(f"❌ Failed to register. Server response: {response.text}")
+        sys.exit(1)
+
+    # Extract configuration data
+    data = response.json()
+    wg_ip, hostname, server_pubkey = (
+        data["wg_ip"],
+        data["hostname"],
+        data["server_public_key"],
+    )
+
+    print(f"✅ Registered successfully as {hostname} (IP: {wg_ip})")
+
+    return wg_ip, hostname, server_pubkey
+
+
+def write_wireguard_config(wg_ip, server_pubkey):
+    """Write the WireGuard configuration file."""
+    with open(PRIVATE_KEY_FILE, "r") as f:
+        private_key = f.read().strip()
+
+    config = f"""
+[Interface]
+PrivateKey = {private_key}
+Address = {wg_ip}/32
+DNS = 8.8.8.8
+
+[Peer]
+PublicKey = {server_pubkey}
+Endpoint = your-server:51820  # Change this
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+"""
+
+    with open(WG_CONFIG_FILE, "w") as f:
+        f.write(config)
+
+    print(f"✅ WireGuard configuration written to {WG_CONFIG_FILE}")
+
+
+def main():
+    """Main execution flow."""
+    print("🚀 Starting device configuration...")
+
+    generate_wireguard_keys()
+    wg_ip, hostname, server_pubkey = register_client()
+    write_wireguard_config(wg_ip, server_pubkey)
+
+    print("🔄 Rebooting in 5 seconds to apply configuration...")
+    # subprocess.run("sleep 5 && sudo reboot", shell=True)
+
+
+if __name__ == "__main__":
+    main()
