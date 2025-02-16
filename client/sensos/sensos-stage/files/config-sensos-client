@@ -8,7 +8,7 @@ import subprocess
 # Configuration
 SERVER_URL = "http://localhost:8000/register-client"
 NETWORK_NAME = "sensos"
-CONFIG_DIR = "/tmp/wireguard"  # Change to "/etc/wireguard" for production
+CONFIG_DIR = "/etc/wireguard"
 PRIVATE_KEY_FILE = os.path.join(CONFIG_DIR, "private.key")
 PUBLIC_KEY_FILE = os.path.join(CONFIG_DIR, "public.key")
 WG_CONFIG_FILE = os.path.join(CONFIG_DIR, "wg0.conf")
