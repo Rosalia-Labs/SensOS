@@ -9,7 +9,7 @@ import re
 from fastapi import FastAPI, Form
 from fastapi.responses import JSONResponse, HTMLResponse
 from psycopg.errors import UniqueViolation
-
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -56,7 +56,7 @@ def get_db(retries=10, delay=3):
 
 @app.on_event("startup")
 def init_db():
-    """Ensure the `sensos` schema and networks/devices tables exist before running queries."""
+    """Ensure the `sensos` schema and networks/devices/tables exist before running queries."""
     logger.info("Initializing database schema and tables...")
 
     try:
@@ -66,37 +66,71 @@ def init_db():
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
 
-                # Create the `networks` table inside `sensos`
+                # Create the `networks` table
                 logger.info("Creating table 'sensos.networks' if not exists...")
                 cur.execute(
                     """
-                CREATE TABLE IF NOT EXISTS sensos.networks (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT UNIQUE NOT NULL,
-                    ip_range CIDR UNIQUE NOT NULL,
-                    wg_public_key TEXT UNIQUE NOT NULL
-                );
-                """
+                    CREATE TABLE IF NOT EXISTS sensos.networks (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT UNIQUE NOT NULL,
+                        ip_range CIDR UNIQUE NOT NULL,
+                        wg_public_key TEXT UNIQUE NOT NULL
+                    );
+                    """
                 )
 
-                # Create the `devices` table inside `sensos`
+                # Create the `devices` table (no more wg_public_key here)
                 logger.info("Creating table 'sensos.devices' if not exists...")
                 cur.execute(
                     """
-                CREATE TABLE IF NOT EXISTS sensos.devices (
-                    id SERIAL PRIMARY KEY,
-                    network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
-                    hostname TEXT UNIQUE NOT NULL,
-                    wg_ip INET UNIQUE NOT NULL,
-                    wg_public_key TEXT UNIQUE NOT NULL
-                );
-                """
+                    CREATE TABLE IF NOT EXISTS sensos.devices (
+                        id SERIAL PRIMARY KEY,
+                        network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
+                        hostname TEXT UNIQUE NOT NULL,
+                        wg_ip INET UNIQUE NOT NULL
+                    );
+                    """
                 )
 
-        logger.info("Database schema initialization complete.")
+                # Create the `wireguard_keys` table (supports multiple keys per device)
+                logger.info("Creating table 'sensos.wireguard_keys' if not exists...")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sensos.wireguard_keys (
+                        id SERIAL PRIMARY KEY,
+                        device_id INTEGER REFERENCES sensos.devices(id) ON DELETE CASCADE,
+                        wg_public_key TEXT UNIQUE NOT NULL,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                    """
+                )
+
+                # Create the `ssh_keys` table (supports multiple keys per device)
+                logger.info("Creating table 'sensos.ssh_keys' if not exists...")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
+                        id SERIAL PRIMARY KEY,
+                        device_id INTEGER REFERENCES sensos.devices(id) ON DELETE CASCADE,
+                        ssh_public_key TEXT UNIQUE NOT NULL,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                    """
+                )
+
+        logger.info("✅ Database schema initialization complete.")
+
+        regenerate_wireguard_config()
+        restart_wireguard_container()
+
+        logger.info(
+            "✅ Regenerated wireguard configs and restarted wireguard container."
+        )
 
     except Exception as e:
-        logger.error(f"Error initializing database: {e}", exc_info=True)
+        logger.error(f"❌ Error initializing database: {e}", exc_info=True)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -204,15 +238,19 @@ def extract_server_config(wg_config_path):
     with open(wg_config_path, "r") as f:
         config = f.read()
 
+    # Match `[Interface]` with optional leading spaces, capturing everything until the next section `[SomeSection]`
     match = re.search(
-        r"\[Interface\].*?PrivateKey\s*=\s*(\S+).*?\n\n", config, re.DOTALL
+        r"^\s*\[\s*Interface\s*\](?:\n(?!^\s*\[\s*\w+\s*\]$)\s*.*)*",
+        config,
+        re.MULTILINE,
     )
+
     if not match:
         raise ValueError(
-            f"PrivateKey not found in {wg_config_path}. Check the file format."
+            f"[Interface] not found in {wg_config_path}. Check the file format."
         )
 
-    return match.group(0)  # Return the whole `[Interface]` section
+    return match.group(0)  # Return the `[Interface]` section
 
 
 def regenerate_wireguard_config():
@@ -230,11 +268,14 @@ def regenerate_wireguard_config():
                 # Extract existing server config to preserve the PrivateKey
                 server_config = extract_server_config(wg_config_path)
 
-                # Collect all clients for this network
+                # Collect all active clients and their WireGuard keys for this network
                 cur.execute(
                     """
-                    SELECT wg_ip, wg_public_key FROM sensos.devices WHERE network_id = %s;
-                """,
+                    SELECT d.wg_ip, k.wg_public_key 
+                    FROM sensos.devices d
+                    JOIN sensos.wireguard_keys k ON d.id = k.device_id
+                    WHERE d.network_id = %s AND k.is_active = TRUE;
+                    """,
                     (network_id,),
                 )
                 clients = cur.fetchall()
@@ -255,100 +296,157 @@ AllowedIPs = {wg_ip}/32
     logger.info("WireGuard configuration regenerated for all networks.")
 
 
-@app.post("/register-client")
-def register_client(network_name: str = Form(...), wg_public_key: str = Form(...)):
-    """Registers a new client and assigns it an IP address in the network."""
-    logger.info(
-        f"Received request for network: {network_name}, Public Key: {wg_public_key}"
-    )
-
+@app.get("/list-clients", response_class=HTMLResponse)
+def list_clients():
+    """Displays a web page listing all registered clients."""
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Ensure the network exists
             cur.execute(
-                "SELECT id, ip_range, wg_public_key FROM sensos.networks WHERE name = %s;",
-                (network_name,),
+                """
+                SELECT d.hostname, d.wg_ip, n.name AS network_name
+                FROM sensos.devices d
+                JOIN sensos.networks n ON d.network_id = n.id
+                ORDER BY n.name, d.hostname;
+                """
+            )
+            clients = cur.fetchall()
+
+    # Generate an HTML table
+    client_table = """
+    <html>
+    <head>
+        <title>Registered Clients</title>
+        <style>
+            body { font-family: Arial, sans-serif; }
+            table { width: 80%%; border-collapse: collapse; margin: 20px auto; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+        </style>
+    </head>
+    <body>
+        <h2 style="text-align: center;">Registered Clients</h2>
+        <table>
+            <tr>
+                <th>Hostname</th>
+                <th>WireGuard IP</th>
+                <th>Network Name</th>
+            </tr>
+    """
+
+    for row in clients:
+        hostname, wg_ip, network_name = row
+        client_table += f"""
+        <tr>
+            <td>{hostname}</td>
+            <td>{wg_ip}</td>
+            <td>{network_name}</td>
+        </tr>
+        """
+
+    client_table += """
+        </table>
+    </body>
+    </html>
+    """
+
+    return HTMLResponse(content=client_table)
+
+
+# Pydantic models for JSON-based requests
+class RegisterDeviceRequest(BaseModel):
+    network_name: str
+    hostname: str
+    wg_ip: str
+
+
+class RegisterWireguardKeyRequest(BaseModel):
+    hostname: str
+    wg_public_key: str
+
+
+class RegisterSSHKeyRequest(BaseModel):
+    hostname: str
+    ssh_public_key: str
+
+
+@app.post("/register-device")
+def register_device(request: RegisterDeviceRequest):
+    """Registers a new device in the database, but does not store keys."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM sensos.networks WHERE name = %s;",
+                (request.network_name,),
             )
             network = cur.fetchone()
-
             if not network:
                 return JSONResponse(
                     status_code=404,
-                    content={"error": f"Network '{network_name}' not found."},
+                    content={"error": f"Network '{request.network_name}' not found."},
                 )
 
-            network_id, ip_range, server_public_key = network
-
-            # Ensure the public key is not already registered
+            network_id = network[0]
             cur.execute(
-                "SELECT wg_ip, hostname FROM sensos.devices WHERE wg_public_key = %s;",
-                (wg_public_key,),
+                "INSERT INTO sensos.devices (network_id, hostname, wg_ip) VALUES (%s, %s, %s) RETURNING id;",
+                (network_id, request.hostname, request.wg_ip),
             )
-            existing_device = cur.fetchone()
+            device_id = cur.fetchone()[0]
 
-            if existing_device:
-                existing_ip, existing_hostname = existing_device
-                return JSONResponse(
-                    status_code=409,  # HTTP 409 Conflict
-                    content={
-                        "error": "Device already registered",
-                        "wg_ip": existing_ip,
-                        "hostname": existing_hostname,
-                        "server_public_key": server_public_key,
-                    },
-                )
+    return {
+        "device_id": device_id,
+        "hostname": request.hostname,
+        "wg_ip": request.wg_ip,
+    }
 
-            # Generate a new IP address (same logic as before)
-            base_ip = ".".join(str(ip_range.network_address).split(".")[:2])
+
+@app.post("/register-wireguard-key")
+def register_wireguard_key(request: RegisterWireguardKeyRequest):
+    """Registers a WireGuard key for an existing device."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
             cur.execute(
-                "SELECT wg_ip FROM sensos.devices WHERE network_id = %s ORDER BY wg_ip DESC LIMIT 1;",
-                (network_id,),
+                "SELECT id FROM sensos.devices WHERE hostname = %s;",
+                (request.hostname,),
             )
-            last_ip = cur.fetchone()
-
-            if last_ip and last_ip[0]:
-                last_ip_parts = str(last_ip[0]).split(".")
-                third_octet = int(last_ip_parts[-2])
-                fourth_octet = int(last_ip_parts[-1])
-
-                if fourth_octet < 254:
-                    new_third_octet = third_octet
-                    new_fourth_octet = fourth_octet + 1
-                else:
-                    new_third_octet = third_octet + 1
-                    new_fourth_octet = 1
-            else:
-                new_third_octet = 1
-                new_fourth_octet = 1
-
-            if new_third_octet > 255:
+            device = cur.fetchone()
+            if not device:
                 return JSONResponse(
-                    status_code=400, content={"error": "No available IP addresses"}
+                    status_code=404,
+                    content={"error": f"Device '{request.hostname}' not found."},
                 )
 
-            new_ip = f"{base_ip}.{new_third_octet}.{new_fourth_octet}"
-            hostname = f"{network_name}-{new_third_octet}-{new_fourth_octet}"
-
-            # Insert the new device
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO sensos.devices (network_id, hostname, wg_ip, wg_public_key)
-                    VALUES (%s, %s, %s, %s);
-                """,
-                    (network_id, hostname, new_ip, wg_public_key),
-                )
-            except UniqueViolation:
-                return JSONResponse(
-                    status_code=409,
-                    content={"error": "Device with this public key already exists."},
-                )
+            device_id = device[0]
+            cur.execute(
+                "INSERT INTO sensos.wireguard_keys (device_id, wg_public_key) VALUES (%s, %s);",
+                (device_id, request.wg_public_key),
+            )
 
     regenerate_wireguard_config()
     restart_wireguard_container()
 
-    return {
-        "wg_ip": new_ip,
-        "hostname": hostname,
-        "server_public_key": server_public_key,
-    }
+    return {"hostname": request.hostname, "wg_public_key": request.wg_public_key}
+
+
+@app.post("/register-ssh-key")
+def register_ssh_key(request: RegisterSSHKeyRequest):
+    """Registers an SSH key for an existing device."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM sensos.devices WHERE hostname = %s;",
+                (request.hostname,),
+            )
+            device = cur.fetchone()
+            if not device:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"Device '{request.hostname}' not found."},
+                )
+
+            device_id = device[0]
+            cur.execute(
+                "INSERT INTO sensos.ssh_keys (device_id, ssh_public_key) VALUES (%s, %s);",
+                (device_id, request.ssh_public_key),
+            )
+
+    return {"hostname": request.hostname, "ssh_public_key": request.ssh_public_key}

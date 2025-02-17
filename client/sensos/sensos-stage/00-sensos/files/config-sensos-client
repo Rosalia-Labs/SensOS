@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+import os
+import sys
+import argparse
+import requests
+import json
+import subprocess
+
+# Default Configuration
+DEFAULT_SERVER_URL = "http://localhost:8000/register-client"
+DEFAULT_NETWORK_NAME = "sensos"
+DEFAULT_CONFIG_DIR = "/etc/wireguard"
+DEFAULT_WG_PORT = "51820"
+
+
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Configure the Sensos WireGuard client."
+    )
+    parser.add_argument(
+        "--server-url",
+        default=DEFAULT_SERVER_URL,
+        help="Base URL of the server (default: http://localhost:8000)",
+    )
+    parser.add_argument(
+        "--network", default=DEFAULT_NETWORK_NAME, help="Network name (default: sensos)"
+    )
+    parser.add_argument(
+        "--config-dir",
+        default=DEFAULT_CONFIG_DIR,
+        help="WireGuard config directory (default: /etc/wireguard)",
+    )
+    parser.add_argument(
+        "--wg-port",
+        default=DEFAULT_WG_PORT,
+        help="WireGuard server port (default: 51820)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force overwrite of existing files and settings",
+    )
+    return parser.parse_args()
+
+
+def run_command(cmd):
+    """Runs a shell command and returns its output."""
+    return subprocess.run(
+        cmd, shell=True, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def generate_wireguard_keys(config_dir, force):
+    """Generate WireGuard key pair if not already present."""
+    private_key_file = os.path.join(config_dir, "private.key")
+    public_key_file = os.path.join(config_dir, "public.key")
+
+    if os.path.exists(private_key_file) or os.path.exists(public_key_file):
+        print("⚠️ WireGuard keys already exist.")
+        if not force:
+            print(
+                "🚫 Aborting to prevent overwriting existing keys. Use --force to override."
+            )
+            sys.exit(1)
+
+    print("🔑 Generating new WireGuard key pair...")
+    private_key = run_command("wg genkey")
+    public_key = run_command(f"echo {private_key} | wg pubkey")
+
+    os.makedirs(config_dir, exist_ok=True)
+    with open(private_key_file, "w") as f:
+        f.write(private_key)
+    with open(public_key_file, "w") as f:
+        f.write(public_key)
+
+    print(f"  - Private Key stored in: {private_key_file}")
+    print(f"  - Public Key: {public_key}")
+
+
+def register_client(server_url, network_name, config_dir, force):
+    """Register the device with the WireGuard server."""
+    public_key_file = os.path.join(config_dir, "public.key")
+
+    with open(public_key_file, "r") as f:
+        public_key = f.read().strip()
+
+    print(f"Registering with: {server_url}")
+    print(f"Sending data: {json.dumps({'network_name': network_name, 'wg_public_key': public_key}, indent=2)}")
+
+    print(f"📡 Registering device on network '{network_name}'...")
+    response = requests.post(
+        server_url, json={"network_name": network_name, "wg_public_key": public_key}
+    )
+
+    print(f"Status Code: {response.status_code}")
+    print(f"Response Headers: {response.headers}")
+    print(f"Response Text: {response.text}")
+
+    if response.status_code == 409:  # Already registered
+        existing_data = response.json()
+        print(
+            f"⚠️ Device already registered as {existing_data['hostname']} with IP {existing_data['wg_ip']}"
+        )
+        if not force:
+            print(
+                "🚫 Aborting to prevent accidental reconfiguration. Use --force to override."
+            )
+            sys.exit(1)
+
+    elif response.status_code != 200:
+        print(f"❌ Failed to register. Server response: {response.text}")
+        sys.exit(1)
+
+    # Extract configuration data
+    data = response.json()
+    return data["wg_ip"], data["hostname"], data["server_public_key"]
+
+
+def write_wireguard_config(wg_ip, server_pubkey, config_dir, wg_port, force):
+    """Write the WireGuard configuration file."""
+    private_key_file = os.path.join(config_dir, "private.key")
+    wg_config_file = os.path.join(config_dir, "wg0.conf")
+
+    if os.path.exists(wg_config_file):
+        print(f"⚠️ WireGuard config file {wg_config_file} already exists.")
+        if not force:
+            print(
+                "🚫 Aborting to prevent overwriting existing configuration. Use --force to override."
+            )
+            sys.exit(1)
+
+    with open(private_key_file, "r") as f:
+        private_key = f.read().strip()
+
+    config = f"""
+[Interface]
+PrivateKey = {private_key}
+Address = {wg_ip}/32
+DNS = 8.8.8.8
+
+[Peer]
+PublicKey = {server_pubkey}
+Endpoint = your-server:{wg_port}  # Change this
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+"""
+
+    with open(wg_config_file, "w") as f:
+        f.write(config)
+
+    print(f"✅ WireGuard configuration written to {wg_config_file}")
+
+
+def main():
+    """Main execution flow."""
+    args = parse_args()
+
+    print("🚀 Starting device configuration...")
+
+    generate_wireguard_keys(args.config_dir, args.force)
+    wg_ip, hostname, server_pubkey = register_client(
+        args.server_url, args.network, args.config_dir, args.force
+    )
+    write_wireguard_config(
+        wg_ip, server_pubkey, args.config_dir, args.wg_port, args.force
+    )
+
+    print("🔄 Rebooting in 5 seconds to apply configuration...")
+    # subprocess.run("sleep 5 && sudo reboot", shell=True)
+
+
+if __name__ == "__main__":
+    main()
