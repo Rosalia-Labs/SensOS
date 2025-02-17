@@ -5,4 +5,3 @@ DEPLOY_COMPRESSION=none
 PIGEN_DOCKER_OPTS="-v $(realpath ../sensos/):/sensos"
 STAGE_LIST="stage0 stage1 /sensos/sensos-stage stage2"
 PI_GEN_RELEASE="test"
-APT_PROXY="http://172.17.0.1:3142/"
