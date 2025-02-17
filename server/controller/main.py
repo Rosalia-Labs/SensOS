@@ -1,5 +1,7 @@
 import os
+import stat
 import subprocess
+import ipaddress
 import logging
 import psycopg
 import docker
@@ -7,6 +9,7 @@ import time
 import re
 
 from fastapi import FastAPI, Form
+from typing import Tuple, Optional
 from fastapi.responses import JSONResponse, HTMLResponse
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel
@@ -86,7 +89,6 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS sensos.devices (
                         id SERIAL PRIMARY KEY,
                         network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
-                        hostname TEXT UNIQUE NOT NULL,
                         wg_ip INET UNIQUE NOT NULL
                     );
                     """
@@ -293,7 +295,12 @@ AllowedIPs = {wg_ip}/32
 """
                         )
 
-    logger.info("WireGuard configuration regenerated for all networks.")
+                # Set file permissions to 600 (owner read/write only)
+                os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
+
+    logger.info(
+        "✅ WireGuard configuration regenerated for all networks with secure permissions."
+    )
 
 
 @app.get("/list-clients", response_class=HTMLResponse)
@@ -303,10 +310,10 @@ def list_clients():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT d.hostname, d.wg_ip, n.name AS network_name
+                SELECT d.wg_ip, n.name AS network_name
                 FROM sensos.devices d
                 JOIN sensos.networks n ON d.network_id = n.id
-                ORDER BY n.name, d.hostname;
+                ORDER BY n.name, d.wg_ip;
                 """
             )
             clients = cur.fetchall()
@@ -327,17 +334,15 @@ def list_clients():
         <h2 style="text-align: center;">Registered Clients</h2>
         <table>
             <tr>
-                <th>Hostname</th>
                 <th>WireGuard IP</th>
                 <th>Network Name</th>
             </tr>
     """
 
     for row in clients:
-        hostname, wg_ip, network_name = row
+        wg_ip, network_name = row
         client_table += f"""
         <tr>
-            <td>{hostname}</td>
             <td>{wg_ip}</td>
             <td>{network_name}</td>
         </tr>
@@ -352,51 +357,91 @@ def list_clients():
     return HTMLResponse(content=client_table)
 
 
-# Pydantic models for JSON-based requests
+def get_network_details(network_name: str):
+    """Fetch the network ID, IP range, and public key for the given network name."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, ip_range, wg_public_key FROM sensos.networks WHERE name = %s;",
+                (network_name,),
+            )
+            return cur.fetchone()
+
+
+def get_last_assigned_ip(network_id: int) -> Optional[str]:
+    """Fetch the highest assigned IP address for the given network."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT wg_ip FROM sensos.devices WHERE network_id = %s ORDER BY wg_ip DESC LIMIT 1;",
+                (network_id,),
+            )
+            result = cur.fetchone()
+            return result[0] if result else None
+
+
+def compute_next_ip(ip_range, last_ip):
+    """Compute the next available IP address"""
+    network = ipaddress.ip_network(ip_range, strict=False)
+    base_ip = str(network.network_address)  # Extract the first address in the subnet
+
+    if last_ip:
+        last_ip_str = str(last_ip)  # Convert IPv4Address to string
+        last_ip_parts = list(map(int, last_ip_str.split(".")))
+        if last_ip_parts[3] < 254:
+            last_ip_parts[3] += 1
+        else:
+            last_ip_parts[3] = 1
+            last_ip_parts[2] += 1
+    else:
+        last_ip_parts = list(map(int, base_ip.split(".")))  # Use base IP
+        last_ip_parts[2] += 1  # Start at .1.1
+        last_ip_parts[3] = 1
+
+    wg_ip = ".".join(map(str, last_ip_parts))
+    return wg_ip
+
+
+def insert_device(network_id: int, wg_ip: str) -> int:
+    """Insert a new device into the database and return its ID."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sensos.devices (network_id, wg_ip) VALUES (%s, %s) RETURNING id;",
+                (network_id, wg_ip),
+            )
+            return cur.fetchone()[0]
+
+
 class RegisterDeviceRequest(BaseModel):
     network_name: str
-    hostname: str
-    wg_ip: str
-
-
-class RegisterWireguardKeyRequest(BaseModel):
-    hostname: str
-    wg_public_key: str
-
-
-class RegisterSSHKeyRequest(BaseModel):
-    hostname: str
-    ssh_public_key: str
 
 
 @app.post("/register-device")
 def register_device(request: RegisterDeviceRequest):
-    """Registers a new device in the database, but does not store keys."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM sensos.networks WHERE name = %s;",
-                (request.network_name,),
-            )
-            network = cur.fetchone()
-            if not network:
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": f"Network '{request.network_name}' not found."},
-                )
+    """Registers a new device, computes IP, and returns the network's public key."""
+    network_details = get_network_details(request.network_name)
+    if not network_details:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"Network '{request.network_name}' not found."},
+        )
 
-            network_id = network[0]
-            cur.execute(
-                "INSERT INTO sensos.devices (network_id, hostname, wg_ip) VALUES (%s, %s, %s) RETURNING id;",
-                (network_id, request.hostname, request.wg_ip),
-            )
-            device_id = cur.fetchone()[0]
+    network_id, subnet, public_key = network_details
+    last_ip = get_last_assigned_ip(network_id)
+    wg_ip = compute_next_ip(subnet, last_ip)
+    device_id = insert_device(network_id, wg_ip)
 
     return {
         "device_id": device_id,
-        "hostname": request.hostname,
-        "wg_ip": request.wg_ip,
+        "wg_ip": wg_ip,
+        "public_key": public_key,
     }
+
+
+class RegisterWireguardKeyRequest(BaseModel):
+    wg_ip: str
+    wg_public_key: str
 
 
 @app.post("/register-wireguard-key")
@@ -405,14 +450,14 @@ def register_wireguard_key(request: RegisterWireguardKeyRequest):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM sensos.devices WHERE hostname = %s;",
-                (request.hostname,),
+                "SELECT id FROM sensos.devices WHERE wg_ip = %s;",
+                (request.wg_ip,),
             )
             device = cur.fetchone()
             if not device:
                 return JSONResponse(
                     status_code=404,
-                    content={"error": f"Device '{request.hostname}' not found."},
+                    content={"error": f"Device '{request.wg_ip}' not found."},
                 )
 
             device_id = device[0]
@@ -424,7 +469,12 @@ def register_wireguard_key(request: RegisterWireguardKeyRequest):
     regenerate_wireguard_config()
     restart_wireguard_container()
 
-    return {"hostname": request.hostname, "wg_public_key": request.wg_public_key}
+    return {"wg_ip": request.wg_ip, "wg_public_key": request.wg_public_key}
+
+
+class RegisterSSHKeyRequest(BaseModel):
+    wg_ip: str
+    ssh_public_key: str
 
 
 @app.post("/register-ssh-key")
@@ -433,14 +483,14 @@ def register_ssh_key(request: RegisterSSHKeyRequest):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM sensos.devices WHERE hostname = %s;",
-                (request.hostname,),
+                "SELECT id FROM sensos.devices WHERE wg_ip = %s;",
+                (request.wg_ip,),
             )
             device = cur.fetchone()
             if not device:
                 return JSONResponse(
                     status_code=404,
-                    content={"error": f"Device '{request.hostname}' not found."},
+                    content={"error": f"Device '{request.wg_ip}' not found."},
                 )
 
             device_id = device[0]
@@ -449,4 +499,4 @@ def register_ssh_key(request: RegisterSSHKeyRequest):
                 (device_id, request.ssh_public_key),
             )
 
-    return {"hostname": request.hostname, "ssh_public_key": request.ssh_public_key}
+    return {"wg_ip": request.wg_ip, "ssh_public_key": request.ssh_public_key}

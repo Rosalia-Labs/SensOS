@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import os
 import sys
+import stat
 import argparse
 import requests
 import json
 import subprocess
 
 # Default Configuration
-DEFAULT_SERVER_URL = "http://localhost:8000/register-client"
+DEFAULT_SERVER = "localhost"
+DEFAULT_PORT = "8000"
 DEFAULT_NETWORK_NAME = "sensos"
 DEFAULT_CONFIG_DIR = "/etc/wireguard"
 DEFAULT_WG_PORT = "51820"
@@ -19,9 +21,14 @@ def parse_args():
         description="Configure the Sensos WireGuard client."
     )
     parser.add_argument(
-        "--server-url",
-        default=DEFAULT_SERVER_URL,
-        help="Base URL of the server (default: http://localhost:8000)",
+        "--server",
+        default=DEFAULT_SERVER,
+        help="Server hostname or IP (default: localhost)",
+    )
+    parser.add_argument(
+        "--port",
+        default=DEFAULT_PORT,
+        help="Server port (default: 8000)",
     )
     parser.add_argument(
         "--network", default=DEFAULT_NETWORK_NAME, help="Network name (default: sensos)"
@@ -52,7 +59,7 @@ def run_command(cmd):
 
 
 def generate_wireguard_keys(config_dir, force):
-    """Generate WireGuard key pair if not already present."""
+    """Generate WireGuard key pair if not already present. Returns public key."""
     private_key_file = os.path.join(config_dir, "private.key")
     public_key_file = os.path.join(config_dir, "public.key")
 
@@ -69,58 +76,105 @@ def generate_wireguard_keys(config_dir, force):
     public_key = run_command(f"echo {private_key} | wg pubkey")
 
     os.makedirs(config_dir, exist_ok=True)
+
+    # Write the private key securely
     with open(private_key_file, "w") as f:
         f.write(private_key)
+    os.chmod(
+        private_key_file, stat.S_IRUSR | stat.S_IWUSR
+    )  # chmod 600 (owner read/write)
+
+    # Write the public key (less sensitive)
     with open(public_key_file, "w") as f:
         f.write(public_key)
 
-    print(f"  - Private Key stored in: {private_key_file}")
+    print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
     print(f"  - Public Key: {public_key}")
 
+    return public_key
 
-def register_client(server_url, network_name, config_dir, force):
-    """Register the device with the WireGuard server."""
-    public_key_file = os.path.join(config_dir, "public.key")
 
-    with open(public_key_file, "r") as f:
-        public_key = f.read().strip()
+def compute_hostname(network_name, wg_ip):
+    """Compute hostname as {network_name}-{3rd_octet}-{4th_octet}."""
+    ip_parts = wg_ip.split(".")
+    return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
-    print(f"Registering with: {server_url}")
-    print(f"Sending data: {json.dumps({'network_name': network_name, 'wg_public_key': public_key}, indent=2)}")
 
-    print(f"📡 Registering device on network '{network_name}'...")
-    response = requests.post(
-        server_url, json={"network_name": network_name, "wg_public_key": public_key}
-    )
+def register_client(server, port, network_name, wg_public_key):
+    """Register the device with the WireGuard server and return its assigned IP."""
+    server_url = f"http://{server}:{port}/register-device"
+    print(f"📡 Registering device on network '{network_name}' with {server_url}...")
+
+    response = requests.post(server_url, json={"network_name": network_name})
 
     print(f"Status Code: {response.status_code}")
     print(f"Response Headers: {response.headers}")
     print(f"Response Text: {response.text}")
 
-    if response.status_code == 409:  # Already registered
-        existing_data = response.json()
-        print(
-            f"⚠️ Device already registered as {existing_data['hostname']} with IP {existing_data['wg_ip']}"
-        )
-        if not force:
-            print(
-                "🚫 Aborting to prevent accidental reconfiguration. Use --force to override."
-            )
-            sys.exit(1)
-
-    elif response.status_code != 200:
+    if response.status_code != 200:
         print(f"❌ Failed to register. Server response: {response.text}")
         sys.exit(1)
 
-    # Extract configuration data
     data = response.json()
-    return data["wg_ip"], data["hostname"], data["server_public_key"]
+    wg_ip = data["wg_ip"]
+    server_pubkey = data["public_key"]
+
+    hostname = compute_hostname(network_name, wg_ip)
+
+    # Register the WireGuard public key separately
+    register_wireguard_key(server, port, wg_ip, wg_public_key)
+
+    return wg_ip, hostname, server_pubkey
 
 
-def write_wireguard_config(wg_ip, server_pubkey, config_dir, wg_port, force):
-    """Write the WireGuard configuration file."""
+def register_wireguard_key(server, port, wg_ip, wg_public_key):
+    """Registers the WireGuard public key for this device."""
+    server_url = f"http://{server}:{port}/register-wireguard-key"
+    print(f"🔑 Registering WireGuard public key with {server_url}...")
+
+    response = requests.post(
+        server_url, json={"wg_ip": wg_ip, "wg_public_key": wg_public_key}
+    )
+
+    if response.status_code != 200:
+        print(f"❌ Failed to register WireGuard key. Server response: {response.text}")
+        sys.exit(1)
+
+    print(f"✅ WireGuard key registered for {wg_ip}.")
+
+
+def change_hostname(new_hostname):
+    """Change the system hostname to the computed value."""
+    current_hostname = run_command("hostname")
+    if current_hostname != new_hostname:
+        print(f"🔄 Changing hostname from {current_hostname} to {new_hostname}...")
+
+        with open("/etc/hostname", "w") as f:
+            f.write(new_hostname + "\n")
+
+        with open("/etc/hosts", "r") as f:
+            hosts = f.readlines()
+
+        with open("/etc/hosts", "w") as f:
+            for line in hosts:
+                if "127.0.1.1" in line:
+                    f.write(f"127.0.1.1 {new_hostname}\n")
+                else:
+                    f.write(line)
+
+        print(
+            f"✅ Hostname changed manually to {new_hostname} (will apply after restart)"
+        )
+    else:
+        print(f"✅ Hostname is already set to {new_hostname}")
+
+
+def write_wireguard_config(
+    wg_ip, server_pubkey, config_dir, wg_port, network_name, force, server
+):
+    """Write the WireGuard configuration file with secure permissions."""
     private_key_file = os.path.join(config_dir, "private.key")
-    wg_config_file = os.path.join(config_dir, "wg0.conf")
+    wg_config_file = os.path.join(config_dir, f"{network_name}.conf")
 
     if os.path.exists(wg_config_file):
         print(f"⚠️ WireGuard config file {wg_config_file} already exists.")
@@ -141,15 +195,23 @@ DNS = 8.8.8.8
 
 [Peer]
 PublicKey = {server_pubkey}
-Endpoint = your-server:{wg_port}  # Change this
+Endpoint = {server}:{wg_port}  # Change this if needed
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 """
 
+    os.makedirs(config_dir, exist_ok=True)
+
+    # Write the WireGuard configuration securely
     with open(wg_config_file, "w") as f:
         f.write(config)
+    os.chmod(
+        wg_config_file, stat.S_IRUSR | stat.S_IWUSR
+    )  # chmod 600 (owner read/write only)
 
-    print(f"✅ WireGuard configuration written to {wg_config_file}")
+    print(
+        f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
+    )
 
 
 def main():
@@ -158,16 +220,27 @@ def main():
 
     print("🚀 Starting device configuration...")
 
-    generate_wireguard_keys(args.config_dir, args.force)
+    wg_public_key = generate_wireguard_keys(args.config_dir, args.force)
+
     wg_ip, hostname, server_pubkey = register_client(
-        args.server_url, args.network, args.config_dir, args.force
-    )
-    write_wireguard_config(
-        wg_ip, server_pubkey, args.config_dir, args.wg_port, args.force
+        args.server, args.port, args.network, wg_public_key
     )
 
-    print("🔄 Rebooting in 5 seconds to apply configuration...")
-    # subprocess.run("sleep 5 && sudo reboot", shell=True)
+    write_wireguard_config(
+        wg_ip,
+        server_pubkey,
+        args.config_dir,
+        args.wg_port,
+        args.network,
+        args.force,
+        args.server,
+    )
+
+    change_hostname(hostname)
+
+    print(
+        "✅ Configuration complete. Hostname has been updated, and WireGuard is set up."
+    )
 
 
 if __name__ == "__main__":
