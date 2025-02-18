@@ -47,3 +47,12 @@ docker run --rm -it --privileged \
     umount /mnt/pi-root/run
     umount /mnt/pi-root
   '
+
+echo
+read -p "Do you want to remove the 'debian-guestmount' Docker image? (y/N) " CONFIRM_REMOVE
+if [[ "$CONFIRM_REMOVE" =~ ^[Yy]$ ]]; then
+    docker rmi debian-guestmount
+    echo "Docker image 'debian-guestmount' removed."
+else
+    echo "Docker image retained."
+fi
