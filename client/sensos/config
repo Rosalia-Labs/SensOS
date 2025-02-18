@@ -1,7 +1,0 @@
-IMG_NAME=test
-ENABLE_SSH=1
-USE_QEMU=0
-DEPLOY_COMPRESSION=none
-PIGEN_DOCKER_OPTS="-v $(realpath ../sensos/):/sensos"
-STAGE_LIST="stage0 stage1 /sensos/sensos-stage stage2"
-PI_GEN_RELEASE="test"
