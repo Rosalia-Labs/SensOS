@@ -13,12 +13,15 @@ from typing import Tuple, Optional
 from fastapi.responses import JSONResponse, HTMLResponse
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel
+from pathlib import Path
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-WG_CONFIG_DIR = "/etc/wireguard/wg_confs/"
+WG_CONFIG_DIR = Path("/config/wg_confs")
+CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 
 app = FastAPI()
 
@@ -182,6 +185,64 @@ def generate_wireguard_keys():
     return private_key, public_key
 
 
+def create_wireguard_configs(
+    name: str, ip_range: str, private_key: str, public_key: str
+):
+    """Creates WireGuard configuration files for both the WireGuard container and the controller."""
+
+    # Define paths
+    wg_config_path = WG_CONFIG_DIR / f"{name}.conf"
+    controller_config_path = CONTROLLER_CONFIG_DIR / f"{name}.conf"
+
+    # Assign fixed IPs
+    base_ip = ip_range.split("/")[0]  # Get the base IP without CIDR
+    network_prefix = ".".join(base_ip.split(".")[:3])  # Extract "x.x.0"
+    controller_ip = f"{network_prefix}.1/16"  # Controller gets x.x.0.1
+    wireguard_ip = f"{network_prefix}.2/16"  # WireGuard gets x.x.0.2
+
+    # Generate keys for the controller itself
+    controller_private_key, controller_public_key = generate_wireguard_keys()
+
+    # WireGuard container config (main server)
+    wg_config_content = f"""[Interface]
+Address = {wireguard_ip}
+ListenPort = 51820
+PrivateKey = {private_key}
+
+[Peer]
+PublicKey = {controller_public_key}
+AllowedIPs = {controller_ip}
+"""
+
+    # Controller config (acts as a peer)
+    controller_config_content = f"""[Interface]
+Address = {controller_ip}
+PrivateKey = {controller_private_key}
+
+[Peer]
+PublicKey = {public_key}
+AllowedIPs = {ip_range}
+Endpoint = <wireguard-server-ip>:51820
+PersistentKeepalive = 25
+"""
+
+    # Ensure directories exist
+    wg_config_path.parent.mkdir(parents=True, exist_ok=True)
+    controller_config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Write WireGuard container config
+    with open(wg_config_path, "w") as f:
+        f.write(wg_config_content)
+    os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
+
+    # Write Controller config
+    with open(controller_config_path, "w") as f:
+        f.write(controller_config_content)
+    os.chmod(controller_config_path, stat.S_IRUSR | stat.S_IWUSR)
+
+    return wg_config_path, controller_config_path
+
+
 @app.post("/create-network")
 def create_network(name: str = Form(...)):
     """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
@@ -208,17 +269,11 @@ def create_network(name: str = Form(...)):
                     status_code=400, content={"error": "Network already exists"}
                 )
 
-    # Create WireGuard config file
-    wg_config_path = f"{WG_CONFIG_DIR}{name}.conf"
-    with open(wg_config_path, "w") as f:
-        f.write(
-            f"""[Interface]
-Address = {ip_range.split('/')[0]}/16
-ListenPort = 51820
-PrivateKey = {private_key}
+    # Create WireGuard configs for both WireGuard container and controller
+    create_wireguard_configs(name, ip_range, private_key, public_key)
 
-"""
-        )
+    # Start WireGuard after config is created
+    start_wireguard(name)
 
     restart_wireguard_container()
 
@@ -228,6 +283,21 @@ PrivateKey = {private_key}
         "ip_range": ip_range,
         "wg_public_key": public_key,
     }
+
+
+def start_wireguard(network_name: str):
+    """Starts WireGuard for the given network if a valid configuration exists."""
+    wg_config = CONTROLLER_CONFIG_DIR / f"{network_name}.conf"
+
+    if not wg_config.exists():
+        logger.warning(f"WireGuard config {wg_config} not found. Skipping start.")
+        return
+
+    try:
+        subprocess.run(["wg-quick", "up", f"{network_name}"], check=True)
+        logger.info(f"WireGuard started successfully for network {network_name}.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to start WireGuard: {e}")
 
 
 def extract_server_config(wg_config_path):
@@ -265,7 +335,8 @@ def regenerate_wireguard_config():
             networks = cur.fetchall()
 
             for network_id, network_name, ip_range, server_public_key in networks:
-                wg_config_path = f"{WG_CONFIG_DIR}{network_name}.conf"
+
+                wg_config_path = WG_CONFIG_DIR / f"{network_name}.conf"
 
                 # Extract existing server config to preserve the PrivateKey
                 server_config = extract_server_config(wg_config_path)

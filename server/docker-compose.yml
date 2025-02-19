@@ -3,12 +3,13 @@ services:
     build: ./database
     container_name: sensos-database
     restart: always
+    env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - sensos_database:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "sensos"]
       interval: 10s
@@ -22,15 +23,19 @@ services:
     depends_on:
       - sensos-database
       - wireguard
+    env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     cap_add:
       - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
-      - wireguard_config:/etc/wireguard
+      - wireguard_config:/config
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
 
   wireguard:
     image: lscr.io/linuxserver/wireguard:latest
@@ -43,7 +48,7 @@ services:
     volumes:
       - wireguard_config:/config
     ports:
-      - "51820:51820/udp"
+      - "${WG_PORT:-51820}:51820"
     healthcheck:
       test: ["CMD", "wg", "show"]
       interval: 10s
