@@ -87,10 +87,10 @@ def init_db():
                 )
 
                 # Create the `devices` table (no more wg_public_key here)
-                logger.info("Creating table 'sensos.devices' if not exists...")
+                logger.info("Creating table 'sensos.wireguard_peers' if not exists...")
                 cur.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS sensos.devices (
+                    CREATE TABLE IF NOT EXISTS sensos.wireguard_peers (
                         id SERIAL PRIMARY KEY,
                         network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
                         wg_ip INET UNIQUE NOT NULL
@@ -104,22 +104,8 @@ def init_db():
                     """
                     CREATE TABLE IF NOT EXISTS sensos.wireguard_keys (
                         id SERIAL PRIMARY KEY,
-                        device_id INTEGER REFERENCES sensos.devices(id) ON DELETE CASCADE,
-                        wg_public_key TEXT UNIQUE NOT NULL,
-                        is_active BOOLEAN DEFAULT TRUE,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    );
-                    """
-                )
-
-                # Create the `ssh_keys` table (supports multiple keys per device)
-                logger.info("Creating table 'sensos.ssh_keys' if not exists...")
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
-                        id SERIAL PRIMARY KEY,
-                        device_id INTEGER REFERENCES sensos.devices(id) ON DELETE CASCADE,
-                        ssh_public_key TEXT UNIQUE NOT NULL,
+                        peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+                        public_key TEXT UNIQUE NOT NULL,
                         is_active BOOLEAN DEFAULT TRUE,
                         created_at TIMESTAMP DEFAULT NOW()
                     );
@@ -127,9 +113,6 @@ def init_db():
                 )
 
         logger.info("✅ Database schema initialization complete.")
-
-        regenerate_wireguard_config()
-        restart_wireguard_container()
 
         logger.info(
             "✅ Regenerated wireguard configs and restarted wireguard container."
