@@ -1,21 +1,4 @@
 services:
-  sensos-database:
-    build: ./database
-    container_name: sensos-database
-    restart: always
-    env_file: .env
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - sensos_database:/var/lib/postgresql/data
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "sensos"]
-      interval: 10s
-      retries: 5
-      start_period: 5s
-
   sensos-controller:
     build: ./controller
     container_name: sensos-controller
@@ -54,6 +37,23 @@ services:
       interval: 10s
       retries: 5
       start_period: 10s
+
+  sensos-database:
+    build: ./database
+    container_name: sensos-database
+    restart: always
+    env_file: .env
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - sensos_database:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sensos"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
 
 volumes:
   sensos_database:

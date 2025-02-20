@@ -4,6 +4,7 @@ import subprocess
 import ipaddress
 import logging
 import psycopg
+import socket
 import docker
 import time
 import re
@@ -203,6 +204,8 @@ def create_wireguard_configs(
     # Generate keys for the controller itself
     controller_private_key, controller_public_key = generate_wireguard_keys()
 
+    wireguard_container_ip = socket.gethostbyname("wireguard")
+
     # WireGuard container config (main server)
     wg_config_content = f"""[Interface]
 Address = {wireguard_ip}
@@ -222,13 +225,9 @@ PrivateKey = {controller_private_key}
 [Peer]
 PublicKey = {public_key}
 AllowedIPs = {ip_range}
-Endpoint = <wireguard-server-ip>:51820
+Endpoint = {wireguard_container_ip}:51820
 PersistentKeepalive = 25
 """
-
-    # Ensure directories exist
-    wg_config_path.parent.mkdir(parents=True, exist_ok=True)
-    controller_config_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Write WireGuard container config
     with open(wg_config_path, "w") as f:

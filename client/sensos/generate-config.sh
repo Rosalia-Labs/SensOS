@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Compute the absolute path to the current directory (sensos/)
-SENSOS_DIR="$(pwd)"
+SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Default values for always-included variables
 PI_GEN_RELEASE="SensOS reference"

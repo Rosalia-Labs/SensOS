@@ -173,6 +173,7 @@ def write_wireguard_config(
     wg_ip, server_pubkey, config_dir, wg_port, network_name, force, server
 ):
     """Write the WireGuard configuration file with secure permissions."""
+
     private_key_file = os.path.join(config_dir, "private.key")
     wg_config_file = os.path.join(config_dir, f"{network_name}.conf")
 
@@ -187,6 +188,15 @@ def write_wireguard_config(
     with open(private_key_file, "r") as f:
         private_key = f.read().strip()
 
+    # Correctly extract the first two octets
+    ip_parts = wg_ip.split(".")
+    if len(ip_parts) != 4:
+        print(f"❌ Error: Invalid IP format received: {wg_ip}")
+        sys.exit(1)
+
+    base_ip = f"{ip_parts[0]}.{ip_parts[1]}"  # Extracts "10.155" from "10.155.1.23"
+    allowed_ips = f"{base_ip}.0.0/16"  # Generates "10.155.0.0/16"
+
     config = f"""
 [Interface]
 PrivateKey = {private_key}
@@ -196,7 +206,7 @@ DNS = 8.8.8.8
 [Peer]
 PublicKey = {server_pubkey}
 Endpoint = {server}:{wg_port}  # Change this if needed
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = {allowed_ips}
 PersistentKeepalive = 25
 """
 
@@ -212,6 +222,7 @@ PersistentKeepalive = 25
     print(
         f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
     )
+    print(f"🔧 Allowed IPs set to {allowed_ips}")
 
 
 def main():
