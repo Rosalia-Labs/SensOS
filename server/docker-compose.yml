@@ -5,7 +5,7 @@ services:
     restart: always
     depends_on:
       - sensos-database
-      - wireguard
+      - sensos-wireguard
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -15,21 +15,21 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:
-      - wireguard_config:/config
+      - sensos_wireguard_config:/config
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${API_PORT:-8000}:8000"
 
-  wireguard:
+  sensos-wireguard:
     image: lscr.io/linuxserver/wireguard:latest
-    container_name: wireguard
+    container_name: sensos-wireguard
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
     environment:
       - LOG_CONFS=true
     volumes:
-      - wireguard_config:/config
+      - sensos_wireguard_config:/config
     ports:
       - "${WG_PORT:-51820}:51820"
     healthcheck:
@@ -57,4 +57,6 @@ services:
 
 volumes:
   sensos_database:
-  wireguard_config:
+    name: sensos_database
+  sensos_wireguard_config:
+    name: sensos_wireguard_config
