@@ -20,7 +20,7 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
     networks:
-      - sensos_network # <--- Added
+      - sensos_network
 
   sensos-wireguard:
     image: lscr.io/linuxserver/wireguard:latest

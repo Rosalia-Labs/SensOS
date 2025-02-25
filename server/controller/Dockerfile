@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 \
     wireguard \
     ca-certificates \
+    openssh-client \
     python3 \
     python3-venv \
     python3-pip \
@@ -26,20 +27,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN useradd -m -s /bin/bash sensos
+
+USER sensos
+WORKDIR /home/sensos
+
+RUN mkdir -p .ssh && \
+    chmod 700 .ssh && \
+    ssh-keygen -t ed25519 -N "" -f .ssh/id_ed25519 && \
+    chmod 600 .ssh/id_ed25519 && \
+    chmod 644 .ssh/id_ed25519.pub && \
+    chown -R sensos:sensos .ssh
+
 # Set up a virtual environment
+USER root
 WORKDIR /app
-RUN python3 -m venv /app/venv
+RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 # Install Python dependencies inside the venv
-RUN /app/venv/bin/pip install --upgrade pip && \
-    /app/venv/bin/pip install fastapi uvicorn python-multipart psycopg logging docker
+RUN pip install --upgrade pip && \
+    pip install fastapi uvicorn python-multipart psycopg logging docker
 
 # Copy application files
-COPY . /app
+COPY --chown=sensos:sensos . ./
 
 # Expose API port
 EXPOSE 8000
 
 # Run FastAPI with the virtual environment
-CMD ["/app/venv/bin/uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

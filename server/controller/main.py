@@ -259,9 +259,11 @@ def create_wireguard_configs(
     # Generate keys for the controller itself
     controller_private_key, controller_public_key = generate_wireguard_keys()
 
-    insert_peer(network_id, wireguard_ip)
-    register_wireguard_key_in_db(wireguard_ip, controller_public_key)
+    insert_peer(network_id, controller_ip)
+    register_wireguard_key_in_db(controller_ip, controller_public_key)
 
+    insert_peer(network_id, wireguard_ip)
+    register_wireguard_key_in_db(wireguard_ip, wg_public_key)
     wireguard_container_ip = socket.gethostbyname("sensos-wireguard")
 
     # WireGuard container config (main server)
@@ -328,7 +330,7 @@ def add_peers_to_wireguard():
                 )
                 peers = cur.fetchall()
 
-                # Write the new config
+                os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
                 with open(wg_config_path, "w") as f:
                     f.write(server_config)
 
@@ -340,9 +342,6 @@ PublicKey = {wg_public_key}
 AllowedIPs = {wg_ip}/32
 """
                         )
-
-                # Set file permissions to 600 (owner read/write only)
-                os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
 
     logger.info(
         "✅ WireGuard configuration regenerated for all networks with secure permissions."
@@ -663,8 +662,8 @@ class RegisterSSHKeyRequest(BaseModel):
     expires_at: Optional[datetime] = None  # Optional expiration date
 
 
-@app.post("/register-ssh-key")
-def register_ssh_key(
+@app.post("/exchange-ssh-keys")
+def exchange_ssh_keys(
     request: RegisterSSHKeyRequest,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
@@ -721,16 +720,20 @@ def register_ssh_key(
 
         conn.commit()  # Ensure the change is committed
 
+    ssh_public_key_path = "/home/sensos/.ssh/id_ed25519.pub"
+
+    if not os.path.exists(ssh_public_key_path):
+        raise HTTPException(status_code=404, detail="SSH public key not found.")
+
+    try:
+        with open(ssh_public_key_path, "r") as key_file:
+            ssh_public_key = key_file.read().strip()
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error reading SSH public key: {str(e)}"
+        )
+
     return {
-        "network_id": network_id,
-        "peer_id": peer_id,
-        "username": request.username,
-        "uid": request.uid,
-        "ssh_public_key": request.ssh_public_key,
-        "key_type": request.key_type,
-        "key_size": request.key_size,
-        "key_comment": request.key_comment,
-        "fingerprint": request.fingerprint,
-        "expires_at": request.expires_at,
-        "last_used": datetime.utcnow(),  # This is automatically set
+        "ssh_public_key": ssh_public_key,
     }

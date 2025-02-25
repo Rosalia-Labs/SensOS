@@ -13,7 +13,7 @@ import json
 DEFAULT_SERVER = "localhost"
 DEFAULT_PORT = "8000"
 DEFAULT_NETWORK_NAME = "sensos"
-DEFAULT_CONFIG_DIR = "/etc/wireguard"
+DEFAULT_WG_DIR = "/etc/wireguard"
 DEFAULT_WG_PORT = "51820"
 DEFAULT_KEEPALIVE = "0"
 
@@ -39,8 +39,8 @@ def parse_args():
         "--network", default=DEFAULT_NETWORK_NAME, help="Network name (default: sensos)"
     )
     parser.add_argument(
-        "--config-dir",
-        default=DEFAULT_CONFIG_DIR,
+        "--wg-config-dir",
+        default=DEFAULT_WG_DIR,
         help="WireGuard config directory (default: /etc/wireguard)",
     )
     parser.add_argument(
@@ -68,6 +68,15 @@ def run_command(cmd):
     ).stdout.strip()
 
 
+def run_command(cmd, use_sudo=False):
+    """Runs a shell command and returns its output, using sudo if required."""
+    if use_sudo:
+        cmd = f"sudo {cmd}"  # Prefix with sudo
+    return subprocess.run(
+        cmd, shell=True, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
 def get_api_password():
     """Retrieve or prompt for API password, caching it in ~/.sensos_api_key."""
     if os.path.exists(API_KEY_FILE):
@@ -90,10 +99,18 @@ def get_basic_auth(api_password):
     return base64.b64encode(auth_str.encode()).decode()
 
 
-def generate_wireguard_keys(config_dir, force):
+def generate_wireguard_keys(wg_config_dir, force):
     """Generate WireGuard key pair if not already present. Returns public key."""
-    private_key_file = os.path.join(config_dir, "private.key")
-    public_key_file = os.path.join(config_dir, "public.key")
+
+    if not os.path.isdir(wg_config_dir):
+        print(
+            f"Error: Configuration directory '{wg_config_dir}' does not exist.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    private_key_file = os.path.join(wg_config_dir, "private.key")
+    public_key_file = os.path.join(wg_config_dir, "public.key")
 
     if os.path.exists(private_key_file) or os.path.exists(public_key_file):
         print("⚠️ WireGuard keys already exist.")
@@ -107,21 +124,12 @@ def generate_wireguard_keys(config_dir, force):
     private_key = run_command("wg genkey")
     public_key = run_command(f"echo {private_key} | wg pubkey")
 
-    if not os.path.isdir(config_dir):
-        print(
-            f"Error: Configuration directory '{config_dir}' does not exist.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Write the private key securely
-    with open(private_key_file, "w") as f:
-        f.write(private_key)
-    os.chmod(private_key_file, stat.S_IRUSR | stat.S_IWUSR)
+    # Write the private key securely using sudo
+    run_command(f"echo '{private_key}' | sudo tee {private_key_file} > /dev/null")
+    run_command(f"sudo chmod 600 {private_key_file}")
 
     # Write the public key (less sensitive)
-    with open(public_key_file, "w") as f:
-        f.write(public_key)
+    run_command(f"echo '{public_key}' | sudo tee {public_key_file} > /dev/null")
 
     print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
     print(f"  - Public Key: {public_key}")
@@ -190,18 +198,23 @@ def change_hostname(new_hostname):
     if current_hostname != new_hostname:
         print(f"🔄 Changing hostname from {current_hostname} to {new_hostname}...")
 
-        with open("/etc/hostname", "w") as f:
-            f.write(new_hostname + "\n")
+        # Change the hostname file
+        run_command(f"echo '{new_hostname}' | sudo tee /etc/hostname > /dev/null")
 
-        with open("/etc/hosts", "r") as f:
-            hosts = f.readlines()
+        # Update /etc/hosts
+        run_command("sudo cp /etc/hosts /etc/hosts.bak")  # Backup before modifying
+        hosts = run_command("cat /etc/hosts").splitlines()
 
-        with open("/etc/hosts", "w") as f:
-            for line in hosts:
-                if "127.0.1.1" in line:
-                    f.write(f"127.0.1.1 {new_hostname}\n")
-                else:
-                    f.write(line)
+        updated_hosts = []
+        for line in hosts:
+            if "127.0.1.1" in line:
+                updated_hosts.append(f"127.0.1.1 {new_hostname}")
+            else:
+                updated_hosts.append(line)
+
+        run_command(
+            f"echo '{chr(10).join(updated_hosts)}' | sudo tee /etc/hosts > /dev/null"
+        )
 
         print(
             f"✅ Hostname changed manually to {new_hostname} (will apply after restart)"
@@ -213,7 +226,7 @@ def change_hostname(new_hostname):
 def write_wireguard_config(
     wg_ip,
     server_pubkey,
-    config_dir,
+    wg_config_dir,
     wg_port,
     network_name,
     force,
@@ -222,8 +235,8 @@ def write_wireguard_config(
 ):
     """Write the WireGuard configuration file with secure permissions."""
 
-    private_key_file = os.path.join(config_dir, "private.key")
-    wg_config_file = os.path.join(config_dir, f"{network_name}.conf")
+    private_key_file = os.path.join(wg_config_dir, "private.key")
+    wg_config_file = os.path.join(wg_config_dir, f"{network_name}.conf")
 
     if os.path.exists(wg_config_file):
         print(f"⚠️ WireGuard config file {wg_config_file} already exists.")
@@ -233,8 +246,9 @@ def write_wireguard_config(
             )
             sys.exit(1)
 
-    with open(private_key_file, "r") as f:
-        private_key = f.read().strip()
+    private_key = run_command(
+        f"sudo cat {private_key_file}"
+    )  # Read private key with sudo
 
     # Correctly extract the first two octets
     ip_parts = wg_ip.split(".")
@@ -257,12 +271,9 @@ AllowedIPs = {allowed_ips}
 PersistentKeepalive = {persistent_keepalive}
 """
 
-    os.makedirs(config_dir, exist_ok=True)
-
     # Write the WireGuard configuration securely
-    with open(wg_config_file, "w") as f:
-        f.write(config)
-    os.chmod(wg_config_file, stat.S_IRUSR | stat.S_IWUSR)
+    run_command(f"echo '{config}' | sudo tee {wg_config_file} > /dev/null")
+    run_command(f"sudo chmod 600 {wg_config_file}")
 
     print(
         f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
@@ -287,7 +298,7 @@ def generate_ssh_keys(force):
             sys.exit(1)
 
     print("🔑 Generating new SSH key pair...")
-    run_command(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N '' -y")
+    run_command(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N ''")
 
     if not os.path.exists(public_key_file):
         print(
@@ -300,9 +311,6 @@ def generate_ssh_keys(force):
     os.chmod(private_key_file, 0o600)
 
     print(f"✅ SSH key generated at {private_key_file} and {public_key_file}.")
-
-
-import datetime
 
 
 def extract_ssh_key_params(public_key_file):
@@ -379,11 +387,12 @@ def extract_ssh_key_params(public_key_file):
         return None, None, None, None, None
 
 
-def register_ssh_key(server, port, wg_ip, api_password):
+def exchange_ssh_keys(server, port, wg_ip, api_password):
     """Registers an SSH public key for this device using its WireGuard IP."""
 
     ssh_dir = os.path.expanduser("~/.ssh")
     public_key_file = os.path.join(ssh_dir, "id_ed25519.pub")
+    authorized_keys_file = os.path.join(ssh_dir, "authorized_keys")
 
     if not os.path.exists(public_key_file):
         print(
@@ -413,15 +422,13 @@ def register_ssh_key(server, port, wg_ip, api_password):
         "uid": uid,
         "ssh_public_key": open(public_key_file).read().strip(),
         "key_type": key_type,
-        "key_size": key_size if key_size else None,  # Ensure key_size is an integer
+        "key_size": key_size if key_size else None,
         "key_comment": key_comment,
         "fingerprint": fingerprint,
-        "expires_at": (
-            expires_at if expires_at else None
-        ),  # Ensure expires_at is either None or ISO format
+        "expires_at": (expires_at if expires_at else None),
     }
 
-    server_url = f"http://{server}:{port}/register-ssh-key"
+    server_url = f"http://{server}:{port}/exchange-ssh-keys"
     print(f"🔑 Registering SSH public key with {server_url}...")
 
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
@@ -430,6 +437,20 @@ def register_ssh_key(server, port, wg_ip, api_password):
     if response.status_code != 200:
         print(f"❌ Failed to register SSH key. Server response: {response.text}")
         sys.exit(1)
+
+    print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
+
+    # Append the returned SSH public key to authorized_keys
+    server_public_key = response.json().get("ssh_public_key")
+
+    if not server_public_key:
+        print(f"❌ No SSH public key returned from server.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(authorized_keys_file, "a") as auth_keys:
+        auth_keys.write(server_public_key + "\n")
+
+    print(f"✅ Server public key added to {authorized_keys_file}.")
 
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
@@ -442,7 +463,7 @@ def main():
 
     api_password = get_api_password()
 
-    wg_public_key = generate_wireguard_keys(args.config_dir, args.force)
+    wg_public_key = generate_wireguard_keys(args.wg_config_dir, args.force)
 
     wg_ip, hostname, server_pubkey = register_peer(
         args.server, args.port, args.network, wg_public_key, api_password
@@ -451,7 +472,7 @@ def main():
     write_wireguard_config(
         wg_ip,
         server_pubkey,
-        args.config_dir,
+        args.wg_config_dir,
         args.wg_port,
         args.network,
         args.force,
@@ -462,7 +483,8 @@ def main():
     change_hostname(hostname)
 
     generate_ssh_keys(args.force)
-    register_ssh_key(args.server, args.port, wg_ip, api_password)
+
+    exchange_ssh_keys(args.server, args.port, wg_ip, api_password)
 
     print(
         "✅ Configuration complete. Hostname has been updated, and WireGuard is set up."
