@@ -303,9 +303,13 @@ PersistentKeepalive = 25
     os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
 
     # Write Controller config
+    logger.info(f"Attempting to write WireGuard config to {controller_config_path}")
+
     with open(controller_config_path, "w") as f:
         f.write(controller_config_content)
     os.chmod(controller_config_path, stat.S_IRUSR | stat.S_IWUSR)
+
+    logger.info(f"Successfully wrote WireGuard config to {controller_config_path}")
 
     return wg_config_path, controller_config_path
 
