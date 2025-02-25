@@ -54,6 +54,12 @@ def parse_args():
         help="WireGuard persistent keepalive interval (default: 0 seconds)",
     )
     parser.add_argument(
+        "--subnet",
+        type=int,
+        default=1,  # Default to starting at x.x.1.1
+        help="Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Force overwrite of existing files and settings",
@@ -143,14 +149,16 @@ def compute_hostname(network_name, wg_ip):
     return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
 
-def register_peer(server, port, network_name, wg_public_key, api_password):
+def register_peer(server, port, network_name, wg_public_key, api_password, subnet):
     """Register the device with the WireGuard server and return its assigned IP."""
     server_url = f"http://{server}:{port}/register-peer"
     print(f"📡 Registering device on network '{network_name}' with {server_url}...")
 
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     response = requests.post(
-        server_url, json={"network_name": network_name}, headers=headers
+        server_url,
+        json={"network_name": network_name, "subnet_offset": subnet},
+        headers=headers,
     )
 
     print(f"Status Code: {response.status_code}")
@@ -466,7 +474,7 @@ def main():
     wg_public_key = generate_wireguard_keys(args.wg_config_dir, args.force)
 
     wg_ip, hostname, server_pubkey = register_peer(
-        args.server, args.port, args.network, wg_public_key, api_password
+        args.server, args.port, args.network, wg_public_key, api_password, args.subnet
     )
 
     write_wireguard_config(

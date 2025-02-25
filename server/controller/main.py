@@ -73,26 +73,31 @@ def get_last_assigned_ip(network_id: int) -> Optional[str]:
             return result[0] if result else None
 
 
-def compute_next_ip(ip_range, last_ip):
-    """Compute the next available IP address"""
+def compute_next_ip(ip_range, last_ip, subnet_offset=0):
+    """Compute the next available IP address in a specified subnetwork."""
     network = ipaddress.ip_network(ip_range, strict=False)
-    base_ip = str(network.network_address)  # Extract the first address in the subnet
 
-    if last_ip:
-        last_ip_str = str(last_ip)  # Convert IPv4Address to string
-        last_ip_parts = list(map(int, last_ip_str.split(".")))
-        if last_ip_parts[3] < 254:
-            last_ip_parts[3] += 1
-        else:
-            last_ip_parts[3] = 1
-            last_ip_parts[2] += 1
-    else:
-        last_ip_parts = list(map(int, base_ip.split(".")))  # Use base IP
-        last_ip_parts[2] += 1  # Start at .1.1
+    # Compute the base IP for this subnetwork (x.x.<subnet_offset>.1)
+    base_ip_parts = list(map(int, str(network.network_address).split(".")))
+    base_ip_parts[2] = subnet_offset  # Set the third octet to the desired subnetwork
+    base_ip_parts[3] = 1  # Start from x.x.<subnet_offset>.1
+
+    # If no last IP, return the first address in the subnetwork
+    if not last_ip:
+        return ".".join(map(str, base_ip_parts))
+
+    # Increment the last assigned IP
+    last_ip_parts = list(map(int, str(last_ip).split(".")))
+
+    if last_ip_parts[2] == subnet_offset and last_ip_parts[3] < 254:
+        last_ip_parts[3] += 1
+    elif last_ip_parts[2] < subnet_offset:
+        last_ip_parts[2] = subnet_offset
         last_ip_parts[3] = 1
+    else:
+        return None  # No more available IPs in this subnet
 
-    wg_ip = ".".join(map(str, last_ip_parts))
-    return wg_ip
+    return ".".join(map(str, last_ip_parts))
 
 
 def extract_server_config(wg_config_path):
@@ -284,7 +289,7 @@ PrivateKey = {controller_private_key}
 
 [Peer]
 PublicKey = {wg_public_key}
-AllowedIPs = {ip_range}/16
+AllowedIPs = {ip_range}
 Endpoint = {wireguard_container_ip}:51820
 PersistentKeepalive = 25
 """
@@ -562,6 +567,7 @@ def create_network(
 
 class RegisterPeerRequest(BaseModel):
     network_name: str
+    subnet_offset: int = 0  # New: Start from x.x.<subnet_offset>.1
 
 
 @app.post("/register-peer")
@@ -569,7 +575,7 @@ def register_peer(
     request: RegisterPeerRequest,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
-    """Registers a new peer, computes IP, and returns the network's public key."""
+    """Registers a new peer, computes IP within a subnetwork, and returns the network's public key."""
     network_details = get_network_details(request.network_name)
     if not network_details:
         return JSONResponse(
@@ -578,8 +584,30 @@ def register_peer(
         )
 
     network_id, subnet, public_key = network_details
+
+    # Ensure subnet_offset is within range
+    network = ipaddress.ip_network(subnet, strict=False)
+    if (
+        request.subnet_offset < 0
+        or request.subnet_offset >= network.num_addresses // 256
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"Invalid subnet_offset {request.subnet_offset}. Must be between 0 and {network.num_addresses // 256 - 1}."
+            },
+        )
+
+    # Compute the first IP in the specified subnetwork (x.x.<subnet_offset>.1)
     last_ip = get_last_assigned_ip(network_id)
-    wg_ip = compute_next_ip(subnet, last_ip)
+    wg_ip = compute_next_ip(subnet, last_ip, request.subnet_offset)
+
+    if not wg_ip:
+        return JSONResponse(
+            status_code=409,
+            content={"error": f"No available IPs in subnet {request.subnet_offset}."},
+        )
+
     peer_id = insert_peer(network_id, wg_ip)
 
     return {
@@ -737,3 +765,75 @@ def exchange_ssh_keys(
     return {
         "ssh_public_key": ssh_public_key,
     }
+
+
+@app.get("/inspect-database", response_class=HTMLResponse)
+def inspect_database(
+    limit: int = 100,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    """Inspect all database tables in a single formatted HTML output."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Get all table names
+            cur.execute(
+                """
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_schema = 'sensos'
+                ORDER BY table_name;
+                """
+            )
+            tables = [row[0] for row in cur.fetchall()]
+
+            if not tables:
+                return HTMLResponse("<h3>⚠️ No tables found in the database.</h3>")
+
+            html = """
+            <html>
+            <head>
+                <title>Database Inspection</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    .container { width: 90%; margin: auto; }
+                    .table-container { margin-bottom: 30px; }
+                    h2 { text-align: center; }
+                    summary { font-size: 18px; font-weight: bold; cursor: pointer; padding: 5px; }
+                    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+                    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                    th { background-color: #f2f2f2; }
+                    details { margin-bottom: 20px; }
+                </style>
+            </head>
+            <body>
+                <h2>📊 Database Inspection</h2>
+                <div class="container">
+            """
+
+            for table in tables:
+                cur.execute(f"SELECT * FROM sensos.{table} LIMIT %s;", (limit,))
+                rows = cur.fetchall()
+                column_names = [desc[0] for desc in cur.description]
+
+                html += f"""
+                <details class="table-container">
+                    <summary>📂 Table: <code>{table}</code> (Showing max {limit} rows)</summary>
+                    <table>
+                        <tr>
+                """
+                html += "".join(f"<th>{col}</th>" for col in column_names)
+                html += "</tr>"
+
+                if rows:
+                    for row in rows:
+                        html += (
+                            "<tr>"
+                            + "".join(f"<td>{cell}</td>" for cell in row)
+                            + "</tr>"
+                        )
+                else:
+                    html += "<tr><td colspan='100%' style='text-align:center;'>⚠️ No data in this table</td></tr>"
+
+                html += "</table></details>"
+
+            html += "</div></body></html>"
+            return HTMLResponse(html)
