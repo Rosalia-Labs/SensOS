@@ -340,7 +340,7 @@ def add_peers_to_wireguard():
 
                 os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
                 with open(wg_config_path, "w") as f:
-                    f.write(server_config)
+                    f.write(server_config.strip() + "\n\n")
 
                     for wg_ip, wg_public_key in peers:
                         f.write(
