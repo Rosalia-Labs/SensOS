@@ -14,7 +14,6 @@ DEFAULT_SERVER = "localhost"
 DEFAULT_PORT = "8000"
 DEFAULT_NETWORK_NAME = "sensos"
 DEFAULT_WG_DIR = "/etc/wireguard"
-DEFAULT_WG_PORT = "51820"
 DEFAULT_KEEPALIVE = "0"
 
 API_KEY_FILE = os.path.expanduser("~/.sensos_api_key")
@@ -28,7 +27,7 @@ def parse_args():
     parser.add_argument(
         "--server",
         default=DEFAULT_SERVER,
-        help="Server hostname or IP (default: localhost)",
+        help="API server hostname or IP (default: localhost)",
     )
     parser.add_argument(
         "--port",
@@ -42,11 +41,6 @@ def parse_args():
         "--wg-config-dir",
         default=DEFAULT_WG_DIR,
         help="WireGuard config directory (default: /etc/wireguard)",
-    )
-    parser.add_argument(
-        "--wg-port",
-        default=DEFAULT_WG_PORT,
-        help="WireGuard server port (default: 51820)",
     )
     parser.add_argument(
         "--wg-keepalive",
@@ -182,7 +176,7 @@ def compute_hostname(network_name, wg_ip):
 
 
 def register_peer(server, port, network_name, wg_public_key, api_password, subnet):
-    """Register the device with the WireGuard server and return its assigned IP."""
+    """Register the device with the WireGuard server and return its assigned IP and connection details."""
     server_url = f"http://{server}:{port}/register-peer"
     print(f"📡 Registering device on network '{network_name}' with {server_url}...")
 
@@ -204,13 +198,15 @@ def register_peer(server, port, network_name, wg_public_key, api_password, subne
     data = response.json()
     wg_ip = data["wg_ip"]
     server_pubkey = data["wg_public_key"]
+    wg_public_ip = data["wg_public_ip"]
+    wg_port = data["wg_port"]
 
     hostname = compute_hostname(network_name, wg_ip)
 
     # Register the WireGuard public key separately
     register_wireguard_key(server, port, wg_ip, wg_public_key, api_password)
 
-    return wg_ip, hostname, server_pubkey
+    return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
 
 
 def register_wireguard_key(server, port, wg_ip, wg_public_key, api_password):
@@ -238,11 +234,9 @@ def change_hostname(new_hostname):
     if current_hostname != new_hostname:
         print(f"🔄 Changing hostname from {current_hostname} to {new_hostname}...")
 
-        # Change the hostname file
         run_command(f"echo '{new_hostname}' | sudo tee /etc/hostname > /dev/null")
 
-        # Update /etc/hosts
-        run_command("sudo cp /etc/hosts /etc/hosts.bak")  # Backup before modifying
+        run_command("sudo cp /etc/hosts /etc/hosts.bak")
         hosts = run_command("cat /etc/hosts").splitlines()
 
         updated_hosts = []
@@ -267,10 +261,10 @@ def write_wireguard_config(
     wg_ip,
     server_pubkey,
     wg_config_dir,
+    wg_public_ip,
     wg_port,
     network_name,
     force,
-    server,
     wg_keepalive,
 ):
     """Write the WireGuard configuration file with secure permissions."""
@@ -288,7 +282,7 @@ def write_wireguard_config(
 
     private_key = run_command(f"sudo cat {private_key_file}")
 
-    # Correctly extract the first two octets
+    # Correctly extract the first two octets for AllowedIPs
     ip_parts = wg_ip.split(".")
     if len(ip_parts) != 4:
         print(f"❌ Error: Invalid IP format received: {wg_ip}")
@@ -304,7 +298,7 @@ Address = {wg_ip}/32
 
 [Peer]
 PublicKey = {server_pubkey}
-Endpoint = {server}:{wg_port}
+Endpoint = {wg_public_ip}:{wg_port} 
 AllowedIPs = {allowed_ips}
 PersistentKeepalive = {wg_keepalive}
 """
@@ -503,7 +497,8 @@ def main():
 
     wg_public_key = generate_wireguard_keys(args.wg_config_dir, args.force)
 
-    wg_ip, hostname, server_pubkey = register_peer(
+    # Retrieve correct WireGuard server information
+    wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
         args.server, args.port, args.network, wg_public_key, api_password, args.subnet
     )
 
@@ -511,10 +506,10 @@ def main():
         wg_ip,
         server_pubkey,
         args.wg_config_dir,
-        args.wg_port,
+        wg_public_ip,
+        wg_port,
         args.network,
         args.force,
-        args.server,
         args.wg_keepalive,
     )
 
@@ -524,7 +519,7 @@ def main():
 
     exchange_ssh_keys(args.server, args.port, wg_ip, api_password)
 
-    print("Enabling wireguard and ssh...")
+    print("Enabling WireGuard and SSH...")
 
     enable_wireguard(args.network)
     enable_ssh(passwords=args.enable_ssh_passwords)

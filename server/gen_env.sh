@@ -4,6 +4,7 @@
 DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8000
 DEFAULT_WG_PORT=51820
+DEFAULT_WG_IP="" # This must be explicitly set at setup time
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 
@@ -19,6 +20,9 @@ while [ $# -gt 0 ]; do
     --wg-port=*)
         WG_PORT="${1#*=}"
         ;;
+    --wg-ip=*)
+        WG_IP="${1#*=}"
+        ;;
     --postgres-password=*)
         POSTGRES_PASSWORD="${1#*=}"
         ;;
@@ -27,7 +31,7 @@ while [ $# -gt 0 ]; do
         ;;
     *)
         echo "Unknown option: $1"
-        echo "Usage: $0 [--db-port=PORT] [--api-port=PORT] [--wg-port=PORT] [--postgres-password=PASSWORD]"
+        echo "Usage: $0 [--db-port=PORT] [--api-port=PORT] [--wg-port=PORT] [--wg-ip=IP] [--postgres-password=PASSWORD] [--api-password=PASSWORD]"
         exit 1
         ;;
     esac
@@ -38,6 +42,7 @@ done
 DB_PORT="${DB_PORT:-$DEFAULT_DB_PORT}"
 API_PORT="${API_PORT:-$DEFAULT_API_PORT}"
 WG_PORT="${WG_PORT:-$DEFAULT_WG_PORT}"
+WG_IP="${WG_IP:-$DEFAULT_WG_IP}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}"
 API_PASSWORD="${API_PASSWORD:-$DEFAULT_API_PASSWORD}"
 
@@ -45,8 +50,20 @@ API_PASSWORD="${API_PASSWORD:-$DEFAULT_API_PASSWORD}"
 echo "DB_PORT=$DB_PORT"
 echo "API_PORT=$API_PORT"
 echo "WG_PORT=$WG_PORT"
+echo "WG_IP=$WG_IP"
 echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
 echo "API_PASSWORD=$API_PASSWORD"
+
+# Ensure WG_IP is explicitly set
+if [ -z "$WG_IP" ]; then
+    {
+        echo ""
+        echo "🚨🚨🚨 ERROR: WG_IP must be set explicitly! 🚨🚨🚨"
+        echo "Please specify the public WireGuard IP address using --wg-ip=<IP>."
+        echo ""
+    } 1>&2
+    exit 1
+fi
 
 # Dire warning if password is default
 if [ "$POSTGRES_PASSWORD" = "$DEFAULT_POSTGRES_PASSWORD" ]; then
@@ -64,7 +81,7 @@ if [ "$API_PASSWORD" = "$DEFAULT_API_PASSWORD" ]; then
     {
         echo ""
         echo "🚨🚨🚨 WARNING: Using the default API_PASSWORD! 🚨🚨🚨"
-        echo "This is extremely insecure and could expose your database to unauthorized access."
+        echo "This is extremely insecure and could expose your API to unauthorized access."
         echo "Set a strong password in your .env file or environment variables!"
         echo ""
     } 1>&2

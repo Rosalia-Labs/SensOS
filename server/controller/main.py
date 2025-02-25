@@ -50,12 +50,15 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
     return credentials
 
 
-def get_network_details(network_name: str):
-    """Fetch the network ID, IP range, and public key for the given network name."""
+def get_network_details(network_name):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, ip_range, wg_public_key FROM sensos.networks WHERE name = %s;",
+                """
+                SELECT id, ip_range, wg_public_key, wg_public_ip, wg_port
+                FROM sensos.networks
+                WHERE name = %s
+                """,
                 (network_name,),
             )
             return cur.fetchone()
@@ -365,7 +368,7 @@ def init_db():
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
 
-                # Create the `networks` table
+                # Create the `networks` table with additional fields for WireGuard client usage
                 logger.info("Creating table 'sensos.networks' if not exists...")
                 cur.execute(
                     """
@@ -373,6 +376,8 @@ def init_db():
                         id SERIAL PRIMARY KEY,
                         name TEXT UNIQUE NOT NULL,
                         ip_range CIDR UNIQUE NOT NULL,
+                        wg_public_ip INET NOT NULL,
+                        wg_port INTEGER NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
                         wg_public_key TEXT UNIQUE NOT NULL
                     );
                     """
@@ -522,7 +527,10 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
 
 @app.post("/create-network")
 def create_network(
-    credentials: HTTPBasicCredentials = Depends(authenticate), name: str = Form(...)
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+    name: str = Form(...),
+    wg_public_ip: str = Form(default=os.getenv("WG_IP", "127.0.0.1")),
+    wg_port: int = Form(default=int(os.getenv("WG_PORT", 51820))),
 ):
     """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
 
@@ -536,11 +544,11 @@ def create_network(
             try:
                 cur.execute(
                     """
-                    INSERT INTO sensos.networks (name, ip_range, wg_public_key)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING id;
                     """,
-                    (name, ip_range, public_key),
+                    (name, ip_range, wg_public_ip, wg_port, public_key),
                 )
                 network_id = cur.fetchone()[0]
             except psycopg.errors.UniqueViolation:
@@ -561,6 +569,8 @@ def create_network(
         "id": network_id,
         "name": name,
         "ip_range": ip_range,
+        "wg_public_ip": wg_public_ip,
+        "wg_port": wg_port,
         "wg_public_key": public_key,
     }
 
@@ -575,7 +585,7 @@ def register_peer(
     request: RegisterPeerRequest,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
-    """Registers a new peer, computes IP within a subnetwork, and returns the network's public key."""
+    """Registers a new peer, computes IP within a subnetwork, and returns the network's public key and connection details."""
     network_details = get_network_details(request.network_name)
     if not network_details:
         return JSONResponse(
@@ -583,7 +593,9 @@ def register_peer(
             content={"error": f"Network '{request.network_name}' not found."},
         )
 
-    network_id, subnet, public_key = network_details
+    network_id, subnet, public_key, wg_public_ip, wg_port = (
+        network_details  # Fetch additional details
+    )
 
     # Ensure subnet_offset is within range
     network = ipaddress.ip_network(subnet, strict=False)
@@ -608,12 +620,13 @@ def register_peer(
             content={"error": f"No available IPs in subnet {request.subnet_offset}."},
         )
 
-    peer_id = insert_peer(network_id, wg_ip)
+    insert_peer(network_id, wg_ip)
 
     return {
-        "peer_id": peer_id,
         "wg_ip": wg_ip,
         "wg_public_key": public_key,
+        "wg_public_ip": wg_public_ip,
+        "wg_port": wg_port,
     }
 
 
@@ -769,7 +782,7 @@ def exchange_ssh_keys(
 
 @app.get("/inspect-database", response_class=HTMLResponse)
 def inspect_database(
-    limit: int = 100,
+    limit: int = 10,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     """Inspect all database tables in a single formatted HTML output."""
