@@ -519,10 +519,14 @@ def main():
 
     exchange_ssh_keys(args.server, args.port, wg_ip, api_password)
 
-    print("Enabling WireGuard and SSH...")
+    print("Starting WireGuard and SSH...")
 
-    enable_wireguard(args.network)
-    enable_ssh(passwords=args.enable_ssh_passwords)
+    try:
+        enable_wireguard(args.network)
+        enable_ssh(passwords=args.enable_ssh_passwords)
+        print("Success starting wireguard and ssh.")
+    except:
+        print("Failure starting wireguard or ssh.")
 
     print(
         "✅ Configuration complete. Hostname has been updated, and WireGuard is set up."
