@@ -49,7 +49,7 @@ def parse_args():
         help="WireGuard server port (default: 51820)",
     )
     parser.add_argument(
-        "--keepalive",
+        "--wg-keepalive",
         default=DEFAULT_KEEPALIVE,
         help="WireGuard persistent keepalive interval (default: 0 seconds)",
     )
@@ -64,6 +64,11 @@ def parse_args():
         action="store_true",
         help="Force overwrite of existing files and settings",
     )
+    parser.add_argument(
+        "--enable-ssh-passwords",
+        action="store_true",
+        help="Enable SSH password authentication (default: disabled)",
+    )
     return parser.parse_args()
 
 
@@ -74,13 +79,40 @@ def run_command(cmd):
     ).stdout.strip()
 
 
-def run_command(cmd, use_sudo=False):
-    """Runs a shell command and returns its output, using sudo if required."""
-    if use_sudo:
-        cmd = f"sudo {cmd}"  # Prefix with sudo
-    return subprocess.run(
-        cmd, shell=True, check=True, capture_output=True, text=True
-    ).stdout.strip()
+def enable_wireguard(netname: str):
+    service_name = f"wg-quick@{netname}.service"
+    run_command(f"sudo systemctl enable {service_name}")
+    run_command(f"sudo systemctl start {service_name}")
+    print(f"✅ WireGuard service {service_name} enabled and started.")
+
+
+def enable_ssh(passwords: bool = False):
+    """Enable SSH and configure password authentication based on the `passwords` flag."""
+    sshd_config = "/etc/ssh/sshd_config"
+    backup_config = "/etc/ssh/sshd_config.bak"
+
+    # Backup before modifying
+    run_command(f"sudo cp -a {sshd_config} {backup_config}")
+
+    # Set password authentication based on flag
+    password_setting = "yes" if passwords else "no"
+    run_command(
+        f"sudo sed -i 's/^#?PasswordAuthentication .*/PasswordAuthentication {password_setting}/' {sshd_config}"
+    )
+
+    print(f"✅ SSH passwords are {'enabled' if passwords else 'disabled'}.")
+
+    # Ensure public key authentication is enabled
+    run_command(
+        f"sudo sed -i 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' {sshd_config}"
+    )
+
+    # Enable and start SSH service
+    run_command("sudo systemctl enable ssh")
+    run_command("sudo systemctl start ssh")
+
+    print("✅ SSH service enabled and started.")
+    print("🔄 A reboot is required for changes to fully take effect.")
 
 
 def get_api_password():
@@ -239,7 +271,7 @@ def write_wireguard_config(
     network_name,
     force,
     server,
-    persistent_keepalive,
+    wg_keepalive,
 ):
     """Write the WireGuard configuration file with secure permissions."""
 
@@ -254,9 +286,7 @@ def write_wireguard_config(
             )
             sys.exit(1)
 
-    private_key = run_command(
-        f"sudo cat {private_key_file}"
-    )  # Read private key with sudo
+    private_key = run_command(f"sudo cat {private_key_file}")
 
     # Correctly extract the first two octets
     ip_parts = wg_ip.split(".")
@@ -276,7 +306,7 @@ Address = {wg_ip}/32
 PublicKey = {server_pubkey}
 Endpoint = {server}:{wg_port}
 AllowedIPs = {allowed_ips}
-PersistentKeepalive = {persistent_keepalive}
+PersistentKeepalive = {wg_keepalive}
 """
 
     # Write the WireGuard configuration securely
@@ -485,7 +515,7 @@ def main():
         args.network,
         args.force,
         args.server,
-        args.keepalive,
+        args.wg_keepalive,
     )
 
     change_hostname(hostname)
@@ -494,9 +524,16 @@ def main():
 
     exchange_ssh_keys(args.server, args.port, wg_ip, api_password)
 
+    print("Enabling wireguard and ssh...")
+
+    enable_wireguard(args.network)
+    enable_ssh(passwords=args.enable_ssh_passwords)
+
     print(
         "✅ Configuration complete. Hostname has been updated, and WireGuard is set up."
     )
+
+    print("Reboot now and check connectivity to the server.")
 
 
 if __name__ == "__main__":
