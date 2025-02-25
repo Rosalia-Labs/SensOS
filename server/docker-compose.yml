@@ -27,6 +27,7 @@ services:
     image: lscr.io/linuxserver/wireguard:latest
     container_name: sensos-wireguard
     restart: unless-stopped
+    env_file: .env
     cap_add:
       - NET_ADMIN
     environment:
@@ -34,7 +35,7 @@ services:
     volumes:
       - sensos_wireguard_config:/config
     ports:
-      - "${WG_PORT:-51820}:51820"
+      - "${WG_PORT:-51820}:51820/udp"
     healthcheck:
       test: ["CMD", "wg", "show"]
       interval: 10s
