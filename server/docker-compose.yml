@@ -19,6 +19,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${API_PORT:-8000}:8000"
+    networks:
+      - sensos_network # <--- Added
 
   sensos-wireguard:
     image: lscr.io/linuxserver/wireguard:latest
@@ -37,6 +39,8 @@ services:
       interval: 10s
       retries: 5
       start_period: 10s
+    networks:
+      - sensos_network
 
   sensos-database:
     build: ./database
@@ -54,9 +58,15 @@ services:
       interval: 10s
       retries: 5
       start_period: 5s
+    networks:
+      - sensos_network
 
 volumes:
   sensos_database:
     name: sensos_database
   sensos_wireguard_config:
     name: sensos_wireguard_config
+
+networks:
+  sensos_network:
+    driver: bridge

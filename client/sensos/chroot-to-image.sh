@@ -18,7 +18,7 @@ FROM debian:stable-slim
 RUN apt update && apt install -y libguestfs-tools
 EOF
 
-docker run --rm -it --privileged \
+docker run --rm -it --privileged --network server_sensos_network \
     --mount type=bind,source="$IMAGE_PATH",target=/image.img \
     debian-guestmount bash -c '
     set -e

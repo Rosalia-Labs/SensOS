@@ -10,13 +10,14 @@ import docker
 import time
 import re
 
-from fastapi import FastAPI, Form
-from typing import Tuple, Optional
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi import FastAPI, Depends, HTTPException, Form
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.errors import UniqueViolation
+from typing import Tuple, Optional
 from pydantic import BaseModel
+from datetime import datetime
 from pathlib import Path
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +27,7 @@ WG_CONFIG_DIR = Path("/config/wg_confs")
 CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 
 app = FastAPI()
+security = HTTPBasic()
 
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
@@ -35,6 +37,17 @@ DATABASE_URL = (
 
 if not POSTGRES_PASSWORD:
     raise ValueError("POSTGRES_PASSWORD is not set. Exiting.")
+
+API_PASSWORD = os.getenv("API_PASSWORD")
+
+if not API_PASSWORD:
+    raise ValueError("API_PASSWORD is not set. Exiting.")
+
+
+def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+    if credentials.password != API_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return credentials
 
 
 def get_network_details(network_name: str):
@@ -249,7 +262,7 @@ def create_wireguard_configs(
     insert_peer(network_id, wireguard_ip)
     register_wireguard_key_in_db(wireguard_ip, controller_public_key)
 
-    wireguard_container_ip = socket.gethostbyname("wireguard")
+    wireguard_container_ip = socket.gethostbyname("sensos-wireguard")
 
     # WireGuard container config (main server)
     wg_config_content = f"""[Interface]
@@ -387,8 +400,30 @@ def init_db():
                     """
                 )
 
-        logger.info("✅ Database schema initialization complete.")
+                # Create the `ssh_keys` table to store SSH public keys
+                logger.info("Creating table 'sensos.ssh_keys' if not exists...")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
+                        id SERIAL PRIMARY KEY,
+                        network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
+                        peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+                        username TEXT NOT NULL,
+                        uid INTEGER NOT NULL,
+                        ssh_public_key TEXT NOT NULL,
+                        key_type TEXT NOT NULL,         -- e.g., 'ed25519', 'rsa', 'ecdsa'
+                        key_size INTEGER NOT NULL,      -- e.g., 2048, 4096 (for RSA)
+                        key_comment TEXT,               -- Optional, e.g., 'user@hostname'
+                        fingerprint TEXT UNIQUE,        -- Unique fingerprint for quick lookup
+                        expires_at TIMESTAMP,           -- Optional expiration date
+                        last_used TIMESTAMP,            -- Optional last usage timestamp
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        UNIQUE (peer_id, ssh_public_key)
+                    );
+                    """
+                )
 
+        logger.info("✅ Database schema initialization complete.")
         logger.info(
             "✅ Regenerated wireguard configs and restarted wireguard container."
         )
@@ -398,7 +433,7 @@ def init_db():
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
+def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
     """Render a simple form to create a network."""
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -428,7 +463,7 @@ def dashboard():
 
 
 @app.get("/list-peers", response_class=HTMLResponse)
-def list_peers():
+def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
     """Displays a web page listing all registered WireGuard peers."""
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -482,7 +517,9 @@ def list_peers():
 
 
 @app.post("/create-network")
-def create_network(name: str = Form(...)):
+def create_network(
+    credentials: HTTPBasicCredentials = Depends(authenticate), name: str = Form(...)
+):
     """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
 
     ip_range = generate_default_ip_range(name)
@@ -529,7 +566,10 @@ class RegisterPeerRequest(BaseModel):
 
 
 @app.post("/register-peer")
-def register_peer(request: RegisterPeerRequest):
+def register_peer(
+    request: RegisterPeerRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
     """Registers a new peer, computes IP, and returns the network's public key."""
     network_details = get_network_details(request.network_name)
     if not network_details:
@@ -556,7 +596,10 @@ class RegisterWireguardKeyRequest(BaseModel):
 
 
 @app.post("/register-wireguard-key")
-def register_wireguard_key(request: RegisterWireguardKeyRequest):
+def register_wireguard_key(
+    request: RegisterWireguardKeyRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
     """Registers a WireGuard key for an existing peer."""
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -589,7 +632,10 @@ class RegisterWireguardKeyRequest(BaseModel):
 
 
 @app.post("/register-wireguard-key")
-def register_wireguard_key(request: RegisterWireguardKeyRequest):
+def register_wireguard_key(
+    request: RegisterWireguardKeyRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
     """Endpoint that registers a WireGuard key for an existing peer."""
     result = register_wireguard_key_in_db(request.wg_ip, request.wg_public_key)
 
@@ -603,3 +649,88 @@ def register_wireguard_key(request: RegisterWireguardKeyRequest):
     restart_wireguard_container()
 
     return result
+
+
+class RegisterSSHKeyRequest(BaseModel):
+    wg_ip: str  # Replace network_id and peer_id with wg_ip
+    username: str
+    uid: int
+    ssh_public_key: str
+    key_type: str  # e.g., 'ed25519', 'rsa', 'ecdsa'
+    key_size: int  # e.g., 2048, 4096 (for RSA)
+    key_comment: Optional[str] = None  # Optional, e.g., 'user@hostname'
+    fingerprint: str  # Unique fingerprint of the key
+    expires_at: Optional[datetime] = None  # Optional expiration date
+
+
+@app.post("/register-ssh-key")
+def register_ssh_key(
+    request: RegisterSSHKeyRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    """Registers an SSH public key for a peer."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Lookup network_id and peer_id using wg_ip
+            cur.execute(
+                """
+                SELECT network_id, id FROM sensos.wireguard_peers WHERE wg_ip = %s;
+                """,
+                (request.wg_ip,),
+            )
+            result = cur.fetchone()
+
+            if not result:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Peer with WireGuard IP '{request.wg_ip}' not found.",
+                )
+
+            network_id, peer_id = result  # Extract network and peer IDs
+
+            # Insert the SSH public key with all relevant fields
+            cur.execute(
+                """
+                INSERT INTO sensos.ssh_keys 
+                (network_id, peer_id, username, uid, ssh_public_key, key_type, key_size, 
+                 key_comment, fingerprint, expires_at, last_used)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (peer_id, ssh_public_key) DO NOTHING
+                RETURNING *;
+                """,
+                (
+                    network_id,
+                    peer_id,
+                    request.username,
+                    request.uid,
+                    request.ssh_public_key,
+                    request.key_type,
+                    request.key_size,
+                    request.key_comment,
+                    request.fingerprint,
+                    request.expires_at,
+                ),
+            )
+
+            inserted_key = cur.fetchone()  # Check if insertion was successful
+
+            if not inserted_key:
+                raise HTTPException(
+                    status_code=409, detail="SSH key already exists for this peer."
+                )
+
+        conn.commit()  # Ensure the change is committed
+
+    return {
+        "network_id": network_id,
+        "peer_id": peer_id,
+        "username": request.username,
+        "uid": request.uid,
+        "ssh_public_key": request.ssh_public_key,
+        "key_type": request.key_type,
+        "key_size": request.key_size,
+        "key_comment": request.key_comment,
+        "fingerprint": request.fingerprint,
+        "expires_at": request.expires_at,
+        "last_used": datetime.utcnow(),  # This is automatically set
+    }

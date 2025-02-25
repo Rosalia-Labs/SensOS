@@ -4,8 +4,10 @@ import sys
 import stat
 import argparse
 import requests
-import json
+import datetime
 import subprocess
+import base64
+import json
 
 # Default Configuration
 DEFAULT_SERVER = "localhost"
@@ -14,6 +16,8 @@ DEFAULT_NETWORK_NAME = "sensos"
 DEFAULT_CONFIG_DIR = "/etc/wireguard"
 DEFAULT_WG_PORT = "51820"
 DEFAULT_KEEPALIVE = "0"
+
+API_KEY_FILE = os.path.expanduser("~/.sensos_api_key")
 
 
 def parse_args():
@@ -64,6 +68,28 @@ def run_command(cmd):
     ).stdout.strip()
 
 
+def get_api_password():
+    """Retrieve or prompt for API password, caching it in ~/.sensos_api_key."""
+    if os.path.exists(API_KEY_FILE):
+        with open(API_KEY_FILE, "r") as f:
+            return f.read().strip()
+
+    api_password = input("🔑 Enter API password: ").strip()
+
+    with open(API_KEY_FILE, "w") as f:
+        f.write(api_password)
+    os.chmod(API_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)
+
+    print(f"✅ API password saved securely in {API_KEY_FILE}.")
+    return api_password
+
+
+def get_basic_auth(api_password):
+    """Encode API password in Basic Auth format."""
+    auth_str = f":{api_password}"  # Username is ignored, so empty username
+    return base64.b64encode(auth_str.encode()).decode()
+
+
 def generate_wireguard_keys(config_dir, force):
     """Generate WireGuard key pair if not already present. Returns public key."""
     private_key_file = os.path.join(config_dir, "private.key")
@@ -81,14 +107,17 @@ def generate_wireguard_keys(config_dir, force):
     private_key = run_command("wg genkey")
     public_key = run_command(f"echo {private_key} | wg pubkey")
 
-    os.makedirs(config_dir, exist_ok=True)
+    if not os.path.isdir(config_dir):
+        print(
+            f"Error: Configuration directory '{config_dir}' does not exist.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Write the private key securely
     with open(private_key_file, "w") as f:
         f.write(private_key)
-    os.chmod(
-        private_key_file, stat.S_IRUSR | stat.S_IWUSR
-    )  # chmod 600 (owner read/write)
+    os.chmod(private_key_file, stat.S_IRUSR | stat.S_IWUSR)
 
     # Write the public key (less sensitive)
     with open(public_key_file, "w") as f:
@@ -106,12 +135,15 @@ def compute_hostname(network_name, wg_ip):
     return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
 
-def register_client(server, port, network_name, wg_public_key):
+def register_peer(server, port, network_name, wg_public_key, api_password):
     """Register the device with the WireGuard server and return its assigned IP."""
-    server_url = f"http://{server}:{port}/register-device"
+    server_url = f"http://{server}:{port}/register-peer"
     print(f"📡 Registering device on network '{network_name}' with {server_url}...")
 
-    response = requests.post(server_url, json={"network_name": network_name})
+    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
+    response = requests.post(
+        server_url, json={"network_name": network_name}, headers=headers
+    )
 
     print(f"Status Code: {response.status_code}")
     print(f"Response Headers: {response.headers}")
@@ -123,23 +155,26 @@ def register_client(server, port, network_name, wg_public_key):
 
     data = response.json()
     wg_ip = data["wg_ip"]
-    server_pubkey = data["public_key"]
+    server_pubkey = data["wg_public_key"]
 
     hostname = compute_hostname(network_name, wg_ip)
 
     # Register the WireGuard public key separately
-    register_wireguard_key(server, port, wg_ip, wg_public_key)
+    register_wireguard_key(server, port, wg_ip, wg_public_key, api_password)
 
     return wg_ip, hostname, server_pubkey
 
 
-def register_wireguard_key(server, port, wg_ip, wg_public_key):
+def register_wireguard_key(server, port, wg_ip, wg_public_key, api_password):
     """Registers the WireGuard public key for this device."""
     server_url = f"http://{server}:{port}/register-wireguard-key"
     print(f"🔑 Registering WireGuard public key with {server_url}...")
 
+    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     response = requests.post(
-        server_url, json={"wg_ip": wg_ip, "wg_public_key": wg_public_key}
+        server_url,
+        json={"wg_ip": wg_ip, "wg_public_key": wg_public_key},
+        headers=headers,
     )
 
     if response.status_code != 200:
@@ -207,8 +242,8 @@ def write_wireguard_config(
         print(f"❌ Error: Invalid IP format received: {wg_ip}")
         sys.exit(1)
 
-    base_ip = f"{ip_parts[0]}.{ip_parts[1]}"  # Extracts "10.155" from "10.155.1.23"
-    allowed_ips = f"{base_ip}.0.0/16"  # Generates "10.155.0.0/16"
+    base_ip = f"{ip_parts[0]}.{ip_parts[1]}"
+    allowed_ips = f"{base_ip}.0.0/16"
 
     config = f"""
 [Interface]
@@ -217,7 +252,7 @@ Address = {wg_ip}/32
 
 [Peer]
 PublicKey = {server_pubkey}
-Endpoint = {server}:{wg_port}  # Change this if needed
+Endpoint = {server}:{wg_port}
 AllowedIPs = {allowed_ips}
 PersistentKeepalive = {persistent_keepalive}
 """
@@ -227,14 +262,176 @@ PersistentKeepalive = {persistent_keepalive}
     # Write the WireGuard configuration securely
     with open(wg_config_file, "w") as f:
         f.write(config)
-    os.chmod(
-        wg_config_file, stat.S_IRUSR | stat.S_IWUSR
-    )  # chmod 600 (owner read/write only)
+    os.chmod(wg_config_file, stat.S_IRUSR | stat.S_IWUSR)
 
     print(
         f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
     )
     print(f"🔧 Allowed IPs set to {allowed_ips}")
+
+
+def generate_ssh_keys(force):
+    """Generate an SSH key pair if not already present."""
+    ssh_dir = os.path.expanduser("~/.ssh")  # Store keys in the home directory
+    os.makedirs(ssh_dir, exist_ok=True)  # Create ~/.ssh if it doesn't exist
+
+    private_key_file = os.path.join(ssh_dir, "id_ed25519")
+    public_key_file = f"{private_key_file}.pub"
+
+    if os.path.exists(private_key_file) and os.path.exists(public_key_file):
+        print("⚠️ SSH keys already exist.")
+        if not force:
+            print(
+                "🚫 Aborting to prevent overwriting existing keys. Use --force to override."
+            )
+            sys.exit(1)
+
+    print("🔑 Generating new SSH key pair...")
+    run_command(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N '' -y")
+
+    if not os.path.exists(public_key_file):
+        print(
+            f"❌ Error: Failed to generate SSH public key at {public_key_file}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Secure private key permissions
+    os.chmod(private_key_file, 0o600)
+
+    print(f"✅ SSH key generated at {private_key_file} and {public_key_file}.")
+
+
+import datetime
+
+
+def extract_ssh_key_params(public_key_file):
+    """Extract SSH key type, size, fingerprint, comment, and expiration date, handling missing files."""
+
+    if not os.path.exists(public_key_file):
+        print(
+            f"❌ Error: SSH public key file '{public_key_file}' not found.",
+            file=sys.stderr,
+        )
+        return None, None, None, None, None
+
+    try:
+        # Read the public key
+        with open(public_key_file, "r") as f:
+            key_parts = f.read().strip().split()
+
+        if len(key_parts) < 2:
+            print(
+                f"❌ Error: Invalid SSH key format in '{public_key_file}'.",
+                file=sys.stderr,
+            )
+            return None, None, None, None, None
+
+        key_type = key_parts[0]  # e.g., 'ssh-ed25519', 'ssh-rsa', etc.
+        key_comment = key_parts[-1] if len(key_parts) > 2 else None
+
+        # Get the fingerprint and key size
+        key_info = run_command(f"ssh-keygen -lf {public_key_file}")
+        if not key_info:
+            print(
+                f"❌ Error: Failed to extract key details from '{public_key_file}'.",
+                file=sys.stderr,
+            )
+            return key_type, None, key_comment, None, None
+
+        key_info_parts = key_info.split()
+        if len(key_info_parts) < 2:
+            return key_type, None, key_comment, None, None
+
+        fingerprint = key_info_parts[1]
+
+        # Ensure key_size is an integer
+        try:
+            key_size = int(key_info_parts[0])  # Convert from string to integer
+        except ValueError:
+            print(
+                f"⚠️ Warning: Failed to parse key size '{key_info_parts[0]}'. Defaulting to None."
+            )
+            key_size = None
+
+        # Extract expiration date if present in comment
+        expires_at = None
+        if key_comment:
+            try:
+                # Example: "user@host expires:2026-01-01"
+                if "expires:" in key_comment:
+                    expires_str = key_comment.split("expires:")[-1].strip()
+                    expires_at = datetime.datetime.strptime(
+                        expires_str, "%Y-%m-%d"
+                    ).isoformat()
+            except ValueError:
+                print(
+                    f"⚠️ Warning: Could not parse expiration date from comment '{key_comment}'."
+                )
+                expires_at = None
+
+        return key_type, key_size, key_comment, fingerprint, expires_at
+
+    except Exception as e:
+        print(
+            f"❌ Exception while processing '{public_key_file}': {e}", file=sys.stderr
+        )
+        return None, None, None, None, None
+
+
+def register_ssh_key(server, port, wg_ip, api_password):
+    """Registers an SSH public key for this device using its WireGuard IP."""
+
+    ssh_dir = os.path.expanduser("~/.ssh")
+    public_key_file = os.path.join(ssh_dir, "id_ed25519.pub")
+
+    if not os.path.exists(public_key_file):
+        print(
+            f"❌ Error: SSH public key file '{public_key_file}' not found.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Extract SSH key details
+    username = os.getenv("USER") or run_command("whoami")
+    uid = os.getuid()
+    key_type, key_size, key_comment, fingerprint, expires_at = extract_ssh_key_params(
+        public_key_file
+    )
+
+    if not key_type or not fingerprint:
+        print(
+            f"❌ Failed to extract SSH key details from {public_key_file}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Prepare the payload ensuring correct types
+    payload = {
+        "wg_ip": wg_ip,
+        "username": username,
+        "uid": uid,
+        "ssh_public_key": open(public_key_file).read().strip(),
+        "key_type": key_type,
+        "key_size": key_size if key_size else None,  # Ensure key_size is an integer
+        "key_comment": key_comment,
+        "fingerprint": fingerprint,
+        "expires_at": (
+            expires_at if expires_at else None
+        ),  # Ensure expires_at is either None or ISO format
+    }
+
+    server_url = f"http://{server}:{port}/register-ssh-key"
+    print(f"🔑 Registering SSH public key with {server_url}...")
+
+    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
+    response = requests.post(server_url, json=payload, headers=headers)
+
+    if response.status_code != 200:
+        print(f"❌ Failed to register SSH key. Server response: {response.text}")
+        sys.exit(1)
+
+    print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
 
 def main():
@@ -243,10 +440,12 @@ def main():
 
     print("🚀 Starting device configuration...")
 
+    api_password = get_api_password()
+
     wg_public_key = generate_wireguard_keys(args.config_dir, args.force)
 
-    wg_ip, hostname, server_pubkey = register_client(
-        args.server, args.port, args.network, wg_public_key
+    wg_ip, hostname, server_pubkey = register_peer(
+        args.server, args.port, args.network, wg_public_key, api_password
     )
 
     write_wireguard_config(
@@ -261,6 +460,9 @@ def main():
     )
 
     change_hostname(hostname)
+
+    generate_ssh_keys(args.force)
+    register_ssh_key(args.server, args.port, wg_ip, api_password)
 
     print(
         "✅ Configuration complete. Hostname has been updated, and WireGuard is set up."

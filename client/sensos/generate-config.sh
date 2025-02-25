@@ -13,6 +13,9 @@ TIMEZONE_DEFAULT="UTC"
 KEYBOARD_KEYMAP="us"
 KEYBOARD_LAYOUT="English (US)"
 LOCALE_DEFAULT="C.UTF-8"
+FIRST_USER_NAME="sensos"
+FIRST_USER_PASS="sensos"
+DISABLE_FIRST_BOOT_USER_RENAME="1"
 
 # Initialize an array to store configuration lines
 CONFIG=(
@@ -25,6 +28,9 @@ CONFIG=(
     "KEYBOARD_KEYMAP=\"$KEYBOARD_KEYMAP\""
     "KEYBOARD_LAYOUT=\"$KEYBOARD_LAYOUT\""
     "LOCALE_DEFAULT=\"$LOCALE_DEFAULT\""
+    "FIRST_USER_NAME=\"$FIRST_USER_NAME\""
+    "FIRST_USER_PASS=\"$FIRST_USER_PASS\""
+    "DISABLE_FIRST_BOOT_USER_RENAME=\"$DISABLE_FIRST_BOOT_USER_RENAME\""
 )
 
 # Parse command-line arguments
@@ -93,15 +99,18 @@ while [[ $# -gt 0 ]]; do
         shift 2
         ;;
     --first-user-name)
-        CONFIG+=("FIRST_USER_NAME=\"$2\"")
+        FIRST_USER_NAME="$2"
+        CONFIG[9]="FIRST_USER_NAME=\"$FIRST_USER_NAME\""
         shift 2
         ;;
     --first-user-pass)
-        CONFIG+=("FIRST_USER_PASS=\"$2\"")
+        FIRST_USER_PASS="$2"
+        CONFIG[10]="FIRST_USER_PASS=\"$FIRST_USER_PASS\""
         shift 2
         ;;
     --disable-first-boot-user-rename)
-        CONFIG+=("DISABLE_FIRST_BOOT_USER_RENAME=\"$2\"")
+        DISABLE_FIRST_BOOT_USER_RENAME="$2"
+        CONFIG[11]="DISABLE_FIRST_BOOT_USER_RENAME=\"$DISABLE_FIRST_BOOT_USER_RENAME\""
         shift 2
         ;;
     --wpa-country)
