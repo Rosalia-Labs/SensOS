@@ -6,9 +6,9 @@ SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default values for always-included variables
 PI_GEN_RELEASE="SensOS reference"
 PIGEN_DOCKER_OPTS="-v $SENSOS_DIR:/sensos"
-SENSOS_STAGES="stage-base"
-STAGE_LIST="stage0 stage1 /sensos/$SENSOS_STAGES stage2"
-IMG_NAME="sensos" # Required default
+SENSOS_STAGES=$(echo "stage-base" | awk '{for(i=1;i<=NF;i++) $i="/sensos/"$i}1')
+STAGE_LIST="stage0 stage1 $SENSOS_STAGES stage2"
+IMG_NAME="sensos"
 TIMEZONE_DEFAULT="UTC"
 KEYBOARD_KEYMAP="us"
 KEYBOARD_LAYOUT="English (US)"
@@ -139,9 +139,9 @@ while [[ $# -gt 0 ]]; do
         shift 2
         ;;
     --sensos-stages)
-        SENSOS_STAGES="$2"
+        SENSOS_STAGES=$(echo "$2" | awk '{for(i=1;i<=NF;i++) $i="/sensos/"$i}1')
         CONFIG[2]="SENSOS_STAGES=\"$SENSOS_STAGES\""
-        CONFIG[3]="STAGE_LIST=\"stage0 stage1 /sensos/$SENSOS_STAGES stage2\""
+        CONFIG[3]="STAGE_LIST=\"stage0 stage1 $SENSOS_STAGES stage2\""
         shift 2
         ;;
     --export-config-dir)
