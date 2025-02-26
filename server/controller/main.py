@@ -141,7 +141,6 @@ def get_docker_client():
 def restart_wireguard_container():
     """Restarts the WireGuard container, supporting both Linux and Windows."""
     client = get_docker_client()
-
     container_name = "sensos-wireguard"
 
     try:
@@ -160,17 +159,6 @@ def restart_wireguard_container():
         logger.exception(f"Unexpected error while restarting WireGuard container: {e}")
 
 
-def restart_wireguard_container():
-    """Restarts the WireGuard container using Docker API."""
-    client = docker.DockerClient(base_url="unix://var/run/docker.sock")
-    try:
-        container = client.containers.get("sensos-wireguard")
-        container.restart()
-        logger.info("WireGuard container restarted successfully.")
-    except Exception as e:
-        logger.info(f"Error restarting WireGuard container: {e}")
-
-
 def start_wireguard(network_name: str):
     """Starts WireGuard for the given network if a valid configuration exists."""
     wg_config = CONTROLLER_CONFIG_DIR / f"{network_name}.conf"
@@ -184,6 +172,34 @@ def start_wireguard(network_name: str):
         logger.info(f"WireGuard started successfully for network {network_name}.")
     except subprocess.CalledProcessError as e:
         logger.error(f"Failed to start WireGuard: {e}")
+
+
+def enable_existing_wireguard_interfaces():
+    """Scans /etc/wireguard for config files and brings them up one by one."""
+    logger.info("🔍 Scanning /etc/wireguard for existing WireGuard configurations...")
+
+    # Get all config files
+    config_files = sorted(CONTROLLER_CONFIG_DIR.glob("*.conf"))
+
+    if not config_files:
+        logger.warning("⚠️ No WireGuard config files found in /etc/wireguard.")
+        return
+
+    for config_file in config_files:
+        network_name = config_file.stem  # Extract network name from filename
+
+        logger.info(f"🚀 Enabling WireGuard interface: {network_name}")
+        try:
+            subprocess.run(["wg-quick", "up", network_name], check=True)
+            logger.info(
+                f"✅ Successfully activated WireGuard interface: {network_name}"
+            )
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                f"❌ Failed to activate WireGuard interface {network_name}: {e}"
+            )
+
+    logger.info("✅ All available WireGuard interfaces have been enabled.")
 
 
 def get_db(retries=10, delay=3):
@@ -381,7 +397,7 @@ def init_db():
                         name TEXT UNIQUE NOT NULL,
                         ip_range CIDR UNIQUE NOT NULL,
                         wg_public_ip INET NOT NULL,
-                        wg_port INTEGER NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
+                        wg_port INTEGER UNIQUE NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
                         wg_public_key TEXT UNIQUE NOT NULL
                     );
                     """
@@ -437,6 +453,11 @@ def init_db():
                 )
 
         logger.info("✅ Database schema initialization complete.")
+
+        add_peers_to_wireguard()
+        restart_wireguard_container()
+        enable_existing_wireguard_interfaces()
+
         logger.info(
             "✅ Regenerated wireguard configs and restarted wireguard container."
         )
@@ -447,14 +468,19 @@ def init_db():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
-    """Render a simple form to create a network."""
+    """Render a form to create a network with optional WireGuard public IP and port."""
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT name, ip_range FROM sensos.networks;")
+            cur.execute(
+                "SELECT name, ip_range, wg_public_ip, wg_port FROM sensos.networks;"
+            )
             networks = cur.fetchall()
 
     network_list = (
-        "<br>".join(f"<b>{name}</b>: {ip_range}" for name, ip_range in networks)
+        "<br>".join(
+            f"<b>{name}</b>: {ip_range} (WG: {wg_public_ip}:{wg_port})"
+            for name, ip_range, wg_public_ip, wg_port in networks
+        )
         or "No networks yet."
     )
 
@@ -466,8 +492,22 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
         <form action="/create-network" method="post">
             <label for="name">Network Name:</label>
             <input type="text" id="name" name="name" required>
+
+            <br><br>
+
+            <label for="wg_public_ip">WireGuard Public IP (optional):</label>
+            <input type="text" id="wg_public_ip" name="wg_public_ip" placeholder="{os.getenv('WG_IP', '127.0.0.1')}">
+
+            <br><br>
+
+            <label for="wg_port">WireGuard Port (optional):</label>
+            <input type="number" id="wg_port" name="wg_port" placeholder="{os.getenv('WG_PORT', '51820')}" min="1" max="65535">
+
+            <br><br>
+
             <button type="submit">Create Network</button>
         </form>
+
         <h3>Existing Networks</h3>
         {network_list}
     </body>
@@ -533,10 +573,26 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
 def create_network(
     credentials: HTTPBasicCredentials = Depends(authenticate),
     name: str = Form(...),
-    wg_public_ip: str = Form(default=os.getenv("WG_IP", "127.0.0.1")),
-    wg_port: int = Form(default=int(os.getenv("WG_PORT", 51820))),
+    wg_public_ip: Optional[str] = Form(None),
+    wg_port: Optional[str] = Form(None),  # Accept as string to validate manually
 ):
     """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
+
+    # Use environment variables if not provided
+    wg_public_ip = wg_public_ip or os.getenv("WG_IP", "127.0.0.1")
+
+    # Ensure wg_port is a valid integer
+    try:
+        wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", 51820))
+        if not (1 <= wg_port <= 65535):  # Valid port range check
+            raise ValueError("Port must be between 1 and 65535.")
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid WireGuard port. Must be a number between 1 and 65535."
+            },
+        )
 
     ip_range = generate_default_ip_range(name)
 
@@ -597,9 +653,7 @@ def register_peer(
             content={"error": f"Network '{request.network_name}' not found."},
         )
 
-    network_id, subnet, public_key, wg_public_ip, wg_port = (
-        network_details  # Fetch additional details
-    )
+    network_id, subnet, public_key, wg_public_ip, wg_port = network_details
 
     # Ensure subnet_offset is within range
     network = ipaddress.ip_network(subnet, strict=False)
@@ -632,42 +686,6 @@ def register_peer(
         "wg_public_ip": wg_public_ip,
         "wg_port": wg_port,
     }
-
-
-class RegisterWireguardKeyRequest(BaseModel):
-    wg_ip: str
-    wg_public_key: str
-
-
-@app.post("/register-wireguard-key")
-def register_wireguard_key(
-    request: RegisterWireguardKeyRequest,
-    credentials: HTTPBasicCredentials = Depends(authenticate),
-):
-    """Registers a WireGuard key for an existing peer."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
-                (request.wg_ip,),
-            )
-            peer = cur.fetchone()
-            if not peer:
-                return JSONResponse(
-                    status_code=404,
-                    content={"error": f"Peer '{request.wg_ip}' not found."},
-                )
-
-            peer_id = peer[0]
-            cur.execute(
-                "INSERT INTO sensos.wireguard_keys (peer_id, wg_public_key) VALUES (%s, %s);",
-                (peer_id, request.wg_public_key),
-            )
-
-    add_peers_to_wireguard()
-    restart_wireguard_container()
-
-    return {"wg_ip": request.wg_ip, "wg_public_key": request.wg_public_key}
 
 
 class RegisterWireguardKeyRequest(BaseModel):
@@ -832,7 +850,7 @@ def inspect_database(
                 column_names = [desc[0] for desc in cur.description]
 
                 html += f"""
-                <details class="table-container">
+                <details class="table-container" open>
                     <summary>📂 Table: <code>{table}</code> (Showing max {limit} rows)</summary>
                     <table>
                         <tr>

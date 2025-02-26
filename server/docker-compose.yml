@@ -17,6 +17,7 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - sensos_wireguard_config:/config
+      - sensos_controller_wg_dir:/etc/wireguard
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${API_PORT:-8000}:8000"
@@ -68,6 +69,8 @@ volumes:
     name: sensos_database
   sensos_wireguard_config:
     name: sensos_wireguard_config
+  sensos_controller_wg_dir:
+    name: sensos_controller_wg_dir
 
 networks:
   sensos_network:

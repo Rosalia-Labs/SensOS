@@ -4,7 +4,7 @@
 DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8000
 DEFAULT_WG_PORT=51820
-DEFAULT_WG_IP="" # This must be explicitly set at setup time
+DEFAULT_WG_IP="127.0.0.1"
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 
@@ -53,17 +53,6 @@ echo "WG_PORT=$WG_PORT"
 echo "WG_IP=$WG_IP"
 echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
 echo "API_PASSWORD=$API_PASSWORD"
-
-# Ensure WG_IP is explicitly set
-if [ -z "$WG_IP" ]; then
-    {
-        echo ""
-        echo "🚨🚨🚨 ERROR: WG_IP must be set explicitly! 🚨🚨🚨"
-        echo "Please specify the public WireGuard IP address using --wg-ip=<IP>."
-        echo ""
-    } 1>&2
-    exit 1
-fi
 
 # Dire warning if password is default
 if [ "$POSTGRES_PASSWORD" = "$DEFAULT_POSTGRES_PASSWORD" ]; then
