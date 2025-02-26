@@ -64,17 +64,6 @@ services:
     networks:
       - sensos_network
 
-  sensos-pgadmin:
-    image: dpage/pgadmin4
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: tkeitt@gmail.com
-      PGADMIN_DEFAULT_PASSWORD: sensos
-    ports:
-      - "5050:80"
-    networks:
-      - sensos_network
-
 volumes:
   sensos_database:
     name: sensos_database
