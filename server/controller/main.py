@@ -174,7 +174,7 @@ def start_wireguard(network_name: str):
         logger.error(f"Failed to start WireGuard: {e}")
 
 
-def enable_existing_wireguard_interfaces():
+def start_controller_wireguard():
     """Scans /etc/wireguard for config files and brings them up one by one."""
     logger.info("🔍 Scanning /etc/wireguard for existing WireGuard configurations...")
 
@@ -456,7 +456,7 @@ def init_db():
 
         add_peers_to_wireguard()
         restart_wireguard_container()
-        enable_existing_wireguard_interfaces()
+        start_controller_wireguard()
 
         logger.info(
             "✅ Regenerated wireguard configs and restarted wireguard container."
