@@ -49,7 +49,6 @@ RUN python3 -m venv /home/sensos/venv && \
     /home/sensos/venv/bin/pip install requests
 EOF
 
-# Run the container and execute the script inside it as 'root'
 docker run --rm -it \
     --network server_sensos_network \
     --mount type=bind,source="$(pwd)/stage-base/00-sensos/files",target=/mnt/config \
@@ -60,7 +59,7 @@ docker run --rm -it \
     cp /mnt/config/config-sensos-client /home/sensos/config-sensos-client
     chmod +x /home/sensos/config-sensos-client
 
-    /home/sensos/venv/bin/python /home/sensos/config-sensos-client --server "'"$SENSOS_CONTROLLER_IP"'"
+    /home/sensos/venv/bin/python /home/sensos/config-sensos-client --server "'"$SENSOS_CONTROLLER_IP"'" "$@"
 
     echo "✅ Sensos client configuration completed."
-'
+' -- "$@"

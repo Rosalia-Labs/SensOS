@@ -6,6 +6,7 @@ services:
     depends_on:
       - sensos-database
       - sensos-wireguard
+      - sensos-registry
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -21,6 +22,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${API_PORT:-8000}:8000"
+      - "${REGISTRY_PORT:-5000}:5000"
     networks:
       - sensos_network
 
@@ -64,6 +66,22 @@ services:
     networks:
       - sensos_network
 
+  sensos-registry:
+    image: registry:2
+    container_name: sensos-registry
+    restart: always
+    env_file: .env
+    environment:
+      REGISTRY_AUTH: htpasswd
+      REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
+      REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
+    volumes:
+      - sensos_registry:/var/lib/registry
+    ports:
+      - "5000"
+    networks:
+      - sensos_network
+
 volumes:
   sensos_database:
     name: sensos_database
@@ -71,6 +89,8 @@ volumes:
     name: sensos_wireguard_config
   sensos_controller_wg_dir:
     name: sensos_controller_wg_dir
+  sensos_registry:
+    name: sensos_registry
 
 networks:
   sensos_network:
