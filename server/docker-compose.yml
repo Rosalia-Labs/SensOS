@@ -1,6 +1,16 @@
 services:
   sensos-controller:
-    build: ./controller
+    build:
+      context: ./controller
+      args:
+        VERSION_MAJOR: ${VERSION_MAJOR}
+        VERSION_MINOR: ${VERSION_MINOR}
+        VERSION_PATCH: ${VERSION_PATCH}
+        VERSION_SUFFIX: ${VERSION_SUFFIX}
+        GIT_COMMIT: ${GIT_COMMIT}
+        GIT_BRANCH: ${GIT_BRANCH}
+        GIT_TAG: ${GIT_TAG}
+        GIT_DIRTY: ${GIT_DIRTY}
     container_name: sensos-controller
     restart: always
     depends_on:
@@ -11,6 +21,14 @@ services:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       WG_IP: ${WG_IP}
+      VERSION_MAJOR: ${VERSION_MAJOR}
+      VERSION_MINOR: ${VERSION_MINOR}
+      VERSION_PATCH: ${VERSION_PATCH}
+      VERSION_SUFFIX: ${VERSION_SUFFIX}
+      GIT_COMMIT: ${GIT_COMMIT}
+      GIT_BRANCH: ${GIT_BRANCH}
+      GIT_TAG: ${GIT_TAG}
+      GIT_DIRTY: ${GIT_DIRTY}
     cap_add:
       - NET_ADMIN
       - NET_RAW

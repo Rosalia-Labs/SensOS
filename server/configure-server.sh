@@ -69,8 +69,7 @@ REGISTRY_USER="${REGISTRY_USER:-$DEFAULT_REGISTRY_USER}"
 REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-$DEFAULT_REGISTRY_PASSWORD}"
 
 # Write environment variables to .env file with strict permissions
-ENV_FILE=".env"
-cat >"$ENV_FILE" <<EOF
+cat >.env <<EOF
 DB_PORT=$DB_PORT
 API_PORT=$API_PORT
 NETWORK=$NETWORK
@@ -82,11 +81,12 @@ REGISTRY_PORT=$REGISTRY_PORT
 REGISTRY_USER=$REGISTRY_USER
 REGISTRY_PASSWORD=$REGISTRY_PASSWORD
 EOF
-chmod 600 "$ENV_FILE"
 
-echo "✅ Environment configuration written to $ENV_FILE."
+chmod 600 .env
 
-# Generate .htpasswd file using a transient httpd container
+echo "✅ Environment configuration written to .env."
+
+# Create .htpasswd file for the registry authentication
 mkdir -p .htauth
 docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$REGISTRY_USER" "$REGISTRY_PASSWORD" >.htauth/htpasswd
 chmod 600 .htauth/htpasswd

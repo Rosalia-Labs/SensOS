@@ -5,7 +5,7 @@ patch = 0
 suffix = alpha
 
 [git]
-commit = ef9ef836af76e430f25bf5ffdaca3c3f4b5e4a18
+commit = fc597f7752bbddd234802017e42f49b7d9af5ab7
 branch = main
 tag = 
-dirty = true
+dirty = false

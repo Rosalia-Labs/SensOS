@@ -43,6 +43,26 @@ API_PASSWORD = os.getenv("API_PASSWORD")
 if not API_PASSWORD:
     raise ValueError("API_PASSWORD is not set. Exiting.")
 
+# Retrieve versioning info
+VERSION_MAJOR = os.getenv("VERSION_MAJOR", "Unknown")
+VERSION_MINOR = os.getenv("VERSION_MINOR", "Unknown")
+VERSION_PATCH = os.getenv("VERSION_PATCH", "Unknown")
+VERSION_SUFFIX = os.getenv("VERSION_SUFFIX", "")
+GIT_COMMIT = os.getenv("GIT_COMMIT", "Unknown")
+GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
+GIT_TAG = os.getenv("GIT_TAG", "Unknown")
+GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
+
+# Log versioning details at startup
+logger.info("🔍 Application Version Information:")
+logger.info(
+    f"   Version: {VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}{('-' + VERSION_SUFFIX) if VERSION_SUFFIX else ''}"
+)
+logger.info(f"   Git Commit: {GIT_COMMIT}")
+logger.info(f"   Git Branch: {GIT_BRANCH}")
+logger.info(f"   Git Tag: {GIT_TAG}")
+logger.info(f"   Git Dirty: {'✅ Clean' if GIT_DIRTY == 'false' else '⚠️ Dirty'}")
+
 
 def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
     if credentials.password != API_PASSWORD:
@@ -376,42 +396,6 @@ AllowedIPs = {wg_ip}/32
     )
 
 
-def get_git_version():
-    """Retrieve Git metadata if available, otherwise return None."""
-    try:
-        # Ensure Git is installed and repo exists
-        subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True
-        ).stdout.strip()
-        branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
-        ).stdout.strip()
-        tag = subprocess.run(
-            ["git", "describe", "--tags", "--always"], capture_output=True, text=True
-        ).stdout.strip()
-        dirty = (
-            subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode
-            != 0
-        )
-
-        return {
-            "commit": commit,
-            "branch": branch,
-            "tag": tag,
-            "dirty": dirty,
-        }
-
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None  # Git is not available or not inside a repo
-
-
 @app.on_event("startup")
 def init_db():
     """Ensure the database schema, tables, and network exist at startup."""
@@ -423,6 +407,42 @@ def init_db():
                 # Ensure the schema exists
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS sensos.version_history (
+                        id SERIAL PRIMARY KEY,
+                        version_major TEXT NOT NULL,
+                        version_minor TEXT NOT NULL,
+                        version_patch TEXT NOT NULL,
+                        version_suffix TEXT,
+                        git_commit TEXT,
+                        git_branch TEXT,
+                        git_tag TEXT,
+                        git_dirty TEXT,
+                        timestamp TIMESTAMP DEFAULT NOW()
+                    );
+                    """
+                )
+
+                # Insert current version
+                cur.execute(
+                    """
+                    INSERT INTO sensos.version_history 
+                    (version_major, version_minor, version_patch, version_suffix, git_commit, git_branch, git_tag, git_dirty)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                    """,
+                    (
+                        os.getenv("VERSION_MAJOR", "Unknown"),
+                        os.getenv("VERSION_MINOR", "Unknown"),
+                        os.getenv("VERSION_PATCH", "Unknown"),
+                        os.getenv("VERSION_SUFFIX", ""),
+                        os.getenv("GIT_COMMIT", "Unknown"),
+                        os.getenv("GIT_BRANCH", "Unknown"),
+                        os.getenv("GIT_TAG", "Unknown"),
+                        os.getenv("GIT_DIRTY", "false"),
+                    ),
+                )
 
                 # Create networks table
                 logger.info("Creating table 'sensos.networks' if not exists...")
@@ -549,35 +569,115 @@ def init_db():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
-    """Render a summary of existing networks in the database."""
+    """Display version information and network status."""
+
+    # Fetch latest version entry
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT name, ip_range, wg_public_ip, wg_port FROM sensos.networks;"
+                "SELECT * FROM sensos.version_history ORDER BY timestamp DESC LIMIT 1;"
+            )
+            version_info = cur.fetchone()
+
+            # Fetch list of networks
+            cur.execute(
+                "SELECT name, ip_range, wg_public_ip, wg_port FROM sensos.networks ORDER BY name;"
             )
             networks = cur.fetchall()
 
-    network_list = (
-        "<br>".join(
-            f"<b>{name}</b>: {ip_range} (WG: {wg_public_ip}:{wg_port})"
-            for name, ip_range, wg_public_ip, wg_port in networks
+    # Handle missing version info
+    if version_info:
+        version_display = f"""
+        <h3>🔍 Version Information</h3>
+        <table>
+            <tr><th>Version</th><td>{version_info[1]}.{version_info[2]}.{version_info[3]}{('-' + version_info[4]) if version_info[4] else ''}</td></tr>
+            <tr><th>Git Commit</th><td>{version_info[5]}</td></tr>
+            <tr><th>Git Branch</th><td>{version_info[6]}</td></tr>
+            <tr><th>Git Tag</th><td>{version_info[7]}</td></tr>
+            <tr><th>Git Dirty</th><td>{"✅ Clean" if version_info[8] == "false" else "⚠️ Dirty"}</td></tr>
+            <tr><th>Timestamp</th><td>{version_info[9]}</td></tr>
+        </table>
+        """
+    else:
+        version_display = (
+            "<p style='color: red;'>⚠️ No version information available.</p>"
         )
-        or "No networks yet."
-    )
+
+    # Handle missing networks
+    if networks:
+        network_table = """
+        <h3>🌐 Registered Networks</h3>
+        <table>
+            <tr>
+                <th>Network Name</th>
+                <th>IP Range</th>
+                <th>Public IP</th>
+                <th>Port</th>
+            </tr>
+        """
+        for network in networks:
+            network_table += f"""
+            <tr>
+                <td>{network[0]}</td>
+                <td>{network[1]}</td>
+                <td>{network[2]}</td>
+                <td>{network[3]}</td>
+            </tr>
+            """
+        network_table += "</table>"
+    else:
+        network_table = "<p style='color: red;'>⚠️ No registered networks found.</p>"
 
     return f"""
     <html>
-    <head><title>Sensor Network Manager</title></head>
+    <head>
+        <title>Sensor Network Manager</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background-color: #f7f7f7;
+                color: #333;
+                margin: 0;
+                padding: 20px;
+                display: flex;
+                justify-content: center;
+            }}
+            .container {{
+                max-width: 800px; /* Adjust width here */
+                width: 90%; /* Ensure it scales well on smaller screens */
+                background: white;
+                padding: 20px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            }}
+            h2, h3 {{
+                color: #005a9c;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 10px 0;
+                background: white;
+            }}
+            th, td {{
+                padding: 10px;
+                border: 1px solid #ddd;
+                text-align: left;
+            }}
+            th {{
+                background-color: #005a9c;
+                color: white;
+            }}
+        </style>
+    </head>
     <body>
-        <h2>Existing Sensor Networks</h2>
-        <p>Below is a summary of all configured networks:</p>
-        
-        <h3>Networks</h3>
-        {network_list}
-
-        <h3>Create a New Network</h3>
-        <p>To create a new network, use the API endpoint:</p>
-        <code>POST /create-network</code>
+        <div class="container">
+            <h2>Sensor Network Manager</h2>
+            <h3>📡 Network Overview</h3>
+            <p>Welcome to the Sensor Network Dashboard.</p>
+            {version_display}
+            {network_table}
+        </div>
     </body>
     </html>
     """
@@ -647,55 +747,6 @@ def create_network(
         "wg_port": wg_port,
         "wg_public_key": public_key,
     }
-
-
-@app.get("/", response_class=HTMLResponse)
-def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
-    """Render a form to create a network with optional WireGuard public IP and port."""
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT name, ip_range, wg_public_ip, wg_port FROM sensos.networks;"
-            )
-            networks = cur.fetchall()
-
-    network_list = (
-        "<br>".join(
-            f"<b>{name}</b>: {ip_range} (WG: {wg_public_ip}:{wg_port})"
-            for name, ip_range, wg_public_ip, wg_port in networks
-        )
-        or "No networks yet."
-    )
-
-    return f"""
-    <html>
-    <head><title>Sensor Network Manager</title></head>
-    <body>
-        <h2>Create a New Sensor Network</h2>
-        <form action="/create-network" method="post">
-            <label for="name">Network Name:</label>
-            <input type="text" id="name" name="name" required>
-
-            <br><br>
-
-            <label for="wg_public_ip">WireGuard Public IP (optional):</label>
-            <input type="text" id="wg_public_ip" name="wg_public_ip" placeholder="{os.getenv('WG_IP', '127.0.0.1')}">
-
-            <br><br>
-
-            <label for="wg_port">WireGuard Port (optional):</label>
-            <input type="number" id="wg_port" name="wg_port" placeholder="{os.getenv('WG_PORT', '51820')}" min="1" max="65535">
-
-            <br><br>
-
-            <button type="submit">Create Network</button>
-        </form>
-
-        <h3>Existing Networks</h3>
-        {network_list}
-    </body>
-    </html>
-    """
 
 
 @app.get("/list-peers", response_class=HTMLResponse)
@@ -750,72 +801,6 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
     """
 
     return HTMLResponse(content=peer_table)
-
-
-@app.post("/create-network")
-def create_network(
-    credentials: HTTPBasicCredentials = Depends(authenticate),
-    name: str = Form(...),
-    wg_public_ip: Optional[str] = Form(None),
-    wg_port: Optional[str] = Form(None),  # Accept as string to validate manually
-):
-    """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
-
-    # Use environment variables if not provided
-    wg_public_ip = wg_public_ip or os.getenv("WG_IP", "127.0.0.1")
-
-    # Ensure wg_port is a valid integer
-    try:
-        wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", 51820))
-        if not (1 <= wg_port <= 65535):  # Valid port range check
-            raise ValueError("Port must be between 1 and 65535.")
-    except ValueError:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Invalid WireGuard port. Must be a number between 1 and 65535."
-            },
-        )
-
-    ip_range = generate_default_ip_range(name)
-
-    # Generate WireGuard key pair
-    private_key, public_key = generate_wireguard_keys()
-
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING id;
-                    """,
-                    (name, ip_range, wg_public_ip, wg_port, public_key),
-                )
-                network_id = cur.fetchone()[0]
-            except psycopg.errors.UniqueViolation:
-                return JSONResponse(
-                    status_code=400, content={"error": "Network already exists"}
-                )
-
-    # Pass network_id to create_wireguard_configs
-    create_wireguard_configs(network_id, name, ip_range, private_key, public_key)
-
-    add_peers_to_wireguard()
-    restart_wireguard_container()
-
-    # Start WireGuard after config is created
-    start_wireguard(name)
-
-    return {
-        "id": network_id,
-        "name": name,
-        "ip_range": ip_range,
-        "wg_public_ip": wg_public_ip,
-        "wg_port": wg_port,
-        "wg_public_key": public_key,
-    }
 
 
 class RegisterPeerRequest(BaseModel):
