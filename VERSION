@@ -1,11 +1,11 @@
 [version]
 major = 0
-minor = 0
+minor = 1
 patch = 0
 suffix = alpha
 
 [git]
-commit = f467baabbe306f0973538995fab16194c3f18122
+commit = ef9ef836af76e430f25bf5ffdaca3c3f4b5e4a18
 branch = main
 tag = 
-dirty = false
+dirty = true
