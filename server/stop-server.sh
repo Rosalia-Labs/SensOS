@@ -72,9 +72,9 @@ fi
 # Stop Docker Compose services
 echo "🛑 Stopping Docker Compose services..."
 if [ "$REMOVE_VOLUMES" = true ]; then
-    docker-compose down -v
+    docker compose down -v
 else
-    docker-compose down
+    docker compose down
 fi
 
 echo "✅ Done."

@@ -69,12 +69,10 @@ export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
 # Start Docker Compose services with or without rebuild
 if [ "$NO_REBUILD" = false ]; then
     echo "🚀 Starting Docker Compose services with build..."
-    env | grep 'VERSION\|GIT_' # Debugging step to confirm variables are exported
-    docker-compose up -d --build
+    docker compose up -d --build
 else
     echo "🚀 Starting Docker Compose services without rebuild..."
-    env | grep 'VERSION\|GIT_' # Debugging step
-    docker-compose up -d
+    docker compose up -d
 fi
 
 echo "✅ Done."
