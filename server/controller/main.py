@@ -396,180 +396,190 @@ AllowedIPs = {wg_ip}/32
     )
 
 
+def create_version_history_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.version_history (
+            id SERIAL PRIMARY KEY,
+            version_major TEXT NOT NULL,
+            version_minor TEXT NOT NULL,
+            version_patch TEXT NOT NULL,
+            version_suffix TEXT,
+            git_commit TEXT,
+            git_branch TEXT,
+            git_tag TEXT,
+            git_dirty TEXT,
+            timestamp TIMESTAMP DEFAULT NOW()
+        );
+        """
+    )
+
+
+def create_networks_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.networks (
+            id SERIAL PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            ip_range CIDR UNIQUE NOT NULL,
+            wg_public_ip INET NOT NULL,
+            wg_port INTEGER UNIQUE NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
+            wg_public_key TEXT UNIQUE NOT NULL
+        );
+        """
+    )
+
+
+def create_wireguard_peers_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.wireguard_peers (
+            id SERIAL PRIMARY KEY,
+            network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
+            wg_ip INET UNIQUE NOT NULL
+        );
+        """
+    )
+
+
+def create_wireguard_keys_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.wireguard_keys (
+            id SERIAL PRIMARY KEY,
+            peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+            wg_public_key TEXT UNIQUE NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+        """
+    )
+
+
+def create_ssh_keys_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
+            id SERIAL PRIMARY KEY,
+            network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
+            peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+            username TEXT NOT NULL,
+            uid INTEGER NOT NULL,
+            ssh_public_key TEXT NOT NULL,
+            key_type TEXT NOT NULL,
+            key_size INTEGER NOT NULL,
+            key_comment TEXT,
+            fingerprint TEXT NOT NULL,
+            expires_at TIMESTAMP,
+            last_used TIMESTAMP DEFAULT NOW(),
+            UNIQUE (peer_id, ssh_public_key)
+        );
+        """
+    )
+
+
+def update_version_history_table(cur):
+    cur.execute(
+        """
+        INSERT INTO sensos.version_history 
+        (version_major, version_minor, version_patch, version_suffix, git_commit, git_branch, git_tag, git_dirty)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+        """,
+        (
+            os.getenv("VERSION_MAJOR", "Unknown"),
+            os.getenv("VERSION_MINOR", "Unknown"),
+            os.getenv("VERSION_PATCH", "Unknown"),
+            os.getenv("VERSION_SUFFIX", ""),
+            os.getenv("GIT_COMMIT", "Unknown"),
+            os.getenv("GIT_BRANCH", "Unknown"),
+            os.getenv("GIT_TAG", "Unknown"),
+            os.getenv("GIT_DIRTY", "false"),
+        ),
+    )
+
+
+def ensure_network_exists(cur):
+    network_name = os.getenv("NETWORK")
+    if not network_name:
+        logger.error("❌ NETWORK is not set in .env. Exiting.")
+        return None
+
+    logger.info(f"🔍 Checking if network '{network_name}' exists...")
+    cur.execute(
+        """
+        SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key 
+        FROM sensos.networks WHERE name = %s;
+        """,
+        (network_name,),
+    )
+    existing_network = cur.fetchone()
+
+    if existing_network:
+        network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
+        logger.info(f"✅ Network '{network_name}' already exists.")
+        if not wg_public_ip or not wg_port:
+            logger.warning(
+                f"⚠️ Updating missing WireGuard IP/port for '{network_name}'..."
+            )
+            wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
+            wg_port = int(os.getenv("WG_PORT", "51820"))
+            cur.execute(
+                """
+                UPDATE sensos.networks 
+                SET wg_public_ip = %s, wg_port = %s 
+                WHERE id = %s;
+                """,
+                (wg_public_ip, wg_port, network_id),
+            )
+            logger.info(
+                f"✅ Updated '{network_name}' with WireGuard IP {wg_public_ip} and port {wg_port}."
+            )
+    else:
+        logger.info(f"🆕 Creating new network '{network_name}'...")
+        ip_range = generate_default_ip_range(network_name)
+        wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
+        wg_port = int(os.getenv("WG_PORT", "51820"))
+        private_key, public_key = generate_wireguard_keys()
+        cur.execute(
+            """
+            INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id;
+            """,
+            (network_name, ip_range, wg_public_ip, wg_port, public_key),
+        )
+        network_id = cur.fetchone()[0]
+        logger.info(f"✅ Created new network '{network_name}' (ID: {network_id}).")
+        create_wireguard_configs(
+            network_id, network_name, ip_range, private_key, public_key
+        )
+    return network_id
+
+
 @app.on_event("startup")
 def init_db():
     """Ensure the database schema, tables, and network exist at startup."""
     logger.info("Initializing database schema and tables...")
-
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
-                # Ensure the schema exists
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
-
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sensos.version_history (
-                        id SERIAL PRIMARY KEY,
-                        version_major TEXT NOT NULL,
-                        version_minor TEXT NOT NULL,
-                        version_patch TEXT NOT NULL,
-                        version_suffix TEXT,
-                        git_commit TEXT,
-                        git_branch TEXT,
-                        git_tag TEXT,
-                        git_dirty TEXT,
-                        timestamp TIMESTAMP DEFAULT NOW()
-                    );
-                    """
-                )
-
-                # Insert current version
-                cur.execute(
-                    """
-                    INSERT INTO sensos.version_history 
-                    (version_major, version_minor, version_patch, version_suffix, git_commit, git_branch, git_tag, git_dirty)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
-                    """,
-                    (
-                        os.getenv("VERSION_MAJOR", "Unknown"),
-                        os.getenv("VERSION_MINOR", "Unknown"),
-                        os.getenv("VERSION_PATCH", "Unknown"),
-                        os.getenv("VERSION_SUFFIX", ""),
-                        os.getenv("GIT_COMMIT", "Unknown"),
-                        os.getenv("GIT_BRANCH", "Unknown"),
-                        os.getenv("GIT_TAG", "Unknown"),
-                        os.getenv("GIT_DIRTY", "false"),
-                    ),
-                )
-
-                # Create networks table
-                logger.info("Creating table 'sensos.networks' if not exists...")
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sensos.networks (
-                        id SERIAL PRIMARY KEY,
-                        name TEXT UNIQUE NOT NULL,
-                        ip_range CIDR UNIQUE NOT NULL,
-                        wg_public_ip INET NOT NULL,
-                        wg_port INTEGER UNIQUE NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
-                        wg_public_key TEXT UNIQUE NOT NULL
-                    );
-                    """
-                )
-
-                # Create peers table
-                logger.info("Creating table 'sensos.wireguard_peers' if not exists...")
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sensos.wireguard_peers (
-                        id SERIAL PRIMARY KEY,
-                        network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
-                        wg_ip INET UNIQUE NOT NULL
-                    );
-                    """
-                )
-
-                # Create wireguard_keys table
-                logger.info("Creating table 'sensos.wireguard_keys' if not exists...")
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sensos.wireguard_keys (
-                        id SERIAL PRIMARY KEY,
-                        peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
-                        wg_public_key TEXT UNIQUE NOT NULL,
-                        is_active BOOLEAN DEFAULT TRUE,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    );
-                    """
-                )
-
-                # Get the network name from .env
-                network_name = os.getenv("NETWORK")
-                if not network_name:
-                    logger.error("❌ NETWORK is not set in .env. Exiting.")
-                    return
-
-                # Check if network exists
-                logger.info(f"🔍 Checking if network '{network_name}' exists...")
-                cur.execute(
-                    """
-                    SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key 
-                    FROM sensos.networks WHERE name = %s;
-                    """,
-                    (network_name,),
-                )
-                existing_network = cur.fetchone()
-
-                if existing_network:
-                    network_id, ip_range, wg_public_ip, wg_port, wg_public_key = (
-                        existing_network
-                    )
-                    logger.info(f"✅ Network '{network_name}' already exists.")
-
-                    # Ensure public IP and port are set
-                    if not wg_public_ip or not wg_port:
-                        logger.warning(
-                            f"⚠️ Updating missing WireGuard IP/port for '{network_name}'..."
-                        )
-                        wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
-                        wg_port = int(os.getenv("WG_PORT", "51820"))
-
-                        cur.execute(
-                            """
-                            UPDATE sensos.networks 
-                            SET wg_public_ip = %s, wg_port = %s 
-                            WHERE id = %s;
-                            """,
-                            (wg_public_ip, wg_port, network_id),
-                        )
-                        logger.info(
-                            f"✅ Updated '{network_name}' with WireGuard IP {wg_public_ip} and port {wg_port}."
-                        )
-
-                else:
-                    # Generate defaults for a new network
-                    logger.info(f"🆕 Creating new network '{network_name}'...")
-                    ip_range = generate_default_ip_range(network_name)
-                    wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
-                    wg_port = int(os.getenv("WG_PORT", "51820"))
-
-                    # Generate WireGuard key pair
-                    private_key, public_key = generate_wireguard_keys()
-
-                    cur.execute(
-                        """
-                        INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
-                        VALUES (%s, %s, %s, %s, %s)
-                        RETURNING id;
-                        """,
-                        (network_name, ip_range, wg_public_ip, wg_port, public_key),
-                    )
-                    network_id = cur.fetchone()[0]
-                    logger.info(
-                        f"✅ Created new network '{network_name}' (ID: {network_id})."
-                    )
-
-                    # Generate WireGuard config files
-                    create_wireguard_configs(
-                        network_id, network_name, ip_range, private_key, public_key
-                    )
-
-        # Regenerate WireGuard configs
-        add_peers_to_wireguard()
-        restart_wireguard_container()
-        start_controller_wireguard()
-
-        logger.info("✅ WireGuard setup completed.")
-
+                create_version_history_table(cur)
+                update_version_history_table(cur)
+                create_networks_table(cur)
+                create_wireguard_peers_table(cur)
+                create_wireguard_keys_table(cur)
+                create_ssh_keys_table(cur)
+                network_id = ensure_network_exists(cur)
+                if network_id:
+                    add_peers_to_wireguard()
+                    restart_wireguard_container()
+                    start_controller_wireguard()
+                    logger.info("✅ WireGuard setup completed.")
+        logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
-
-
-from fastapi import Depends
-from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPBasicCredentials
 
 
 @app.get("/", response_class=HTMLResponse)
