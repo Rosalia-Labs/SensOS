@@ -12,6 +12,7 @@ DEFAULT_REGISTRY_USER="sensos"
 DEFAULT_REGISTRY_PASSWORD="sensos"
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
+DEFAULT_NETWORK="sensos"
 
 # Allow command-line overrides
 while [ $# -gt 0 ]; do
@@ -21,6 +22,9 @@ while [ $# -gt 0 ]; do
         ;;
     --api-port=*)
         API_PORT="${1#*=}"
+        ;;
+    --wg-network=*)
+        NETWORK="${1#*=}"
         ;;
     --wg-port=*)
         WG_PORT="${1#*=}"
@@ -55,6 +59,7 @@ done
 # Use environment variables if set, otherwise use defaults
 DB_PORT="${DB_PORT:-$DEFAULT_DB_PORT}"
 API_PORT="${API_PORT:-$DEFAULT_API_PORT}"
+NETWORK="${NETWORK:-$DEFAULT_NETWORK}"
 WG_PORT="${WG_PORT:-$DEFAULT_WG_PORT}"
 WG_IP="${WG_IP:-$DEFAULT_WG_IP}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}"
@@ -68,6 +73,7 @@ ENV_FILE=".env"
 cat >"$ENV_FILE" <<EOF
 DB_PORT=$DB_PORT
 API_PORT=$API_PORT
+NETWORK=$NETWORK
 WG_PORT=$WG_PORT
 WG_IP=$WG_IP
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD

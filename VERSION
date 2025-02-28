@@ -1,0 +1,11 @@
+[version]
+major = 0
+minor = 0
+patch = 0
+suffix = alpha
+
+[git]
+commit = f467baabbe306f0973538995fab16194c3f18122
+branch = main
+tag = 
+dirty = false

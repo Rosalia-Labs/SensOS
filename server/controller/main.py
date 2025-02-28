@@ -376,9 +376,45 @@ AllowedIPs = {wg_ip}/32
     )
 
 
+def get_git_version():
+    """Retrieve Git metadata if available, otherwise return None."""
+    try:
+        # Ensure Git is installed and repo exists
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        tag = subprocess.run(
+            ["git", "describe", "--tags", "--always"], capture_output=True, text=True
+        ).stdout.strip()
+        dirty = (
+            subprocess.run(["git", "diff", "--quiet"], capture_output=True).returncode
+            != 0
+        )
+
+        return {
+            "commit": commit,
+            "branch": branch,
+            "tag": tag,
+            "dirty": dirty,
+        }
+
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None  # Git is not available or not inside a repo
+
+
 @app.on_event("startup")
 def init_db():
-    """Ensure the `sensos` schema and networks/peers/tables exist before running queries."""
+    """Ensure the database schema, tables, and network exist at startup."""
     logger.info("Initializing database schema and tables...")
 
     try:
@@ -388,7 +424,7 @@ def init_db():
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
 
-                # Create the `networks` table with additional fields for WireGuard client usage
+                # Create networks table
                 logger.info("Creating table 'sensos.networks' if not exists...")
                 cur.execute(
                     """
@@ -403,7 +439,7 @@ def init_db():
                     """
                 )
 
-                # Create the `peers` table (no more wg_public_key here)
+                # Create peers table
                 logger.info("Creating table 'sensos.wireguard_peers' if not exists...")
                 cur.execute(
                     """
@@ -415,7 +451,7 @@ def init_db():
                     """
                 )
 
-                # Create the `wireguard_keys` table (supports multiple keys per peer)
+                # Create wireguard_keys table
                 logger.info("Creating table 'sensos.wireguard_keys' if not exists...")
                 cur.execute(
                     """
@@ -429,41 +465,188 @@ def init_db():
                     """
                 )
 
-                # Create the `ssh_keys` table to store SSH public keys
-                logger.info("Creating table 'sensos.ssh_keys' if not exists...")
+                # Get the network name from .env
+                network_name = os.getenv("NETWORK")
+                if not network_name:
+                    logger.error("❌ NETWORK is not set in .env. Exiting.")
+                    return
+
+                # Check if network exists
+                logger.info(f"🔍 Checking if network '{network_name}' exists...")
                 cur.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
-                        id SERIAL PRIMARY KEY,
-                        network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
-                        peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
-                        username TEXT NOT NULL,
-                        uid INTEGER NOT NULL,
-                        ssh_public_key TEXT NOT NULL,
-                        key_type TEXT NOT NULL,         -- e.g., 'ed25519', 'rsa', 'ecdsa'
-                        key_size INTEGER NOT NULL,      -- e.g., 2048, 4096 (for RSA)
-                        key_comment TEXT,               -- Optional, e.g., 'user@hostname'
-                        fingerprint TEXT UNIQUE,        -- Unique fingerprint for quick lookup
-                        expires_at TIMESTAMP,           -- Optional expiration date
-                        last_used TIMESTAMP,            -- Optional last usage timestamp
-                        created_at TIMESTAMP DEFAULT NOW(),
-                        UNIQUE (peer_id, ssh_public_key)
-                    );
-                    """
+                    SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key 
+                    FROM sensos.networks WHERE name = %s;
+                    """,
+                    (network_name,),
                 )
+                existing_network = cur.fetchone()
 
-        logger.info("✅ Database schema initialization complete.")
+                if existing_network:
+                    network_id, ip_range, wg_public_ip, wg_port, wg_public_key = (
+                        existing_network
+                    )
+                    logger.info(f"✅ Network '{network_name}' already exists.")
 
+                    # Ensure public IP and port are set
+                    if not wg_public_ip or not wg_port:
+                        logger.warning(
+                            f"⚠️ Updating missing WireGuard IP/port for '{network_name}'..."
+                        )
+                        wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
+                        wg_port = int(os.getenv("WG_PORT", "51820"))
+
+                        cur.execute(
+                            """
+                            UPDATE sensos.networks 
+                            SET wg_public_ip = %s, wg_port = %s 
+                            WHERE id = %s;
+                            """,
+                            (wg_public_ip, wg_port, network_id),
+                        )
+                        logger.info(
+                            f"✅ Updated '{network_name}' with WireGuard IP {wg_public_ip} and port {wg_port}."
+                        )
+
+                else:
+                    # Generate defaults for a new network
+                    logger.info(f"🆕 Creating new network '{network_name}'...")
+                    ip_range = generate_default_ip_range(network_name)
+                    wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
+                    wg_port = int(os.getenv("WG_PORT", "51820"))
+
+                    # Generate WireGuard key pair
+                    private_key, public_key = generate_wireguard_keys()
+
+                    cur.execute(
+                        """
+                        INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
+                        VALUES (%s, %s, %s, %s, %s)
+                        RETURNING id;
+                        """,
+                        (network_name, ip_range, wg_public_ip, wg_port, public_key),
+                    )
+                    network_id = cur.fetchone()[0]
+                    logger.info(
+                        f"✅ Created new network '{network_name}' (ID: {network_id})."
+                    )
+
+                    # Generate WireGuard config files
+                    create_wireguard_configs(
+                        network_id, network_name, ip_range, private_key, public_key
+                    )
+
+        # Regenerate WireGuard configs
         add_peers_to_wireguard()
         restart_wireguard_container()
         start_controller_wireguard()
 
-        logger.info(
-            "✅ Regenerated wireguard configs and restarted wireguard container."
-        )
+        logger.info("✅ WireGuard setup completed.")
 
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
+    """Render a summary of existing networks in the database."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, ip_range, wg_public_ip, wg_port FROM sensos.networks;"
+            )
+            networks = cur.fetchall()
+
+    network_list = (
+        "<br>".join(
+            f"<b>{name}</b>: {ip_range} (WG: {wg_public_ip}:{wg_port})"
+            for name, ip_range, wg_public_ip, wg_port in networks
+        )
+        or "No networks yet."
+    )
+
+    return f"""
+    <html>
+    <head><title>Sensor Network Manager</title></head>
+    <body>
+        <h2>Existing Sensor Networks</h2>
+        <p>Below is a summary of all configured networks:</p>
+        
+        <h3>Networks</h3>
+        {network_list}
+
+        <h3>Create a New Network</h3>
+        <p>To create a new network, use the API endpoint:</p>
+        <code>POST /create-network</code>
+    </body>
+    </html>
+    """
+
+
+@app.post("/create-network")
+def create_network(
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+    name: str = Form(...),
+    wg_public_ip: Optional[str] = Form(None),
+    wg_port: Optional[str] = Form(None),  # Accept as string to validate manually
+):
+    """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
+
+    # Use environment variables if not provided
+    wg_public_ip = wg_public_ip or os.getenv("WG_IP", "127.0.0.1")
+
+    # Ensure wg_port is a valid integer
+    try:
+        wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", 51820))
+        if not (1 <= wg_port <= 65535):  # Valid port range check
+            raise ValueError("Port must be between 1 and 65535.")
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Invalid WireGuard port. Must be a number between 1 and 65535."
+            },
+        )
+
+    ip_range = generate_default_ip_range(name)
+
+    # Generate WireGuard key pair
+    private_key, public_key = generate_wireguard_keys()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id;
+                    """,
+                    (name, ip_range, wg_public_ip, wg_port, public_key),
+                )
+                network_id = cur.fetchone()[0]
+            except psycopg.errors.UniqueViolation:
+                return JSONResponse(
+                    status_code=400, content={"error": "Network already exists"}
+                )
+
+    # Pass network_id to create_wireguard_configs
+    create_wireguard_configs(network_id, name, ip_range, private_key, public_key)
+
+    add_peers_to_wireguard()
+    restart_wireguard_container()
+
+    # Start WireGuard after config is created
+    start_wireguard(name)
+
+    return {
+        "id": network_id,
+        "name": name,
+        "ip_range": ip_range,
+        "wg_public_ip": wg_public_ip,
+        "wg_port": wg_port,
+        "wg_public_key": public_key,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
