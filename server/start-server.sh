@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
 
@@ -9,7 +9,7 @@ NO_REBUILD=false
 if [ -f .env ]; then
     echo "📄 Loading environment variables from .env..."
     set -a
-    . .env
+    source .env
     set +a
 else
     echo "❌ .env file not found. Run configure-server.sh. Exiting." >&2
