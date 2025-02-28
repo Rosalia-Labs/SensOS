@@ -3,9 +3,7 @@
 set -e
 
 # Default options
-REMOVE_VOLUMES=false
 NO_REBUILD=false
-SAVE_DATABASE=true
 
 # Load environment variables from .env if available
 if [ -f .env ]; then
@@ -50,17 +48,11 @@ GIT_DIRTY="${GIT_DIRTY:-false}"
 # Parse command-line arguments
 while [ $# -gt 0 ]; do
     case "$1" in
-    --remove-volumes)
-        REMOVE_VOLUMES=true
-        ;;
     --no-build)
         NO_REBUILD=true
         ;;
-    --no-save-database)
-        SAVE_DATABASE=false
-        ;;
     --help)
-        echo "Usage: $0 [--remove-volumes] [--no-build] [--no-save-database]"
+        echo "Usage: $0 [--no-build]"
         exit 0
         ;;
     *)
@@ -73,14 +65,6 @@ done
 
 export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
 export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
-
-# Stop Docker Compose services
-echo "🛑 Stopping Docker Compose services..."
-if [ "$REMOVE_VOLUMES" = true ]; then
-    docker-compose down -v
-else
-    docker-compose down
-fi
 
 # Start Docker Compose services with or without rebuild
 if [ "$NO_REBUILD" = false ]; then

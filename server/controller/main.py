@@ -567,9 +567,14 @@ def init_db():
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
 
 
+from fastapi import Depends
+from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasicCredentials
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
-    """Display version information and network status."""
+    """Display network status with version information in the footer."""
 
     # Fetch latest version entry
     with get_db() as conn:
@@ -584,24 +589,6 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
                 "SELECT name, ip_range, wg_public_ip, wg_port FROM sensos.networks ORDER BY name;"
             )
             networks = cur.fetchall()
-
-    # Handle missing version info
-    if version_info:
-        version_display = f"""
-        <h3>🔍 Version Information</h3>
-        <table>
-            <tr><th>Version</th><td>{version_info[1]}.{version_info[2]}.{version_info[3]}{('-' + version_info[4]) if version_info[4] else ''}</td></tr>
-            <tr><th>Git Commit</th><td>{version_info[5]}</td></tr>
-            <tr><th>Git Branch</th><td>{version_info[6]}</td></tr>
-            <tr><th>Git Tag</th><td>{version_info[7]}</td></tr>
-            <tr><th>Git Dirty</th><td>{"✅ Clean" if version_info[8] == "false" else "⚠️ Dirty"}</td></tr>
-            <tr><th>Timestamp</th><td>{version_info[9]}</td></tr>
-        </table>
-        """
-    else:
-        version_display = (
-            "<p style='color: red;'>⚠️ No version information available.</p>"
-        )
 
     # Handle missing networks
     if networks:
@@ -627,6 +614,24 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
         network_table += "</table>"
     else:
         network_table = "<p style='color: red;'>⚠️ No registered networks found.</p>"
+
+    # Handle missing version info (Footer)
+    if version_info:
+        version_display = f"""
+        <footer>
+            <p><strong>🔍 Version Information</strong></p>
+            <table>
+                <tr><th>Version</th><td>{version_info[1]}.{version_info[2]}.{version_info[3]}{('-' + version_info[4]) if version_info[4] else ''}</td></tr>
+                <tr><th>Git Commit</th><td>{version_info[5]}</td></tr>
+                <tr><th>Git Branch</th><td>{version_info[6]}</td></tr>
+                <tr><th>Git Tag</th><td>{version_info[7]}</td></tr>
+                <tr><th>Git Dirty</th><td>{"✅ Clean" if version_info[8] == "false" else "⚠️ Dirty"}</td></tr>
+                <tr><th>Timestamp</th><td>{version_info[9]}</td></tr>
+            </table>
+        </footer>
+        """
+    else:
+        version_display = "<footer><p style='color: red;'>⚠️ No version information available.</p></footer>"
 
     return f"""
     <html>
@@ -668,6 +673,13 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
                 background-color: #005a9c;
                 color: white;
             }}
+            footer {{
+                margin-top: 20px;
+                padding-top: 10px;
+                border-top: 2px solid #ddd;
+                font-size: 14px;
+                color: #666;
+            }}
         </style>
     </head>
     <body>
@@ -675,8 +687,8 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
             <h2>Sensor Network Manager</h2>
             <h3>📡 Network Overview</h3>
             <p>Welcome to the Sensor Network Dashboard.</p>
-            {version_display}
             {network_table}
+            {version_display}
         </div>
     </body>
     </html>
