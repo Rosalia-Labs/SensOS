@@ -3,9 +3,3 @@ major = 0
 minor = 1
 patch = 0
 suffix = alpha
-
-[git]
-commit = fc597f7752bbddd234802017e42f49b7d9af5ab7
-branch = main
-tag = 
-dirty = false
