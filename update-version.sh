@@ -67,16 +67,6 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-# Get Git metadata
-GIT_COMMIT=$(git rev-parse HEAD)
-GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
-GIT_DIRTY=$(git diff --quiet || echo "true")
-
-# Ensure empty values are preserved
-[ -z "$GIT_TAG" ] && GIT_TAG=""
-[ -z "$GIT_DIRTY" ] && GIT_DIRTY="false"
-
 # Write updated `VERSION` file
 cat >"$VERSION_FILE" <<EOF
 [version]
@@ -84,15 +74,9 @@ major = $MAJOR
 minor = $MINOR
 patch = $PATCH
 suffix = $SUFFIX
-
-[git]
-commit = $GIT_COMMIT
-branch = $GIT_BRANCH
-tag = $GIT_TAG
-dirty = $GIT_DIRTY
 EOF
 
-echo "✅ Updated $VERSION_FILE with latest Git information."
+echo "✅ Updated $VERSION_FILE."
 
 # Auto-stage the updated `VERSION` file for commit if needed
 if git diff --quiet "$VERSION_FILE"; then

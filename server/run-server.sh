@@ -27,14 +27,15 @@ if [ -f "$VERSION_FILE" ]; then
     VERSION_MINOR=$(awk -F' = ' '/^minor/ {print $2}' "$VERSION_FILE")
     VERSION_PATCH=$(awk -F' = ' '/^patch/ {print $2}' "$VERSION_FILE")
     VERSION_SUFFIX=$(awk -F' = ' '/^suffix/ {print $2}' "$VERSION_FILE")
-
-    GIT_COMMIT=$(awk -F' = ' '/^commit/ {print $2}' "$VERSION_FILE")
-    GIT_BRANCH=$(awk -F' = ' '/^branch/ {print $2}' "$VERSION_FILE")
-    GIT_TAG=$(awk -F' = ' '/^tag/ {print $2}' "$VERSION_FILE")
-    GIT_DIRTY=$(awk -F' = ' '/^dirty/ {print $2}' "$VERSION_FILE")
 else
     echo "⚠️ VERSION file not found. Proceeding without version overrides."
 fi
+
+# Get Git metadata dynamically
+GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+GIT_TAG=$(git describe --tags --always 2>/dev/null || echo "unknown")
+GIT_DIRTY=$(test -n "$(git status --porcelain 2>/dev/null)" && echo "true" || echo "false")
 
 # Ensure empty values are set to defaults
 VERSION_MAJOR="${VERSION_MAJOR:-unknown}"
