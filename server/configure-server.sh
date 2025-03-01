@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
 
@@ -14,46 +14,76 @@ DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 DEFAULT_NETWORK="sensos"
 
+# Print help message
+print_help() {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  -d, --db-port PORT          Set database port (default: $DEFAULT_DB_PORT)"
+    echo "  -a, --api-port PORT         Set API port (default: $DEFAULT_API_PORT)"
+    echo "  -n, --wg-network NAME       Set WireGuard network name (default: $DEFAULT_NETWORK)"
+    echo "  -w, --wg-port PORT         Set WireGuard port (default: $DEFAULT_WG_PORT)"
+    echo "  -i, --wg-ip IP             Set WireGuard IP (default: $DEFAULT_WG_IP)"
+    echo "  -p, --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)"
+    echo "  -x, --api-password PWD     Set API password (default: $DEFAULT_API_PASSWORD)"
+    echo "  -r, --registry-port PORT   Set registry port (default: $DEFAULT_REGISTRY_PORT)"
+    echo "  -u, --registry-user USER   Set registry username (default: $DEFAULT_REGISTRY_USER)"
+    echo "  -s, --registry-password PWD Set registry password (default: $DEFAULT_REGISTRY_PASSWORD)"
+    echo "  -h, --help                 Show this help message"
+    exit 0
+}
+
 # Allow command-line overrides
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
     case "$1" in
-    --db-port=*)
-        DB_PORT="${1#*=}"
+    -d | --db-port)
+        DB_PORT="$2"
+        shift 2
         ;;
-    --api-port=*)
-        API_PORT="${1#*=}"
+    -a | --api-port)
+        API_PORT="$2"
+        shift 2
         ;;
-    --wg-network=*)
-        NETWORK="${1#*=}"
+    -n | --wg-network)
+        NETWORK="$2"
+        shift 2
         ;;
-    --wg-port=*)
-        WG_PORT="${1#*=}"
+    -w | --wg-port)
+        WG_PORT="$2"
+        shift 2
         ;;
-    --wg-ip=*)
-        WG_IP="${1#*=}"
+    -i | --wg-ip)
+        WG_IP="$2"
+        shift 2
         ;;
-    --postgres-password=*)
-        POSTGRES_PASSWORD="${1#*=}"
+    -p | --postgres-password)
+        POSTGRES_PASSWORD="$2"
+        shift 2
         ;;
-    --api-password=*)
-        API_PASSWORD="${1#*=}"
+    -x | --api-password)
+        API_PASSWORD="$2"
+        shift 2
         ;;
-    --registry-port=*)
-        REGISTRY_PORT="${1#*=}"
+    -r | --registry-port)
+        REGISTRY_PORT="$2"
+        shift 2
         ;;
-    --registry-user=*)
-        REGISTRY_USER="${1#*=}"
+    -u | --registry-user)
+        REGISTRY_USER="$2"
+        shift 2
         ;;
-    --registry-password=*)
-        REGISTRY_PASSWORD="${1#*=}"
+    -s | --registry-password)
+        REGISTRY_PASSWORD="$2"
+        shift 2
+        ;;
+    -h | --help)
+        print_help
         ;;
     *)
         echo "Unknown option: $1" >&2
-        echo "Usage: $0 [--db-port=PORT] [--api-port=PORT] [--wg-port=PORT] [--wg-ip=IP] [--postgres-password=PASSWORD] [--api-password=PASSWORD] [--registry-port=PORT] [--registry-user=USER] [--registry-password=PASSWORD]" >&2
-        exit 1
+        print_help
         ;;
     esac
-    shift
 done
 
 # Use environment variables if set, otherwise use defaults
