@@ -29,20 +29,20 @@ services:
       GIT_BRANCH: ${GIT_BRANCH}
       GIT_TAG: ${GIT_TAG}
       GIT_DIRTY: ${GIT_DIRTY}
+      SENSOS_REGISTRY_IP: ${SENSOS_REGISTRY_IP}
       SENSOS_REGISTRY_PORT: ${SENSOS_REGISTRY_PORT}
       SENSOS_REGISTRY_USER: ${SENSOS_REGISTRY_USER}
     cap_add:
       - NET_ADMIN
-      - NET_RAW
-    devices:
-      - /dev/net/tun:/dev/net/tun
+    #   - NET_RAW
+    # devices:
+    #   - /dev/net/tun:/dev/net/tun
     volumes:
       - sensos_wireguard_config:/config
       - sensos_controller_wg_dir:/etc/wireguard
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${API_PORT:-8000}:8000"
-      - "${SENSOS_REGISTRY_PORT}:${SENSOS_REGISTRY_PORT}"
     networks:
       - sensos_network
 
@@ -54,7 +54,7 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
-      - LOG_CONFS=true
+      LOG_CONFS: "true"
     volumes:
       - sensos_wireguard_config:/config
     ports:
@@ -90,9 +90,8 @@ services:
     image: registry:2
     container_name: sensos-registry
     restart: always
-    env_file: .env
     environment:
-      REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
+      REGISTRY_HTTP_ADDR: "0.0.0.0:${SENSOS_REGISTRY_PORT:-5000}"
       REGISTRY_AUTH: htpasswd
       REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
       REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
@@ -100,7 +99,7 @@ services:
       - sensos_registry:/var/lib/registry
       - ./.htauth:/auth
     ports:
-      - "5000:5000"
+      - "${SENSOS_REGISTRY_PORT:-5000}:5000"
     networks:
       - sensos_network
 

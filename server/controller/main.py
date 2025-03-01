@@ -54,6 +54,7 @@ GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
 # Registry values
+SENSOS_REGISTRY_IP = os.getenv("SENSOS_REGISTRY_IP", "127.0.0.1")
 SENSOS_REGISTRY_USER = os.getenv("SENSOS_REGISTRY_USER", "sensos")
 SENSOS_REGISTRY_PORT = os.getenv("SENSOS_REGISTRY_PORT", "5000")
 
@@ -441,60 +442,13 @@ def update_config_table(cur):
     cur.execute(
         """
         INSERT INTO sensos.config (key, value) VALUES
+            ('registry_ip', %s),
             ('registry_port', %s),
             ('registry_user', %s)
         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
         """,
-        (SENSOS_REGISTRY_PORT, SENSOS_REGISTRY_USER),
+        (SENSOS_REGISTRY_IP, SENSOS_REGISTRY_PORT, SENSOS_REGISTRY_USER),
     )
-
-
-def initialize_iptables():
-    commands = [
-        "iptables -P INPUT ACCEPT",
-        "iptables -P FORWARD ACCEPT",
-        "iptables -P OUTPUT ACCEPT",
-        "iptables -t nat -F",
-        "iptables -t mangle -F",
-        "iptables -F",
-        "iptables -X",
-    ]
-
-    for cmd in commands:
-        subprocess.run(cmd.split(), check=True)
-
-
-def add_registry_port_forwarding_rule():
-    """Set up iptables NAT rule to forward registry traffic to sensos-registry."""
-    try:
-        registry_ip = get_container_ip("sensos-registry")
-
-        # Add DNAT rule to forward traffic from REGISTRY_PORT to sensos-registry
-        subprocess.run(
-            [
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "PREROUTING",
-                "-p",
-                "tcp",
-                "--dport",
-                str(SENSOS_REGISTRY_PORT),
-                "-j",
-                "DNAT",
-                "--to-destination",
-                f"{registry_ip}:5000",
-            ],
-            check=True,
-        )
-
-        logging.info(
-            f"✅ Registry forwarding set: {SENSOS_REGISTRY_PORT} -> {registry_ip}:5000"
-        )
-
-    except Exception as e:
-        logging.error(f"❌ Failed to set up registry port forwarding: {e}")
 
 
 def create_version_history_table(cur):
@@ -600,9 +554,9 @@ def update_version_history_table(cur):
 
 
 def ensure_network_exists(cur):
-    network_name = os.getenv("NETWORK")
+    network_name = os.getenv("INITIAL_NETWORK")
     if not network_name:
-        logger.error("❌ NETWORK is not set in .env. Exiting.")
+        logger.error("❌ INITIAL_NETWORK is not set in .env. Exiting.")
         return None
 
     logger.info(f"🔍 Checking if network '{network_name}' exists...")
@@ -683,12 +637,6 @@ def bootstrap():
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
-    try:
-        initialize_iptables()
-        add_registry_port_forwarding_rule()
-        logger.info("✅ Initialized iptables and set registry port forwarding.")
-    except Exception as e:
-        logger.error(f"❌ Error initializing iptables: {e}", exc_info=True)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1171,3 +1119,69 @@ def inspect_database(
 
             html += "</div></body></html>"
             return HTMLResponse(html)
+
+
+@app.get("/get-peer-info")
+def get_peer_info(
+    ip_address: str, credentials: HTTPBasicCredentials = Depends(authenticate)
+):
+    """
+    Given an IP address, returns:
+      - exists: True if the IP is registered as a peer; otherwise False.
+      - network_name: the name of the network the peer is registered to, or None.
+      - network_wg_public_key: the WireGuard public key of the network, or None.
+      - peer_wg_public_key: the WireGuard public key stored for the peer, or None.
+      - ssh_public_key: the SSH public key associated with the peer, or None.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Check if the IP exists in the wireguard_peers table
+            cur.execute(
+                "SELECT id, network_id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
+                (ip_address,),
+            )
+            peer = cur.fetchone()
+            if not peer:
+                return {
+                    "exists": False,
+                    "network_name": None,
+                    "network_wg_public_key": None,
+                    "peer_wg_public_key": None,
+                    "ssh_public_key": None,
+                }
+            peer_id, network_id = peer
+
+            # Get network details from the networks table
+            cur.execute(
+                "SELECT name, wg_public_key FROM sensos.networks WHERE id = %s;",
+                (network_id,),
+            )
+            network = cur.fetchone()
+            if network:
+                network_name, network_wg_public_key = network
+            else:
+                network_name, network_wg_public_key = None, None
+
+            # Get the peer's WireGuard public key from wireguard_keys table
+            cur.execute(
+                "SELECT wg_public_key FROM sensos.wireguard_keys WHERE peer_id = %s AND is_active = TRUE ORDER BY created_at DESC LIMIT 1;",
+                (peer_id,),
+            )
+            peer_wg_row = cur.fetchone()
+            peer_wg_public_key = peer_wg_row[0] if peer_wg_row else None
+
+            # Get the associated SSH public key from the ssh_keys table
+            cur.execute(
+                "SELECT ssh_public_key FROM sensos.ssh_keys WHERE peer_id = %s ORDER BY last_used DESC LIMIT 1;",
+                (peer_id,),
+            )
+            ssh_row = cur.fetchone()
+            ssh_public_key = ssh_row[0] if ssh_row else None
+
+    return {
+        "exists": True,
+        "network_name": network_name,
+        "network_wg_public_key": network_wg_public_key,
+        "peer_wg_public_key": peer_wg_public_key,
+        "ssh_public_key": ssh_public_key,
+    }
