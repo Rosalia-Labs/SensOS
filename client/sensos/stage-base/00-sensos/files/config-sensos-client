@@ -16,7 +16,8 @@ DEFAULT_NETWORK_NAME = "sensos"
 DEFAULT_WG_DIR = "/etc/wireguard"
 DEFAULT_KEEPALIVE = "0"
 
-API_KEY_FILE = os.path.expanduser("~/.sensos_api_key")
+API_PASSWORD_FILE = os.path.expanduser("~/.sensos_api_password")
+REGISTRY_PASSWORD_FILE = os.path.expanduser("~/.sensos_registry_password")
 
 
 def parse_args():
@@ -139,8 +140,8 @@ def get_api_password(server, port):
     """
     tries = 3
     for attempt in range(tries):
-        if os.path.exists(API_KEY_FILE):
-            with open(API_KEY_FILE, "r") as f:
+        if os.path.exists(API_PASSWORD_FILE):
+            with open(API_PASSWORD_FILE, "r") as f:
                 stored_password = f.read().strip()
             print("Testing stored API password...")
             if validate_api_password(server, port, stored_password):
@@ -151,10 +152,10 @@ def get_api_password(server, port):
         # Prompt user for a new password
         api_password = input("🔑 Enter API password: ").strip()
         if validate_api_password(server, port, api_password):
-            with open(API_KEY_FILE, "w") as f:
+            with open(API_PASSWORD_FILE, "w") as f:
                 f.write(api_password)
-            os.chmod(API_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)
-            print(f"✅ API password saved securely in {API_KEY_FILE}.")
+            os.chmod(API_PASSWORD_FILE, stat.S_IRUSR | stat.S_IWUSR)
+            print(f"✅ API password saved securely in {API_PASSWORD_FILE}.")
             return api_password
         else:
             print("❌ API password is invalid, please try again.")
@@ -727,12 +728,139 @@ def configure_ssh(args, api_password):
         print("Keeping existing SSH key configuration.")
 
 
+def validate_registry_password(registry_info, registry_password):
+    """
+    Test the registry password by sending a GET request to the Docker Registry v2 endpoint.
+    The registry_info dict must contain the keys 'registry_ip', 'registry_port', and 'registry_user'.
+    """
+    url = f"http://{registry_info['registry_ip']}:{registry_info['registry_port']}/v2/"
+    try:
+        response = requests.get(
+            url, auth=(registry_info["registry_user"], registry_password), timeout=5
+        )
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"Registry returned status code {response.status_code}.")
+            return False
+    except Exception as e:
+        print(f"Error testing registry password: {e}")
+        return False
+
+
+def get_registry_info_from_api(server, port, api_password):
+    """
+    Retrieve Sensos registry connection details from the API (which reads them from the database).
+    """
+    url = f"http://{server}:{port}/get-registry-info"
+    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Error retrieving registry info: Status code {response.status_code}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"Error retrieving registry info: {e}")
+        sys.exit(1)
+
+
+def save_registry_config(registry_info, registry_password):
+    """
+    Save the Sensos registry configuration to a local JSON file with secure permissions.
+    The configuration is stored in ~/.sensos_registry_config.json.
+    """
+    config = {
+        "registry_ip": registry_info["registry_ip"],
+        "registry_port": registry_info["registry_port"],
+        "registry_user": registry_info["registry_user"],
+        "registry_password": registry_password,
+    }
+    config_file = os.path.expanduser("~/.sensos_registry_config.json")
+    with open(config_file, "w") as f:
+        json.dump(config, f, indent=2)
+    os.chmod(config_file, stat.S_IRUSR | stat.S_IWUSR)
+    print(f"✅ Registry configuration saved to {config_file}.")
+
+
+def get_registry_password_from_info(registry_info):
+    """
+    Retrieve or prompt for the registry password using the provided registry_info dict,
+    validate it by testing the connection, save it locally, and return the password.
+    Allows up to 3 attempts.
+    """
+    tries = 3
+    for attempt in range(tries):
+        if os.path.exists(REGISTRY_PASSWORD_FILE):
+            with open(REGISTRY_PASSWORD_FILE, "r") as f:
+                stored_password = f.read().strip()
+            print("Testing stored registry password...")
+            if validate_registry_password(registry_info, stored_password):
+                print("✅ Registry password from file is valid.")
+                return stored_password
+            else:
+                print("⚠️ Stored registry password is invalid.")
+        # Prompt user for a new registry password
+        registry_password = input("🔑 Enter registry password: ").strip()
+        if validate_registry_password(registry_info, registry_password):
+            save_registry_config(registry_info, registry_password)
+            print(f"✅ Registry password saved securely in {REGISTRY_PASSWORD_FILE}.")
+            return registry_password
+        else:
+            print("❌ Registry password is invalid, please try again.")
+    print("🚫 Failed to provide a valid registry password after 3 attempts.")
+    sys.exit(1)
+
+
+def get_all_passwords(args):
+    """
+    Prompt for and validate the API password, then retrieve registry info from the API,
+    and finally prompt for and validate the registry password.
+    Returns a dict with:
+      - api_password
+      - registry_info: dict with keys "registry_ip", "registry_port", "registry_user"
+      - registry_password
+    """
+    # Get and validate the API password
+    api_password = get_api_password(args.server, args.port)
+
+    # Retrieve registry info from the API
+    registry_info = get_registry_info_from_api(args.server, args.port, api_password)
+    required_keys = ["registry_ip", "registry_port", "registry_user"]
+    if not all(key in registry_info for key in required_keys):
+        print("❌ Registry information is incomplete from API. Aborting.")
+        sys.exit(1)
+
+    print(
+        f"Registry info: IP={registry_info['registry_ip']}, Port={registry_info['registry_port']}, User={registry_info['registry_user']}"
+    )
+
+    # Retrieve and validate the registry password using the registry_info dict
+    registry_password = get_registry_password_from_info(registry_info)
+
+    # Now registry information and password are stored for future use.
+    print("Registry configuration:")
+    print(f"  IP: {registry_info['registry_ip']}")
+    print(f"  Port: {registry_info['registry_port']}")
+    print(f"  User: {registry_info['registry_user']}")
+
+    return {
+        "api_password": api_password,
+        "registry_info": registry_info,
+        "registry_password": registry_password,
+    }
+
+
 def main():
     args = parse_args()
     print("🚀 Starting device configuration...")
-    api_password = get_api_password(args.server, args.port)
 
-    # Separate configuration flows:
+    # Get both API and registry passwords up front, storing registry info for later use.
+    creds = get_all_passwords(args)
+    api_password = creds["api_password"]
+
+    # Proceed with the rest of your configuration flows.
     configure_wireguard(args, api_password)
     configure_ssh(args, api_password)
 

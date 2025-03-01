@@ -1185,3 +1185,25 @@ def get_peer_info(
         "peer_wg_public_key": peer_wg_public_key,
         "ssh_public_key": ssh_public_key,
     }
+
+
+@app.get("/get-registry-info")
+def get_registry_info(credentials: HTTPBasicCredentials = Depends(authenticate)):
+    """
+    Retrieves the Sensos Registry connection details from the database:
+      - registry_ip: The IP address for the registry container.
+      - registry_port: The port on which the registry is listening.
+      - registry_user: The username for registry authentication.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT key, value FROM sensos.config WHERE key IN ('registry_ip', 'registry_port', 'registry_user');"
+            )
+            rows = cur.fetchall()
+            config = {key: value for key, value in rows}
+    return {
+        "registry_ip": config.get("registry_ip", SENSOS_REGISTRY_IP),
+        "registry_port": config.get("registry_port", SENSOS_REGISTRY_PORT),
+        "registry_user": config.get("registry_user", SENSOS_REGISTRY_USER),
+    }

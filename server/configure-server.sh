@@ -125,7 +125,7 @@ echo "✅ Environment configuration written to .env."
 
 # Create .htpasswd file for the registry authentication
 mkdir -p .htauth
-docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$REGISTRY_USER" "$REGISTRY_PASSWORD" >.htauth/htpasswd
+docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >.htauth/htpasswd
 chmod 600 .htauth/htpasswd
 
 echo "✅ htpasswd file created at .htauth/htpasswd."
