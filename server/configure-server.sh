@@ -7,9 +7,9 @@ DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8000
 DEFAULT_WG_PORT=51820
 DEFAULT_WG_IP="127.0.0.1"
-DEFAULT_REGISTRY_PORT=5000
-DEFAULT_REGISTRY_USER="sensos"
-DEFAULT_REGISTRY_PASSWORD="sensos"
+DEFAULT_SENSOS_REGISTRY_PORT=5000
+DEFAULT_SENSOS_REGISTRY_USER="sensos"
+DEFAULT_SENSOS_REGISTRY_PASSWORD="sensos"
 DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 DEFAULT_NETWORK="sensos"
@@ -26,9 +26,9 @@ print_help() {
     echo "  -i, --wg-ip IP             Set WireGuard IP (default: $DEFAULT_WG_IP)"
     echo "  -p, --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)"
     echo "  -x, --api-password PWD     Set API password (default: $DEFAULT_API_PASSWORD)"
-    echo "  -r, --registry-port PORT   Set registry port (default: $DEFAULT_REGISTRY_PORT)"
-    echo "  -u, --registry-user USER   Set registry username (default: $DEFAULT_REGISTRY_USER)"
-    echo "  -s, --registry-password PWD Set registry password (default: $DEFAULT_REGISTRY_PASSWORD)"
+    echo "  -r, --registry-port PORT   Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)"
+    echo "  -u, --registry-user USER   Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)"
+    echo "  -s, --registry-password PWD Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)"
     echo "  -h, --help                 Show this help message"
     exit 0
 }
@@ -65,15 +65,15 @@ while [[ $# -gt 0 ]]; do
         shift 2
         ;;
     -r | --registry-port)
-        REGISTRY_PORT="$2"
+        SENSOS_REGISTRY_PORT="$2"
         shift 2
         ;;
     -u | --registry-user)
-        REGISTRY_USER="$2"
+        SENSOS_REGISTRY_USER="$2"
         shift 2
         ;;
     -s | --registry-password)
-        REGISTRY_PASSWORD="$2"
+        SENSOS_REGISTRY_PASSWORD="$2"
         shift 2
         ;;
     -h | --help)
@@ -94,9 +94,9 @@ WG_PORT="${WG_PORT:-$DEFAULT_WG_PORT}"
 WG_IP="${WG_IP:-$DEFAULT_WG_IP}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}"
 API_PASSWORD="${API_PASSWORD:-$DEFAULT_API_PASSWORD}"
-REGISTRY_PORT="${REGISTRY_PORT:-$DEFAULT_REGISTRY_PORT}"
-REGISTRY_USER="${REGISTRY_USER:-$DEFAULT_REGISTRY_USER}"
-REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-$DEFAULT_REGISTRY_PASSWORD}"
+REGISTRY_PORT="${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}"
+SENSOS_REGISTRY_USER="${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}"
+SENSOS_REGISTRY_PASSWORD="${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}"
 
 # Write environment variables to .env file with strict permissions
 cat >.env <<EOF
@@ -107,9 +107,9 @@ WG_PORT=$WG_PORT
 WG_IP=$WG_IP
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 API_PASSWORD=$API_PASSWORD
-REGISTRY_PORT=$REGISTRY_PORT
-REGISTRY_USER=$REGISTRY_USER
-REGISTRY_PASSWORD=$REGISTRY_PASSWORD
+SENSOS_REGISTRY_PORT=$SENSOS_REGISTRY_PORT
+SENSOS_REGISTRY_USER=$SENSOS_REGISTRY_USER
+SENSOS_REGISTRY_PASSWORD=$SENSOS_REGISTRY_PASSWORD
 EOF
 
 chmod 600 .env

@@ -53,6 +53,10 @@ GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
 GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
+# Registry values
+SENSOS_REGISTRY_USER = os.getenv("SENSOS_REGISTRY_USER", "sensos")
+SENSOS_REGISTRY_PORT = os.getenv("SENSOS_REGISTRY_PORT", "5000")
+
 # Log versioning details at startup
 logger.info("🔍 Application Version Information:")
 logger.info(
@@ -156,6 +160,32 @@ def get_docker_client():
         docker_host = "unix://var/run/docker.sock"  # Default Unix Socket
 
     return docker.DockerClient(base_url=docker_host)
+
+
+def get_container_ip(container_name):
+    """Retrieve the IP address of a running container using Docker SDK."""
+    try:
+        client = docker.from_env()
+        container = client.containers.get(container_name)
+        networks = container.attrs["NetworkSettings"]["Networks"]
+
+        # Extract the IP from the correct network
+        for network_name, network_info in networks.items():
+            if "IPAddress" in network_info and network_info["IPAddress"]:
+                return network_info["IPAddress"]
+
+        raise ValueError(
+            f"❌ No valid IP address found for container '{container_name}'"
+        )
+
+    except docker.errors.NotFound:
+        print(f"❌ Container '{container_name}' not found.")
+    except docker.errors.APIError as e:
+        print(f"❌ Docker API error: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error while getting IP for '{container_name}': {e}")
+
+    return None
 
 
 def restart_wireguard_container():
@@ -308,7 +338,7 @@ def create_wireguard_configs(
 
     insert_peer(network_id, wireguard_ip)
     register_wireguard_key_in_db(wireguard_ip, wg_public_key)
-    wireguard_container_ip = socket.gethostbyname("sensos-wireguard")
+    wireguard_container_ip = get_container_ip("sensos-wireguard")
 
     # WireGuard container config (main server)
     wg_config_content = f"""[Interface]
@@ -394,6 +424,77 @@ AllowedIPs = {wg_ip}/32
     logger.info(
         "✅ WireGuard configuration regenerated for all networks with secure permissions."
     )
+
+
+def create_config_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.config (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
+
+
+def update_config_table(cur):
+    cur.execute(
+        """
+        INSERT INTO sensos.config (key, value) VALUES
+            ('registry_port', %s),
+            ('registry_user', %s)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+        """,
+        (SENSOS_REGISTRY_PORT, SENSOS_REGISTRY_USER),
+    )
+
+
+def initialize_iptables():
+    commands = [
+        "iptables -P INPUT ACCEPT",
+        "iptables -P FORWARD ACCEPT",
+        "iptables -P OUTPUT ACCEPT",
+        "iptables -t nat -F",
+        "iptables -t mangle -F",
+        "iptables -F",
+        "iptables -X",
+    ]
+
+    for cmd in commands:
+        subprocess.run(cmd.split(), check=True)
+
+
+def add_registry_port_forwarding_rule():
+    """Set up iptables NAT rule to forward registry traffic to sensos-registry."""
+    try:
+        registry_ip = get_container_ip("sensos-registry")
+
+        # Add DNAT rule to forward traffic from REGISTRY_PORT to sensos-registry
+        subprocess.run(
+            [
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-p",
+                "tcp",
+                "--dport",
+                str(SENSOS_REGISTRY_PORT),
+                "-j",
+                "DNAT",
+                "--to-destination",
+                f"{registry_ip}:5000",
+            ],
+            check=True,
+        )
+
+        logging.info(
+            f"✅ Registry forwarding set: {SENSOS_REGISTRY_PORT} -> {registry_ip}:5000"
+        )
+
+    except Exception as e:
+        logging.error(f"❌ Failed to set up registry port forwarding: {e}")
 
 
 def create_version_history_table(cur):
@@ -557,7 +658,7 @@ def ensure_network_exists(cur):
 
 
 @app.on_event("startup")
-def init_db():
+def bootstrap():
     """Ensure the database schema, tables, and network exist at startup."""
     logger.info("Initializing database schema and tables...")
     try:
@@ -565,6 +666,8 @@ def init_db():
             with conn.cursor() as cur:
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+                create_config_table(cur)
+                update_config_table(cur)
                 create_version_history_table(cur)
                 update_version_history_table(cur)
                 create_networks_table(cur)
@@ -580,6 +683,12 @@ def init_db():
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
+    try:
+        initialize_iptables()
+        add_registry_port_forwarding_rule()
+        logger.info("✅ Initialized iptables and set registry port forwarding.")
+    except Exception as e:
+        logger.error(f"❌ Error initializing iptables: {e}", exc_info=True)
 
 
 @app.get("/", response_class=HTMLResponse)
