@@ -21,7 +21,7 @@ print_help() {
     echo "Options:"
     echo "  --db-port PORT          Set database port (default: $DEFAULT_DB_PORT)"
     echo "  --api-port PORT         Set API port (default: $DEFAULT_API_PORT)"
-    echo "  --wg-network NAME       Set WireGuard network name (default: $DEFAULT_NETWORK)"
+    echo "  --wg-network NAME       Set WireGuard network name (default: $DEFAULT_INITIAL_NETWORK)"
     echo "  --wg-ip IP              Set WireGuard IP (default: $DEFAULT_WG_IP)"
     echo "  --wg-port PORT          Set WireGuard port (default: $DEFAULT_WG_PORT)"
     echo "  --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)"
@@ -30,7 +30,7 @@ print_help() {
     echo "  --registry-port PORT    Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)"
     echo "  --registry-user USER    Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)"
     echo "  --registry-password PWD Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)"
-    echo "  -h, --help                 Show this help message"
+    echo "  -h, --help              Show this help message"
     exit 0
 }
 
@@ -123,17 +123,34 @@ chmod 600 .env
 
 echo "✅ Environment configuration written to .env."
 
-# Create .htpasswd file for the registry authentication
-mkdir -p .htauth
-docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >.htauth/htpasswd
-chmod 600 .htauth/htpasswd
+AUTH_DIR="./.api_auth"
+if [ ! -d "$AUTH_DIR" ]; then exit 1; fi
+docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >"$AUTH_DIR"/htpasswd
+chmod 600 "$AUTH_DIR"/htpasswd
 
-echo "✅ htpasswd file created at .htauth/htpasswd."
+echo "✅ htpasswd file created at "$AUTH_DIR"/htpasswd."
+
+CERT_DIR="./.certs"
+if [ ! -d "$CERT_DIR" ]; then exit 1; fi
+# Generate TLS certificates using Docker if they do not exist
+if [ ! -f "$CERT_DIR/domain.crt" ] || [ ! -f "$CERT_DIR/domain.key" ]; then
+    echo "Generating self-signed TLS certificate and key using Docker..."
+    docker run --rm -v "$CERT_DIR":/certs frapsoft/openssl req \
+        -newkey rsa:4096 -nodes -sha256 \
+        -keyout /certs/domain.key \
+        -x509 -days 365 \
+        -out /certs/domain.crt \
+        -subj "/CN=${SENSOS_REGISTRY_IP}"
+    chmod 600 "$CERT_DIR/domain.crt" "$CERT_DIR/domain.key"
+    echo "✅ TLS certificate (certs/domain.crt) and key (certs/domain.key) generated."
+else
+    echo "TLS certificate and key already exist in $CERT_DIR."
+fi
 
 # Warnings for default passwords
-for var in "REGISTRY_PASSWORD" "POSTGRES_PASSWORD" "API_PASSWORD"; do
+for var in "SENSOS_REGISTRY_PASSWORD" "POSTGRES_PASSWORD" "API_PASSWORD"; do
     eval "value=\$$var"
-    eval "default_value=\$DEFAULT_$var"
+    eval "default_value=\$DEFAULT_${var}"
     if [ "$value" = "$default_value" ]; then
         echo "" >&2
         echo "🚨🚨🚨 WARNING: Using the default $var! 🚨🚨🚨" >&2

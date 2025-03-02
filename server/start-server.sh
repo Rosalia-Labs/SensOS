@@ -75,6 +75,16 @@ else
     docker compose up -d
 fi
 
+source .env
+
+SRHOST="$SENSOS_REGISTRY_IP":"$SENSOS_REGISTRY_PORT"
+DB_IMG_NAME=server-sensos-database
+
+echo "Adding $DB_IMG_NAME image to the registry..."
+echo "$SENSOS_REGISTRY_PASSWORD" | docker login "$SRHOST" -u "$SENSOS_REGISTRY_USER" --password-stdin
+docker tag "$DB_IMG_NAME":latest "$SRHOST"/"$DB_IMG_NAME":latest
+docker push "$SRHOST"/"$DB_IMG_NAME":latest
+
 echo "✅ Done."
 
 # Print version information for verification
