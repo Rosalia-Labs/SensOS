@@ -3,7 +3,7 @@
 set -e
 
 # Default options
-NO_REBUILD=false
+REBUILD=false
 
 # Load environment variables from .env if available
 if [ -f .env ]; then
@@ -48,11 +48,11 @@ GIT_DIRTY="${GIT_DIRTY:-false}"
 # Parse command-line arguments
 while [ $# -gt 0 ]; do
     case "$1" in
-    --no-build)
-        NO_REBUILD=true
+    --rebuild-containers)
+        REBUILD=true
         ;;
     --help)
-        echo "Usage: $0 [--no-build]"
+        echo "Usage: $0 [--rebuild-containers]"
         exit 0
         ;;
     *)
@@ -67,7 +67,7 @@ export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
 export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
 
 # Start Docker Compose services with or without rebuild
-if [ "$NO_REBUILD" = false ]; then
+if [ "$REBUILD" = true ]; then
     echo "🚀 Starting Docker Compose services with build..."
     docker compose up -d --build
 else
@@ -81,9 +81,10 @@ SRHOST="$SENSOS_REGISTRY_IP":"$SENSOS_REGISTRY_PORT"
 DB_IMG_NAME=server-sensos-database
 
 echo "Adding $DB_IMG_NAME image to the registry..."
+
 echo "$SENSOS_REGISTRY_PASSWORD" | docker login "$SRHOST" -u "$SENSOS_REGISTRY_USER" --password-stdin
 docker tag "$DB_IMG_NAME":latest "$SRHOST"/"$DB_IMG_NAME":latest
-docker push "$SRHOST"/"$DB_IMG_NAME":latest
+docker push --quiet "$SRHOST"/"$DB_IMG_NAME":latest
 
 echo "✅ Done."
 

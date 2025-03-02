@@ -186,6 +186,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [ -f "$SENSOS_DIR/../../server/.certs/domain.crt" ]; then
+    cp -a "$SENSOS_DIR/../../server/.certs/domain.crt" "$SENSOS_DIR/stage-base/00-sensos/files"
+else
+    echo "Registry certificate not found. Be sure to configure the server before the client." >&2
+fi
+
 # Emit configuration to stdout
 echo "# Auto-generated configuration file"
 printf "%s\n" "${CONFIG[@]}"

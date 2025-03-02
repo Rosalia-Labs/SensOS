@@ -96,7 +96,7 @@ services:
       REGISTRY_HTTP_TLS_KEY: /certs/domain.key
     volumes:
       - sensos_registry:/var/lib/registry
-      - ./.api_auth:/auth
+      - ./.registry_auth:/auth
       - ./.certs:/certs
     ports:
       - "${SENSOS_REGISTRY_PORT:-5000}:5000"

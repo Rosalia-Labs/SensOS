@@ -123,7 +123,7 @@ chmod 600 .env
 
 echo "✅ Environment configuration written to .env."
 
-AUTH_DIR="./.api_auth"
+AUTH_DIR="./.registry_auth"
 if [ ! -d "$AUTH_DIR" ]; then exit 1; fi
 docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >"$AUTH_DIR"/htpasswd
 chmod 600 "$AUTH_DIR"/htpasswd
