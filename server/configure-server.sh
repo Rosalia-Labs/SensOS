@@ -104,6 +104,12 @@ SENSOS_REGISTRY_PORT="${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}"
 SENSOS_REGISTRY_USER="${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}"
 SENSOS_REGISTRY_PASSWORD="${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}"
 
+if [ -f .env ]; then
+    mv .env .env.bak
+    chmod 600 .env.bak
+    echo "✅ Current environment configuration backed up to .env.bak."
+fi
+
 # Write environment variables to .env file with strict permissions
 cat >.env <<EOF
 DB_PORT=$DB_PORT
@@ -130,21 +136,19 @@ chmod 600 "$AUTH_DIR"/htpasswd
 
 echo "✅ htpasswd file created at "$AUTH_DIR"/htpasswd."
 
-CERT_DIR="./.certs"
-if [ ! -d "$CERT_DIR" ]; then exit 1; fi
 # Generate TLS certificates using Docker if they do not exist
-if [ ! -f "$CERT_DIR/domain.crt" ] || [ ! -f "$CERT_DIR/domain.key" ]; then
+if [ ! -f "$AUTH_DIR/domain.crt" ] || [ ! -f "$AUTH_DIR/domain.key" ]; then
     echo "Generating self-signed TLS certificate and key using Docker..."
-    docker run --rm -v "$CERT_DIR":/certs frapsoft/openssl req \
+    docker run --rm -v "$AUTH_DIR":/certs frapsoft/openssl req \
         -newkey rsa:4096 -nodes -sha256 \
         -keyout /certs/domain.key \
         -x509 -days 365 \
         -out /certs/domain.crt \
         -subj "/CN=${SENSOS_REGISTRY_IP}"
-    chmod 600 "$CERT_DIR/domain.crt" "$CERT_DIR/domain.key"
-    echo "✅ TLS certificate (certs/domain.crt) and key (certs/domain.key) generated."
+    chmod 600 "$AUTH_DIR/domain.crt" "$AUTH_DIR/domain.key"
+    echo "✅ TLS certificate ($AUTH_DIR/domain.crt) and key ($AUTH_DIR/domain.key) generated."
 else
-    echo "TLS certificate and key already exist in $CERT_DIR."
+    echo "TLS certificate and key already exist in $AUTH_DIR."
 fi
 
 # Warnings for default passwords

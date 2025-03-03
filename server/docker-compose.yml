@@ -92,12 +92,11 @@ services:
       REGISTRY_AUTH: htpasswd
       REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
       REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
-      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt
-      REGISTRY_HTTP_TLS_KEY: /certs/domain.key
+      REGISTRY_HTTP_TLS_CERTIFICATE: /auth/domain.crt
+      REGISTRY_HTTP_TLS_KEY: /auth/domain.key
     volumes:
       - sensos_registry:/var/lib/registry
       - ./.registry_auth:/auth
-      - ./.certs:/certs
     ports:
       - "${SENSOS_REGISTRY_PORT:-5000}:5000"
     networks:

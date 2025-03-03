@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Compute the absolute path to the current directory (sensos/)
-SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Default values for always-included variables
 PI_GEN_RELEASE="SensOS reference"
@@ -186,8 +186,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -f "$SENSOS_DIR/../../server/.certs/domain.crt" ]; then
-    cp -a "$SENSOS_DIR/../../server/.certs/domain.crt" "$SENSOS_DIR/stage-base/00-sensos/files"
+if [ -f "$SENSOS_DIR/../../server/.registry_auth/domain.crt" ]; then
+    cp -a "$SENSOS_DIR/../../server/.registry_auth/domain.crt" "$SENSOS_DIR/stage-base/00-sensos/files"
 else
     echo "Registry certificate not found. Be sure to configure the server before the client." >&2
 fi

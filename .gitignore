@@ -1,5 +1,6 @@
 # Ignore environment variable files
 .env
+.env.bak
 
 # Ignore Python cache files
 __pycache__/
@@ -31,4 +32,5 @@ Thumbs.db
 
 # Ignore secrets
 htpasswd
-*.crt
+domain.key
+domain.crt
