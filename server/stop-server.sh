@@ -54,7 +54,7 @@ if [ "$REMOVE_VOLUMES" = true ] && [ "$SAVE_DATABASE" = true ]; then
         mkdir -p "$BACKUP_DIR"
 
         echo "💾 Backing up database to $BACKUP_FILE before removing volumes..."
-        docker exec -t 'sensos-database pg_dumpall -U postgres | gzip' >"$BACKUP_FILE"
+        docker exec -t sensos-database pg_dumpall -U postgres | gzip >"$BACKUP_FILE"
 
         if [ $? -eq 0 ]; then
             echo "✅ Database backup completed successfully: $BACKUP_FILE"
