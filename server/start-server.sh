@@ -12,7 +12,7 @@ if [ -f .env ]; then
     source .env
     set +a
 else
-    echo "❌ .env file not found. Run configure-server.sh. Exiting." >&2
+    echo "❌ .env file not found. Run configure-server.sh. Exiting."
     exit 1
 fi
 
@@ -74,17 +74,6 @@ else
     echo "🚀 Starting Docker Compose services without rebuild..."
     docker compose up -d
 fi
-
-source .env
-
-SRHOST="$SENSOS_REGISTRY_IP":"$SENSOS_REGISTRY_PORT"
-DB_IMG_NAME=server-sensos-database
-
-echo "Adding $DB_IMG_NAME image to the registry..."
-
-echo "$SENSOS_REGISTRY_PASSWORD" | docker login "$SRHOST" -u "$SENSOS_REGISTRY_USER" --password-stdin
-docker tag "$DB_IMG_NAME":latest "$SRHOST"/"$DB_IMG_NAME":latest
-docker push --quiet "$SRHOST"/"$DB_IMG_NAME":latest
 
 echo "✅ Done."
 
