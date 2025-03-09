@@ -729,22 +729,16 @@ def configure_ssh(args, api_password):
 
 
 def validate_registry_password(registry_info, registry_password):
-    """
-    Test the registry password by sending a GET request to the Docker Registry v2 endpoint.
-    The registry_info dict must contain the keys 'registry_ip', 'registry_port', and 'registry_user'.
-    """
-    url = f"http://{registry_info['registry_ip']}:{registry_info['registry_port']}/v2/"
+    url = f"https://{registry_info['registry_ip']}:{registry_info['registry_port']}/v2/"
+    auth = (registry_info["registry_user"], registry_password)
+
     try:
         response = requests.get(
-            url, auth=(registry_info["registry_user"], registry_password), timeout=5
-        )
-        if response.status_code == 200:
-            return True
-        else:
-            print(f"Registry returned status code {response.status_code}.")
-            return False
-    except Exception as e:
-        print(f"Error testing registry password: {e}")
+            url, auth=auth, timeout=5, verify=False
+        )  # 🔴 Ignore TLS errors
+        return response.status_code == 200
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Debug: Error during request: {e}", file=sys.stderr)
         return False
 
 

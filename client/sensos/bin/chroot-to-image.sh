@@ -38,8 +38,8 @@ docker run --rm -it --privileged --network server_sensos_network \
     mount --bind /sys /mnt/pi-root/sys
     mount --bind /run /mnt/pi-root/run
 
-    chroot /mnt/pi-root /bin/bash
-
+    chroot /mnt/pi-root
+ 
     echo "Exiting chroot. Cleaning up..."
     umount /mnt/pi-root/dev
     umount /mnt/pi-root/proc

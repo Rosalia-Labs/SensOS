@@ -14,16 +14,6 @@ if [ ! -f "$LOCAL_SCRIPT_PATH" ]; then
     exit 1
 fi
 
-# Get the IP of the `sensos-controller` container
-SENSOS_CONTROLLER_IP=$(docker network inspect server_sensos_network -f '{{range .Containers}}{{if eq .Name "sensos-controller"}}{{.IPv4Address}}{{end}}{{end}}' | cut -d'/' -f1)
-
-if [ -z "$SENSOS_CONTROLLER_IP" ]; then
-    echo "Error: Could not determine sensos-controller IP."
-    exit 1
-fi
-
-echo "Using sensos-controller IP: $SENSOS_CONTROLLER_IP"
-
 # Always rebuild the Docker image
 echo "Building Docker image..."
 docker build -t "$DOCKER_IMAGE" - <<EOF
@@ -59,7 +49,7 @@ docker run --rm -it \
     cp /mnt/config/config-sensos-client /home/sensos/config-sensos-client
     chmod +x /home/sensos/config-sensos-client
 
-    /home/sensos/venv/bin/python /home/sensos/config-sensos-client --server "'"$SENSOS_CONTROLLER_IP"'" "$@"
+    /home/sensos/venv/bin/python /home/sensos/config-sensos-client "$@"
 
     echo "✅ Sensos client configuration completed."
 ' -- "$@"

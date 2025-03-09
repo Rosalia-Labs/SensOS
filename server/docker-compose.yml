@@ -20,7 +20,7 @@ services:
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      WG_IP: ${WG_IP}
+      WG_SERVER_IP: ${WG_SERVER_IP}
       VERSION_MAJOR: ${VERSION_MAJOR}
       VERSION_MINOR: ${VERSION_MINOR}
       VERSION_PATCH: ${VERSION_PATCH}

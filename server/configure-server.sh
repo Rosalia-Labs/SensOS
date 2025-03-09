@@ -6,7 +6,7 @@ set -e
 DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8000
 DEFAULT_WG_PORT=51820
-DEFAULT_WG_IP="127.0.0.1"
+DEFAULT_WG_SERVER_IP="127.0.0.1"
 DEFAULT_SENSOS_REGISTRY_PORT=5000
 DEFAULT_SENSOS_REGISTRY_USER="sensos"
 DEFAULT_SENSOS_REGISTRY_PASSWORD="sensos"
@@ -16,21 +16,23 @@ DEFAULT_INITIAL_NETWORK="sensos"
 
 # Print help message
 print_help() {
-    echo "Usage: $0 [options]"
-    echo ""
-    echo "Options:"
-    echo "  --db-port PORT          Set database port (default: $DEFAULT_DB_PORT)"
-    echo "  --api-port PORT         Set API port (default: $DEFAULT_API_PORT)"
-    echo "  --wg-network NAME       Set WireGuard network name (default: $DEFAULT_INITIAL_NETWORK)"
-    echo "  --wg-ip IP              Set WireGuard IP (default: $DEFAULT_WG_IP)"
-    echo "  --wg-port PORT          Set WireGuard port (default: $DEFAULT_WG_PORT)"
-    echo "  --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)"
-    echo "  --api-password PWD      Set API password (default: $DEFAULT_API_PASSWORD)"
-    echo "  --registry-ip IP        Set registry IP (default: --wg-ip setting)"
-    echo "  --registry-port PORT    Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)"
-    echo "  --registry-user USER    Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)"
-    echo "  --registry-password PWD Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)"
-    echo "  -h, --help              Show this help message"
+    cat <<EOF
+Usage: $0 [options]
+
+Options:
+  --db-port PORT          Set database port (default: $DEFAULT_DB_PORT)
+  --api-port PORT         Set API port (default: $DEFAULT_API_PORT)
+  --wg-network NAME       Set WireGuard network name (default: $DEFAULT_INITIAL_NETWORK)
+  --wg-server-ip IP       Set WireGuard IP (default: $DEFAULT_WG_SERVER_IP)
+  --wg-port PORT          Set WireGuard port (default: $DEFAULT_WG_PORT)
+  --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
+  --api-password PWD      Set API password (default: $DEFAULT_API_PASSWORD)
+  --registry-ip IP        Set registry IP (default: --wg-server-ip setting)
+  --registry-port PORT    Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)
+  --registry-user USER    Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)
+  --registry-password PWD Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)
+  -h, --help              Show this help message
+EOF
     exit 0
 }
 
@@ -53,8 +55,8 @@ while [[ $# -gt 0 ]]; do
         WG_PORT="$2"
         shift 2
         ;;
-    --wg-ip)
-        WG_IP="$2"
+    --wg-server-ip)
+        WG_SERVER_IP="$2"
         shift 2
         ;;
     --postgres-password)
@@ -81,9 +83,7 @@ while [[ $# -gt 0 ]]; do
         SENSOS_REGISTRY_PASSWORD="$2"
         shift 2
         ;;
-    -h | --help)
-        print_help
-        ;;
+    -h | --help) print_help ;;
     *)
         echo "Unknown option: $1" >&2
         print_help
@@ -91,32 +91,34 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Use environment variables if set, otherwise use defaults
-DB_PORT="${DB_PORT:-$DEFAULT_DB_PORT}"
-API_PORT="${API_PORT:-$DEFAULT_API_PORT}"
-INITIAL_NETWORK="${INITIAL_NETWORK:-$DEFAULT_INITIAL_NETWORK}"
-WG_PORT="${WG_PORT:-$DEFAULT_WG_PORT}"
-WG_IP="${WG_IP:-$DEFAULT_WG_IP}"
-POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}"
-API_PASSWORD="${API_PASSWORD:-$DEFAULT_API_PASSWORD}"
-SENSOS_REGISTRY_IP="${SENSOS_REGISTRY_IP:-$WG_IP}"
-SENSOS_REGISTRY_PORT="${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}"
-SENSOS_REGISTRY_USER="${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}"
-SENSOS_REGISTRY_PASSWORD="${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}"
+# Set defaults if variables not provided
+DB_PORT=${DB_PORT:-$DEFAULT_DB_PORT}
+API_PORT=${API_PORT:-$DEFAULT_API_PORT}
+INITIAL_NETWORK=${INITIAL_NETWORK:-$DEFAULT_INITIAL_NETWORK}
+WG_PORT=${WG_PORT:-$DEFAULT_WG_PORT}
+WG_SERVER_IP=${WG_SERVER_IP:-$DEFAULT_WG_SERVER_IP}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
+API_PASSWORD=${API_PASSWORD:-$DEFAULT_API_PASSWORD}
+SENSOS_REGISTRY_IP=${SENSOS_REGISTRY_IP:-$WG_SERVER_IP}
+SENSOS_REGISTRY_PORT=${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}
+SENSOS_REGISTRY_USER=${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}
+SENSOS_REGISTRY_PASSWORD=${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}
+INITIAL_NETWORK=${INITIAL_NETWORK:-$DEFAULT_INITIAL_NETWORK}
 
+# Backup existing .env
 if [ -f .env ]; then
     mv .env .env.bak
     chmod 600 .env.bak
     echo "✅ Current environment configuration backed up to .env.bak."
 fi
 
-# Write environment variables to .env file with strict permissions
+# Write to .env
 cat >.env <<EOF
 DB_PORT=$DB_PORT
 API_PORT=$API_PORT
 INITIAL_NETWORK=$INITIAL_NETWORK
 WG_PORT=$WG_PORT
-WG_IP=$WG_IP
+WG_SERVER_IP=$WG_SERVER_IP
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 API_PASSWORD=$API_PASSWORD
 SENSOS_REGISTRY_IP=$SENSOS_REGISTRY_IP
@@ -126,19 +128,15 @@ SENSOS_REGISTRY_PASSWORD=$SENSOS_REGISTRY_PASSWORD
 EOF
 
 chmod 600 .env
-
 echo "✅ Environment configuration written to .env."
 
 AUTH_DIR="./.registry_auth"
-if [ ! -d "$AUTH_DIR" ]; then exit 1; fi
-docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >"$AUTH_DIR"/htpasswd
-chmod 600 "$AUTH_DIR"/htpasswd
+mkdir -p "$AUTH_DIR"
+docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >"$AUTH_DIR/htpasswd"
+chmod 600 "$AUTH_DIR/htpasswd"
+echo "✅ htpasswd file created at $AUTH_DIR/htpasswd."
 
-echo "✅ htpasswd file created at "$AUTH_DIR"/htpasswd."
-
-# Generate TLS certificates using Docker if they do not exist
 if [ ! -f "$AUTH_DIR/domain.crt" ] || [ ! -f "$AUTH_DIR/domain.key" ]; then
-    echo "Generating self-signed TLS certificate and key using Docker..."
     docker run --rm -v "$AUTH_DIR":/certs frapsoft/openssl req \
         -newkey rsa:4096 -nodes -sha256 \
         -keyout /certs/domain.key \
@@ -146,22 +144,7 @@ if [ ! -f "$AUTH_DIR/domain.crt" ] || [ ! -f "$AUTH_DIR/domain.key" ]; then
         -out /certs/domain.crt \
         -subj "/CN=${SENSOS_REGISTRY_IP}"
     chmod 600 "$AUTH_DIR/domain.crt" "$AUTH_DIR/domain.key"
-    echo "✅ TLS certificate ($AUTH_DIR/domain.crt) and key ($AUTH_DIR/domain.key) generated."
-else
-    echo "TLS certificate and key already exist in $AUTH_DIR."
+    echo "✅ TLS certificate and key generated."
 fi
-
-# Warnings for default passwords
-for var in "SENSOS_REGISTRY_PASSWORD" "POSTGRES_PASSWORD" "API_PASSWORD"; do
-    eval "value=\$$var"
-    eval "default_value=\$DEFAULT_${var}"
-    if [ "$value" = "$default_value" ]; then
-        echo "" >&2
-        echo "🚨🚨🚨 WARNING: Using the default $var! 🚨🚨🚨" >&2
-        echo "This is extremely insecure and could expose your system to unauthorized access." >&2
-        echo "Set a strong password in your configuration!" >&2
-        echo "" >&2
-    fi
-done
 
 echo "✅ Setup completed successfully."

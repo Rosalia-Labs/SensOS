@@ -53,8 +53,34 @@ GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
 GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
+
+def resolve_hostname(value):
+    """Return an IP address for a given hostname or IP string."""
+    try:
+        # Check if the value is already a valid IP address (IPv4 or IPv6)
+        socket.inet_pton(socket.AF_INET, value)  # Check IPv4
+        return value  # It's already an IPv4 address
+    except OSError:
+        try:
+            socket.inet_pton(socket.AF_INET6, value)  # Check IPv6
+            return value  # It's already an IPv6 address
+        except OSError:
+            pass  # Not an IP, try resolving as a hostname
+
+    try:
+        # Resolve hostname to an IP (IPv4 or IPv6)
+        addr_info = socket.getaddrinfo(value, None, family=socket.AF_UNSPEC)
+        for family, _, _, _, sockaddr in addr_info:
+            if family in (socket.AF_INET, socket.AF_INET6):
+                return sockaddr[0]  # Return the first valid IP
+    except socket.gaierror:
+        pass  # Failed to resolve
+
+    return None  # Return None if resolution fails
+
+
 # Registry values
-SENSOS_REGISTRY_IP = os.getenv("SENSOS_REGISTRY_IP", "127.0.0.1")
+SENSOS_REGISTRY_IP = resolve_hostname(os.getenv("SENSOS_REGISTRY_IP", "127.0.0.1"))
 SENSOS_REGISTRY_USER = os.getenv("SENSOS_REGISTRY_USER", "sensos")
 SENSOS_REGISTRY_PORT = os.getenv("SENSOS_REGISTRY_PORT", "5000")
 
@@ -576,7 +602,7 @@ def ensure_network_exists(cur):
             logger.warning(
                 f"⚠️ Updating missing WireGuard IP/port for '{network_name}'..."
             )
-            wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
+            wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
             wg_port = int(os.getenv("WG_PORT", "51820"))
             cur.execute(
                 """
@@ -592,7 +618,7 @@ def ensure_network_exists(cur):
     else:
         logger.info(f"🆕 Creating new network '{network_name}'...")
         ip_range = generate_default_ip_range(network_name)
-        wg_public_ip = os.getenv("WG_IP", "127.0.0.1")
+        wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
         wg_port = int(os.getenv("WG_PORT", "51820"))
         private_key, public_key = generate_wireguard_keys()
         cur.execute(
@@ -772,7 +798,9 @@ def create_network(
     """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
 
     # Use environment variables if not provided
-    wg_public_ip = wg_public_ip or os.getenv("WG_IP", "127.0.0.1")
+    wg_public_ip = wg_public_ip or resolve_hostname(
+        os.getenv("WG_SERVER_IP", "127.0.0.1")
+    )
 
     # Ensure wg_port is a valid integer
     try:
