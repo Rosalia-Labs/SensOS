@@ -29,3 +29,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sensos}
       DB_HOST: sensos-client-test-database
       DB_PORT: "5432"
+      AUDIO_SOURCE: random
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3

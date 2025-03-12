@@ -25,6 +25,17 @@ CHUNK_SIZE = SAMPLE_RATE * CHUNK_DURATION  # Frames per chunk
 STEP_SIZE_FRAMES = SAMPLE_RATE * STEP_SIZE  # Frames per step
 AUDIO_FORMAT = np.int16  # 16-bit PCM
 
+# Determine the audio source: "record" for live capture or "random" for test signal.
+AUDIO_SOURCE = os.environ.get("AUDIO_SOURCE", "record").lower()
+
+# Get the recording duration (in seconds) from environment variables.
+# If set to a positive number, recording will stop after that many seconds.
+# If not set or set to 0, recording continues indefinitely.
+try:
+    RECORD_DURATION = int(os.environ.get("RECORD_DURATION", "0"))
+except ValueError:
+    RECORD_DURATION = 0
+
 # Circular buffer for overlapping audio storage
 buffer = np.zeros(CHUNK_SIZE, dtype=AUDIO_FORMAT)
 
@@ -52,7 +63,7 @@ cursor = conn.cursor()
 
 def initialize_schema():
     """Initializes the database schema for recording sessions and audio chunks."""
-    # Create table for recording sessions
+    # Create table for recording sessions.
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS recording_sessions (
@@ -65,7 +76,7 @@ def initialize_schema():
         );
         """
     )
-    # Create table for audio chunks
+    # Create table for audio chunks, using bytea for the audio data.
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS audio_chunks (
@@ -73,10 +84,10 @@ def initialize_schema():
             session_id INTEGER REFERENCES recording_sessions(id) ON DELETE CASCADE,
             timestamp TIMESTAMPTZ NOT NULL,
             end_timestamp TIMESTAMPTZ NOT NULL,
-            data SMALLINT[] NOT NULL,
             peak_amplitude FLOAT,
             rms FLOAT,
-            snr FLOAT
+            snr FLOAT,
+            data bytea NOT NULL
         );
         """
     )
@@ -84,7 +95,7 @@ def initialize_schema():
     print("Database schema initialized.")
 
 
-# Initialize the schema at startup
+# Initialize the schema at startup.
 initialize_schema()
 
 
@@ -95,7 +106,16 @@ def start_new_session():
         INSERT INTO recording_sessions (start_time, sample_rate, bit_depth, channel_count, device)
         VALUES (NOW(), %s, %s, %s, %s) RETURNING id;
         """,
-        (SAMPLE_RATE, BIT_DEPTH, CHANNELS, "Raspberry Pi Built-in Mic"),
+        (
+            SAMPLE_RATE,
+            BIT_DEPTH,
+            CHANNELS,
+            (
+                "Raspberry Pi Built-in Mic"
+                if AUDIO_SOURCE == "record"
+                else "Test Random Signal"
+            ),
+        ),
     )
     session_id = cursor.fetchone()[0]
     conn.commit()
@@ -114,8 +134,10 @@ def compute_audio_features(audio_chunk):
 
 
 def store_audio_chunk(audio_data, start_timestamp, end_timestamp, session_id):
-    """Stores a 3-second audio chunk with start and end timestamps."""
+    """Stores a 3-second audio chunk with start and end timestamps using bytea for data."""
     peak_amplitude, rms, snr = compute_audio_features(audio_data)
+    # Convert the numpy array to bytes for storage.
+    audio_bytes = audio_data.tobytes()
     cursor.execute(
         """
         INSERT INTO audio_chunks (session_id, timestamp, end_timestamp, data, peak_amplitude, rms, snr)
@@ -125,7 +147,7 @@ def store_audio_chunk(audio_data, start_timestamp, end_timestamp, session_id):
             session_id,
             start_timestamp,
             end_timestamp,
-            audio_data.tolist(),
+            psycopg.Binary(audio_bytes),
             peak_amplitude,
             rms,
             snr,
@@ -142,59 +164,92 @@ def database_worker():
     while True:
         item = audio_queue.get()
         if item is None:
-            break  # Stop thread when None is received
+            break  # Stop thread when None is received.
         audio_data, start_timestamp, end_timestamp = item
         store_audio_chunk(audio_data, start_timestamp, end_timestamp, session_id)
 
 
-# Start a new session at script startup
+# Start a new session at script startup.
 session_id = start_new_session()
-print(f"Started recording session {session_id}")
+print(f"Started recording session {session_id} using mode: {AUDIO_SOURCE}")
 
-# Start the background thread
+# Start the background thread.
 db_thread = threading.Thread(target=database_worker, daemon=True)
 db_thread.start()
 
 
-def callback(indata, frames, time, status):
+def callback(indata, frames, time_info, status):
     """Processes incoming audio in real-time."""
     global buffer
     if status:
         print(status)
-    # Shift buffer left and append new data
+    # Shift buffer left and append new data.
     buffer = np.roll(buffer, -STEP_SIZE_FRAMES)
     buffer[-STEP_SIZE_FRAMES:] = indata[:, 0]
-    # Store precise timestamps for this chunk
+    # Store precise timestamps for this chunk.
     start_timestamp = datetime.datetime.utcnow()
     end_timestamp = start_timestamp + datetime.timedelta(seconds=CHUNK_DURATION)
-    # Send chunk to the queue (non-blocking)
+    # Send chunk to the queue (non-blocking).
     audio_queue.put((buffer.copy(), start_timestamp, end_timestamp))
 
 
-# Attempt to start actual audio capture.
-try:
-    with sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=AUDIO_FORMAT, callback=callback
-    ):
-        print("Recording... Press Ctrl+C to stop.")
-        try:
+if AUDIO_SOURCE == "record":
+    # Live recording mode using sounddevice.
+    try:
+        with sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=AUDIO_FORMAT,
+            callback=callback,
+        ):
+            print(
+                "Recording... Press Ctrl+C to stop (or wait for RECORD_DURATION to elapse)."
+            )
+            start_time = time.time()
             while True:
-                pass  # Keep script running
-        except KeyboardInterrupt:
-            print("\nStopping recording...")
-except Exception as e:
-    # If sound capture fails, mock the capture by generating a silent chunk.
-    print(f"Audio capture failed with error: {e}")
-    print("Falling back to mock capture.")
-    fake_audio = np.zeros(CHUNK_SIZE, dtype=AUDIO_FORMAT)
-    start_timestamp = datetime.datetime.utcnow()
-    end_timestamp = start_timestamp + datetime.timedelta(seconds=CHUNK_DURATION)
-    store_audio_chunk(fake_audio, start_timestamp, end_timestamp, session_id)
-    print("Sleeping for 5 minutes to allow database inspection...")
-    time.sleep(300)
-finally:
-    # Stop the background thread and close resources.
-    audio_queue.put(None)
-    db_thread.join()
-    cursor.close()
-    conn.close()
+                time.sleep(1)  # Keep script running.
+                if RECORD_DURATION > 0 and time.time() - start_time >= RECORD_DURATION:
+                    print(
+                        f"Record duration of {RECORD_DURATION} seconds reached. Stopping recording."
+                    )
+                    break
+    except Exception as e:
+        # In record mode, any error is fatal.
+        print(f"Audio capture failed with error: {e}")
+        raise e
+
+elif AUDIO_SOURCE == "random":
+    # Testing mode: generate random audio signal.
+    print(
+        "Generating random audio signal for testing. Press Ctrl+C to stop (or wait for RECORD_DURATION to elapse)."
+    )
+    start_time = time.time()
+    try:
+        while True:
+            random_step = np.random.randint(
+                -32768, 32767, size=(STEP_SIZE_FRAMES, 1), dtype=AUDIO_FORMAT
+            )
+            callback(random_step, STEP_SIZE_FRAMES, None, None)
+            time.sleep(STEP_SIZE)
+            if RECORD_DURATION > 0 and time.time() - start_time >= RECORD_DURATION:
+                print(
+                    f"Record duration of {RECORD_DURATION} seconds reached. Stopping random signal generation."
+                )
+                break
+    except KeyboardInterrupt:
+        print("\nStopping random signal generation...")
+else:
+    raise ValueError(f"Unknown AUDIO_SOURCE mode: {AUDIO_SOURCE}")
+
+# Cleanup: stop the background thread.
+audio_queue.put(None)
+db_thread.join()
+
+# Keep the container alive for inspection without generating new data.
+print("Recording stopped. Entering idle mode to allow database inspection.")
+while True:
+    time.sleep(900)
+
+# (Optionally, when you're done inspecting, you could then close the cursor and connection.)
+cursor.close()
+conn.close()
