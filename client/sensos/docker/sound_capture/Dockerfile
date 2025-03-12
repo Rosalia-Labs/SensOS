@@ -12,7 +12,7 @@ WORKDIR /app
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
-RUN pip install --no-cache-dir sounddevice numpy psycopg
+RUN pip install --no-cache-dir sounddevice numpy psycopg librosa
 
 COPY record-audio.py .
 

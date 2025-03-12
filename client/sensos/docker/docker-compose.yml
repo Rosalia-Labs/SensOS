@@ -5,12 +5,12 @@ services:
     restart: always
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sensos}
-      POSTGRES_DB: sensos_db
+      POSTGRES_DB: postgres
       POSTGRES_USER: postgres
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d sensos_db"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -24,12 +24,13 @@ services:
     volumes:
       - ./sound_capture/record-audio.py:/app/record-audio.py
     environment:
-      POSTGRES_DB: sensos_db
+      POSTGRES_DB: postgres
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sensos}
       DB_HOST: sensos-client-test-database
       DB_PORT: "5432"
       AUDIO_SOURCE: random
+      RECORD_DURATION: 30
     deploy:
       restart_policy:
         condition: on-failure
