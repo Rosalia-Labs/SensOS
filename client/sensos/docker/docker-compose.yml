@@ -1,0 +1,31 @@
+services:
+  sensos-client-test-database:
+    build: ./database
+    container_name: sensos-client-test-database
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sensos}
+      POSTGRES_DB: sensos_db
+      POSTGRES_USER: postgres
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sensos_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  sensos-client-test-sound-capture:
+    build: ./sound_capture
+    container_name: sensos-client-test-sound-capture
+    restart: always
+    depends_on:
+      - sensos-client-test-database
+    volumes:
+      - ./sound_capture/record-audio.py:/app/record-audio.py
+    environment:
+      POSTGRES_DB: sensos_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sensos}
+      DB_HOST: sensos-client-test-database
+      DB_PORT: "5432"
