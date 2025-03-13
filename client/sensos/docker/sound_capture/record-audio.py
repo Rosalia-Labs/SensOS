@@ -384,6 +384,47 @@ def run_recording():
         except KeyboardInterrupt:
             print("\nStopping test signal generation...")
 
+    elif AUDIO_SOURCE == "file":
+        try:
+            audio_data, sr = librosa.load(
+                "test.wav", sr=SAMPLE_RATE, mono=True, dtype=np.float32
+            )
+            if sr != SAMPLE_RATE:
+                print(f"Warning: Resampling from {sr} Hz to {SAMPLE_RATE} Hz")
+                audio_data = librosa.resample(
+                    audio_data, orig_sr=sr, target_sr=SAMPLE_RATE
+                )
+
+            # Convert float32 to 16-bit PCM
+            audio_data = (audio_data * 32767).astype(AUDIO_FORMAT)
+
+            # Read in 3-second segments
+            start_idx = 0
+            total_frames = len(audio_data)
+            start_time = datetime.datetime.utcnow()
+
+            while start_idx + SEGMENT_SIZE <= total_frames:
+                segment = audio_data[start_idx : start_idx + SEGMENT_SIZE]
+                end_time = start_time + datetime.timedelta(seconds=SEGMENT_DURATION)
+
+                audio_queue.put((segment, start_time, end_time))
+
+                start_idx += STEP_SIZE_FRAMES
+                start_time = start_time + datetime.timedelta(seconds=STEP_SIZE)
+
+                if RECORD_DURATION > 0 and (start_idx / SAMPLE_RATE) >= RECORD_DURATION:
+                    print(
+                        f"RECORD_DURATION {RECORD_DURATION} reached. Stopping file playback."
+                    )
+                    break
+
+            print("Finished reading file. Waiting indefinitely.")
+            wait_for_container_stop()
+
+        except Exception as e:
+            print(f"Error reading audio file: {e}")
+            raise
+
     else:
         raise ValueError(f"Unknown AUDIO_SOURCE: {AUDIO_SOURCE}")
 

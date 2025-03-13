@@ -34,3 +34,6 @@ Thumbs.db
 htpasswd
 domain.key
 domain.crt
+
+# Ignore audio files for now
+*.wav
