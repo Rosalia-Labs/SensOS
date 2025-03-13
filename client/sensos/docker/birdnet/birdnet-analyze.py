@@ -113,6 +113,26 @@ def process_audio(audio_bytes):
     return audio_np
 
 
+def flat_sigmoid(x, sensitivity=-1, bias=1.0):
+    """
+    Applies a flat sigmoid function to the input array with a bias shift.
+
+    The flat sigmoid function is defined as:
+        f(x) = 1 / (1 + exp(sensitivity * clip(x + transformed_bias, -20, 20)))
+    where transformed_bias = (bias - 1.0) * 10.0
+
+    Args:
+        x (array-like): Input data.
+        sensitivity (float, optional): Sensitivity parameter. Default is -1.
+        bias (float, optional): Bias parameter in the range [0.01, 1.99]. Default is 1.0.
+
+    Returns:
+        numpy.ndarray: Transformed data after applying the flat sigmoid function.
+    """
+    transformed_bias = (bias - 1.0) * 10.0
+    return 1 / (1.0 + np.exp(sensitivity * np.clip(x + transformed_bias, -20, 20)))
+
+
 def project_data(audio_segment):
     """Runs BirdNET model inference on a single 3-second segment and extracts embeddings and species predictions."""
     # Ensure input matches expected shape
@@ -125,24 +145,27 @@ def project_data(audio_segment):
     # Get the output tensor indices:
     # Assume that the current output_details[0] holds the species confidences (shape (1, 6522))
     # and that the embeddings are stored in the tensor just before it (index - 1, shape (1, 1024))
-    species_output_index = output_details[0]["index"]
-    embedding_output_index = species_output_index - 1
+    confidence_output_index = output_details[0]["index"]
+    embedding_output_index = confidence_output_index - 1
 
     # Retrieve outputs
-    species = interpreter.get_tensor(species_output_index)
+    confidences = interpreter.get_tensor(confidence_output_index)
     embedding = interpreter.get_tensor(embedding_output_index)
 
-    print(f"Species shape: {species.shape}")  # Expected: (1, 6522)
+    print(f"Confidences shape: {confidences.shape}")  # Expected: (1, 6522)
     print(f"Embedding shape: {embedding.shape}")  # Expected: (1, 1024)
 
     # Flatten the embedding to 1D
     embedding_flat = embedding.flatten()
 
-    # Flatten species and align with labels
-    species_flat = species.flatten()
-    species_predictions = {LABELS[i]: species_flat[i] for i in range(len(species_flat))}
+    # Use sigmoid default for now -- make optional later
+    confidences_flat = flat_sigmoid(confidences.flatten())
 
-    return embedding_flat, species_predictions
+    species_confidences = {
+        LABELS[i]: confidences_flat[i] for i in range(len(confidences_flat))
+    }
+
+    return embedding_flat, species_confidences
 
 
 def store_results(segment_id, embeddings, predictions, top_n=5):
@@ -203,10 +226,10 @@ def main():
                 continue
 
             # Run BirdNET inference
-            embeddings, species = project_data(audio_np)
+            embeddings, confidences = project_data(audio_np)
 
             # Store results
-            store_results(segment_id, embeddings, species)
+            store_results(segment_id, embeddings, confidences)
 
             print(f"Stored embeddings for segment {segment_id}")
 
