@@ -62,17 +62,17 @@ def initialize_schema():
             # Table for embeddings
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS sensos.embeddings (
+                CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
                     segment_id INTEGER PRIMARY KEY REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
                     vector vector(1024) NOT NULL
                 );
                 """
             )
 
-            # Table for species predictions
+            # Table for species scores
             cur.execute(
                 """
-                CREATE TABLE IF NOT EXISTS sensos.predictions (
+                CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
                     segment_id INTEGER REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
                     species TEXT NOT NULL,
                     confidence FLOAT NOT NULL,
@@ -93,7 +93,7 @@ def get_unprocessed_audio():
             cur.execute(
                 """
                 SELECT segment_id, data FROM sensos.raw_audio
-                WHERE segment_id NOT IN (SELECT segment_id FROM sensos.embeddings);
+                WHERE segment_id NOT IN (SELECT segment_id FROM sensos.birdnet_embeddings);
             """
             )
             return cur.fetchall()
@@ -108,7 +108,7 @@ def process_audio(audio_bytes):
     audio_np /= 32768.0
 
     # Resample to 48 kHz if needed
-    audio_np = librosa.resample(audio_np, orig_sr=SAMPLE_RATE, target_sr=SAMPLE_RATE)
+    # audio_np = librosa.resample(audio_np, orig_sr=SAMPLE_RATE, target_sr=SAMPLE_RATE)
 
     return audio_np
 
@@ -133,8 +133,8 @@ def flat_sigmoid(x, sensitivity=-1, bias=1.0):
     return 1 / (1.0 + np.exp(sensitivity * np.clip(x + transformed_bias, -20, 20)))
 
 
-def project_data(audio_segment):
-    """Runs BirdNET model inference on a single 3-second segment and extracts embeddings and species predictions."""
+def invoke_interpreter(audio_segment):
+    """Runs BirdNET model inference on a single 3-second segment and extracts embeddings and species scores."""
     # Ensure input matches expected shape
     input_data = np.expand_dims(audio_segment, axis=0).astype(np.float32)
 
@@ -143,33 +143,31 @@ def project_data(audio_segment):
     interpreter.invoke()
 
     # Get the output tensor indices:
-    # Assume that the current output_details[0] holds the species confidences (shape (1, 6522))
+    # Assume that the current output_details[0] holds the species scores (shape (1, 6522))
     # and that the embeddings are stored in the tensor just before it (index - 1, shape (1, 1024))
-    confidence_output_index = output_details[0]["index"]
-    embedding_output_index = confidence_output_index - 1
+    score_output_index = output_details[0]["index"]
+    embedding_output_index = score_output_index - 1
 
     # Retrieve outputs
-    confidences = interpreter.get_tensor(confidence_output_index)
+    scores = interpreter.get_tensor(score_output_index)
     embedding = interpreter.get_tensor(embedding_output_index)
 
-    print(f"Confidences shape: {confidences.shape}")  # Expected: (1, 6522)
+    print(f"Species scores shape: {scores.shape}")  # Expected: (1, 6522)
     print(f"Embedding shape: {embedding.shape}")  # Expected: (1, 1024)
 
     # Flatten the embedding to 1D
     embedding_flat = embedding.flatten()
 
     # Use sigmoid default for now -- make optional later
-    confidences_flat = flat_sigmoid(confidences.flatten())
+    scores_flat = flat_sigmoid(scores.flatten())
 
-    species_confidences = {
-        LABELS[i]: confidences_flat[i] for i in range(len(confidences_flat))
-    }
+    species_scores = {LABELS[i]: scores_flat[i] for i in range(len(scores_flat))}
 
-    return embedding_flat, species_confidences
+    return embedding_flat, species_scores
 
 
-def store_results(segment_id, embeddings, predictions, top_n=5):
-    """Stores embeddings (if available) and top-N species predictions in the database."""
+def store_results(segment_id, embeddings, scores, top_n=5):
+    """Stores embeddings (if available) and top-N species scores in the database."""
 
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
@@ -177,20 +175,20 @@ def store_results(segment_id, embeddings, predictions, top_n=5):
             if embeddings is not None:
                 cur.execute(
                     """
-                    INSERT INTO sensos.embeddings (segment_id, vector)
+                    INSERT INTO sensos.birdnet_embeddings (segment_id, vector)
                     VALUES (%s, %s);
                     """,
                     (segment_id, embeddings.tolist()),
                 )
 
             # Store top-N species
-            top_species = sorted(predictions.items(), key=lambda x: x[1], reverse=True)[
+            top_species = sorted(scores.items(), key=lambda x: x[1], reverse=True)[
                 :top_n
             ]
             for species, confidence in top_species:
                 cur.execute(
                     """
-                    INSERT INTO sensos.predictions (segment_id, species, confidence)
+                    INSERT INTO sensos.birdnet_scores (segment_id, species, confidence)
                     VALUES (%s, %s, %s);
                     """,
                     (segment_id, species, confidence),
@@ -226,10 +224,10 @@ def main():
                 continue
 
             # Run BirdNET inference
-            embeddings, confidences = project_data(audio_np)
+            embeddings, scores = invoke_interpreter(audio_np)
 
             # Store results
-            store_results(segment_id, embeddings, confidences)
+            store_results(segment_id, embeddings, scores)
 
             print(f"Stored embeddings for segment {segment_id}")
 
