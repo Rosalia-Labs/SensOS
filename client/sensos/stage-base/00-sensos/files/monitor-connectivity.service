@@ -1,0 +1,13 @@
+[Unit]
+Description=Monitor Connectivity and Take Remedial Actions
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sensos/settings.conf
+ExecStart=/usr/local/bin/monitor-connectivity.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

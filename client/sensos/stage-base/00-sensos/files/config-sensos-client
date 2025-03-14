@@ -9,11 +9,12 @@ import subprocess
 import base64
 import json
 
+WG_DIR = "/etc/wireguard"
+
 # Default Configuration
 DEFAULT_SERVER = "localhost"
 DEFAULT_PORT = "8000"
 DEFAULT_NETWORK_NAME = "sensos"
-DEFAULT_WG_DIR = "/etc/wireguard"
 DEFAULT_KEEPALIVE = "0"
 
 API_PASSWORD_FILE = os.path.expanduser("~/.sensos_api_password")
@@ -37,11 +38,6 @@ def parse_args():
     )
     parser.add_argument(
         "--network", default=DEFAULT_NETWORK_NAME, help="Network name (default: sensos)"
-    )
-    parser.add_argument(
-        "--wg-config-dir",
-        default=DEFAULT_WG_DIR,
-        help="WireGuard config directory (default: /etc/wireguard)",
     )
     parser.add_argument(
         "--wg-keepalive",
@@ -163,18 +159,18 @@ def get_api_password(server, port):
     sys.exit(1)
 
 
-def generate_wireguard_keys(wg_config_dir, force):
+def generate_wireguard_keys(force):
     """Generate WireGuard key pair if not already present. Returns public key."""
 
-    if not os.path.isdir(wg_config_dir):
+    if not os.path.isdir(WG_DIR):
         print(
-            f"Error: Configuration directory '{wg_config_dir}' does not exist.",
+            f"Error: Configuration directory '{WG_DIR}' does not exist.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    private_key_file = os.path.join(wg_config_dir, "private.key")
-    public_key_file = os.path.join(wg_config_dir, "public.key")
+    private_key_file = os.path.join(WG_DIR, "private.key")
+    public_key_file = os.path.join(WG_DIR, "public.key")
 
     if os.path.exists(private_key_file) or os.path.exists(public_key_file):
         print("⚠️ WireGuard keys already exist.")
@@ -292,7 +288,6 @@ def change_hostname(new_hostname):
 def write_wireguard_config(
     wg_ip,
     server_pubkey,
-    wg_config_dir,
     wg_public_ip,
     wg_port,
     network_name,
@@ -301,8 +296,8 @@ def write_wireguard_config(
 ):
     """Write the WireGuard configuration file with secure permissions."""
 
-    private_key_file = os.path.join(wg_config_dir, "private.key")
-    wg_config_file = os.path.join(wg_config_dir, f"{network_name}.conf")
+    private_key_file = os.path.join(WG_DIR, "private.key")
+    wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
 
     if os.path.exists(wg_config_file):
         print(f"⚠️ WireGuard config file {wg_config_file} already exists.")
@@ -573,7 +568,7 @@ def configure_wireguard(args, api_password):
     If missing or mismatched, or if the user chooses to reconfigure (unless --force),
     perform full WireGuard reconfiguration.
     """
-    config_file = os.path.join(args.wg_config_dir, f"{args.network}.conf")
+    config_file = os.path.join(WG_DIR, f"{args.network}.conf")
     reconfigure_wg = True
 
     if os.path.exists(config_file):
@@ -591,7 +586,7 @@ def configure_wireguard(args, api_password):
                     if peer_info.get("exists"):
                         local_server_pubkey = local_config.get("server_pubkey")
                         local_peer_pubkey = read_file(
-                            os.path.join(args.wg_config_dir, "public.key")
+                            os.path.join(WG_DIR, "public.key")
                         )
                         if local_server_pubkey == peer_info.get(
                             "network_wg_public_key"
@@ -627,7 +622,7 @@ def configure_wireguard(args, api_password):
 
     if reconfigure_wg:
         print("Reconfiguring WireGuard...")
-        wg_public_key = generate_wireguard_keys(args.wg_config_dir, args.force)
+        wg_public_key = generate_wireguard_keys(args.force)
         wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
             args.server,
             args.port,
@@ -639,7 +634,6 @@ def configure_wireguard(args, api_password):
         write_wireguard_config(
             wg_ip,
             server_pubkey,
-            args.wg_config_dir,
             wg_public_ip,
             wg_port,
             args.network,
@@ -664,7 +658,7 @@ def configure_ssh(args, api_password):
     if os.path.exists(ssh_private) and os.path.exists(ssh_public):
         local_ssh_pubkey = read_file(ssh_public)
         # Attempt to read the WireGuard config using sudo
-        config_file = os.path.join(args.wg_config_dir, f"{args.network}.conf")
+        config_file = os.path.join(WG_DIR, f"{args.network}.conf")
         wg_config_content = sudo_read_file(config_file)
         if wg_config_content:
             local_config = parse_local_config(config_file)
@@ -713,7 +707,7 @@ def configure_ssh(args, api_password):
         print("Reconfiguring SSH keys...")
         generate_ssh_keys(args.force)
         # Attempt SSH key exchange using the WG IP from the config (read with sudo)
-        config_file = os.path.join(args.wg_config_dir, f"{args.network}.conf")
+        config_file = os.path.join(WG_DIR, f"{args.network}.conf")
         wg_config_content = sudo_read_file(config_file)
         if wg_config_content:
             local_config = parse_local_config(config_file)
@@ -846,6 +840,56 @@ def get_all_passwords(args):
     }
 
 
+def write_client_settings(args):
+    """
+    Write fundamental client settings (no secrets) to /etc/sensos/settings.conf.
+    The settings include:
+      - SERVER_IP: the API server hostname or IP
+      - SERVER_PORT: the API server port
+      - NETWORK_NAME: the network name
+    This function uses sudo to write to /etc/sensos/settings.conf.
+    """
+    import subprocess
+
+    settings_file = "/etc/sensos/settings.conf"
+    settings_dir = os.path.dirname(settings_file)
+
+    # Ensure the settings directory exists using sudo
+    subprocess.run(["sudo", "mkdir", "-p", settings_dir], check=True)
+
+    # Create the content to write
+    content = (
+        f"SERVER_IP={args.server}\n"
+        f"SERVER_PORT={args.port}\n"
+        f"NETWORK_NAME={args.network}\n"
+    )
+
+    # Write the content to the settings file using sudo tee
+    subprocess.run(["sudo", "tee", settings_file], input=content, text=True, check=True)
+
+    # Set file permissions to 644
+    subprocess.run(["sudo", "chmod", "644", settings_file], check=True)
+
+    print(f"✅ Client settings written to {settings_file}")
+
+
+def enable_service(service_name, start=False):
+    """
+    Enable and optionally start the specified systemd service using sudo.
+
+    Parameters:
+      service_name (str): The name of the service (e.g., "monitor-connectivity.service")
+      start (bool): If True, start the service after enabling it (default: False)
+    """
+    # Enable the service
+    subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
+    if start:
+        subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
+        print(f"✅ Service {service_name} enabled and started.")
+    else:
+        print(f"✅ Service {service_name} enabled.")
+
+
 def main():
     args = parse_args()
     print("🚀 Starting device configuration...")
@@ -865,6 +909,9 @@ def main():
         print("✅ Services started successfully.")
     except Exception as e:
         print("❌ Error starting services:", e)
+
+    write_client_settings(args)
+    enable_service("monitor-connectivity.service")
 
     print("✅ Configuration complete. Reboot now and check connectivity.")
 

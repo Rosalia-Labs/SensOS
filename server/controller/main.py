@@ -15,9 +15,10 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.errors import UniqueViolation
 from typing import Tuple, Optional
-from pydantic import BaseModel
-from datetime import datetime
+from pydantic import BaseModel, IPvAnyAddress
+from datetime import datetime, timedelta
 from pathlib import Path
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -559,6 +560,29 @@ def create_ssh_keys_table(cur):
     )
 
 
+def create_client_status_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.client_status (
+            id SERIAL PRIMARY KEY,
+            peer_id INTEGER REFERENCES sensos.wireguard_peers(id),
+            last_check_in TIMESTAMP DEFAULT NOW(),
+            uptime INTERVAL,
+            cpu_usage FLOAT,
+            memory_usage FLOAT,
+            disk_usage FLOAT,
+            version TEXT,
+            error_count INTEGER,
+            latency FLOAT,
+            ip_address INET,
+            temperature FLOAT,
+            battery_level FLOAT,
+            status_message TEXT
+        );
+        """
+    )
+
+
 def update_version_history_table(cur):
     cur.execute(
         """
@@ -654,6 +678,7 @@ def bootstrap():
                 create_wireguard_peers_table(cur)
                 create_wireguard_keys_table(cur)
                 create_ssh_keys_table(cur)
+                create_client_status_table(cur)
                 network_id = ensure_network_exists(cur)
                 if network_id:
                     add_peers_to_wireguard()
@@ -1235,3 +1260,56 @@ def get_registry_info(credentials: HTTPBasicCredentials = Depends(authenticate))
         "registry_port": config.get("registry_port", SENSOS_REGISTRY_PORT),
         "registry_user": config.get("registry_user", SENSOS_REGISTRY_USER),
     }
+
+
+class ClientStatusRequest(BaseModel):
+    client_id: int
+    uptime: Optional[timedelta] = None
+    cpu_usage: Optional[float] = None
+    memory_usage: Optional[float] = None
+    disk_usage: Optional[float] = None
+    version: Optional[str] = None
+    error_count: Optional[int] = None
+    latency: Optional[float] = None
+    ip_address: Optional[IPvAnyAddress] = None
+    temperature: Optional[float] = None
+    battery_level: Optional[float] = None
+    status_message: Optional[str] = None
+
+
+@app.post("/client-status")
+def client_status(
+    status: ClientStatusRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    """
+    Endpoint for clients to send periodic check-in information.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sensos.client_status (
+                    client_id, last_check_in, uptime, cpu_usage, memory_usage, disk_usage,
+                    version, error_count, latency, ip_address, temperature, battery_level, status_message
+                ) VALUES (
+                    %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                );
+                """,
+                (
+                    status.client_id,
+                    status.uptime,
+                    status.cpu_usage,
+                    status.memory_usage,
+                    status.disk_usage,
+                    status.version,
+                    status.error_count,
+                    status.latency,
+                    str(status.ip_address) if status.ip_address else None,
+                    status.temperature,
+                    status.battery_level,
+                    status.status_message,
+                ),
+            )
+            conn.commit()
+    return {"message": "Client status updated successfully"}
