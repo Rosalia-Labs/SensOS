@@ -586,10 +586,9 @@ def parse_local_config(config_file):
 
 def configure_wireguard(args, api_password):
     """
-    Check whether the local WireGuard configuration is valid by parsing the
-    local config file and comparing key values with those from /get-peer-info.
-    If missing or mismatched, or if the user chooses to reconfigure (unless --force),
-    perform full WireGuard reconfiguration.
+    Check whether the local WireGuard configuration is valid...
+    If missing or mismatched, perform full WireGuard reconfiguration.
+    Returns the client’s WireGuard IP.
     """
     config_file = os.path.join(WG_DIR, f"{args.network}.conf")
     reconfigure_wg = True
@@ -656,7 +655,7 @@ def configure_wireguard(args, api_password):
                 "❌ WireGuard key generation failed. Skipping WireGuard configuration.",
                 file=sys.stderr,
             )
-            return
+            return None
         wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
             args.server,
             args.port,
@@ -670,7 +669,7 @@ def configure_wireguard(args, api_password):
                 "❌ Peer registration failed. Skipping WireGuard configuration.",
                 file=sys.stderr,
             )
-            return
+            return None
         write_wireguard_config(
             wg_ip,
             server_pubkey,
@@ -681,8 +680,11 @@ def configure_wireguard(args, api_password):
             args.wg_keepalive,
         )
         change_hostname(hostname)
+        return wg_ip
     else:
         print("Keeping existing WireGuard configuration.")
+        local_config = parse_local_config(config_file)
+        return local_config.get("wg_ip", args.server)
 
 
 def configure_ssh(args, api_password):
@@ -889,9 +891,22 @@ def get_all_passwords(args):
     }
 
 
-def write_client_settings(args):
+def compute_api_server_wg_ip(client_wg_ip):
+    """Compute the API server’s WireGuard IP (x.x.0.1) from the client’s WireGuard IP."""
+    parts = client_wg_ip.split(".")
+    if len(parts) != 4:
+        print(
+            f"❌ Error: Invalid client WireGuard IP format: {client_wg_ip}",
+            file=sys.stderr,
+        )
+        return None
+    # Assumes the network is structured such that the server is always at x.x.0.1.
+    return f"{parts[0]}.{parts[1]}.0.1"
+
+
+def write_client_settings(args, server_wg_ip):
     """Write client settings to /etc/sensos/settings.conf after validating the data."""
-    if not all([args.server, args.port, args.network]):
+    if not all([server_wg_ip, args.port, args.network]):
         print(
             "❌ Error: Incomplete client settings. Not writing settings file.",
             file=sys.stderr,
@@ -900,7 +915,7 @@ def write_client_settings(args):
     settings_file = "/etc/sensos/settings.conf"
     settings_dir = os.path.dirname(settings_file)
     subprocess.run(["sudo", "mkdir", "-p", settings_dir], check=True)
-    content = f"SERVER_IP={args.server}\nSERVER_PORT={args.port}\nNETWORK_NAME={args.network}\n"
+    content = f"SERVER_IP={server_wg_ip}\nSERVER_PORT={args.port}\nNETWORK_NAME={args.network}\n"
     subprocess.run(["sudo", "tee", settings_file], input=content, text=True, check=True)
     subprocess.run(["sudo", "chmod", "644", settings_file], check=True)
     print(f"✅ Client settings written to {settings_file}")
@@ -936,7 +951,20 @@ def main():
             file=sys.stderr,
         )
         return
-    configure_wireguard(args, api_password)
+    # Get the client’s WireGuard IP (assigned during peer registration or from the local config)
+    client_wg_ip = configure_wireguard(args, api_password)
+    if not client_wg_ip:
+        print("❌ WireGuard configuration failed. Aborting.", file=sys.stderr)
+        return
+
+    # Compute the API server’s WireGuard IP as x.x.0.1 based on the client’s WireGuard IP.
+    server_wg_ip = compute_api_server_wg_ip(client_wg_ip)
+    if not server_wg_ip:
+        print(
+            "❌ Failed to compute API server WireGuard IP. Aborting.", file=sys.stderr
+        )
+        return
+
     configure_ssh(args, api_password)
     print("Starting WireGuard and SSH services...")
     try:
@@ -945,8 +973,7 @@ def main():
         print("✅ Services started successfully.")
     except Exception as e:
         print("❌ Error starting services:", e, file=sys.stderr)
-    write_client_settings(args)
-    # Enable connectivity check service only if not in no-connectivity-checks mode
+    write_client_settings(args, server_wg_ip)
     if not args.no_connectivity_checks:
         enable_service("monitor-connectivity.service")
     else:
