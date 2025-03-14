@@ -8,6 +8,7 @@ import datetime
 import subprocess
 import base64
 import json
+import shutil
 
 WG_DIR = "/etc/wireguard"
 
@@ -59,6 +60,11 @@ def parse_args():
         "--enable-ssh-passwords",
         action="store_true",
         help="Enable SSH password authentication (default: disabled)",
+    )
+    parser.add_argument(
+        "--no-connectivity-checks",
+        action="store_true",
+        help="Indicate device has no networking; skip connectivity check service",
     )
     return parser.parse_args()
 
@@ -113,9 +119,7 @@ def get_basic_auth(api_password):
 
 
 def validate_api_password(server, port, api_password):
-    """Test the API password by sending a GET request to a /validate endpoint.
-    Adjust the URL as needed if your API uses a different test endpoint.
-    """
+    """Test the API password by sending a GET request to a /validate endpoint."""
     url = f"http://{server}:{port}/"
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     try:
@@ -123,10 +127,13 @@ def validate_api_password(server, port, api_password):
         if response.status_code == 200:
             return True
         else:
-            print(f"Server returned status code {response.status_code}.")
+            print(
+                f"❌ Server returned status code {response.status_code}.",
+                file=sys.stderr,
+            )
             return False
     except Exception as e:
-        print(f"Error testing API password: {e}")
+        print(f"❌ Error testing API password: {e}", file=sys.stderr)
         return False
 
 
@@ -144,51 +151,56 @@ def get_api_password(server, port):
                 print("✅ API password from file is valid.")
                 return stored_password
             else:
-                print("⚠️ Stored API password is invalid.")
-        # Prompt user for a new password
+                print("⚠️ Stored API password is invalid.", file=sys.stderr)
         api_password = input("🔑 Enter API password: ").strip()
         if validate_api_password(server, port, api_password):
+            if api_password is None or api_password == "":
+                print("❌ Error: API password is empty. Not saving.", file=sys.stderr)
+                continue
             with open(API_PASSWORD_FILE, "w") as f:
                 f.write(api_password)
             os.chmod(API_PASSWORD_FILE, stat.S_IRUSR | stat.S_IWUSR)
             print(f"✅ API password saved securely in {API_PASSWORD_FILE}.")
             return api_password
         else:
-            print("❌ API password is invalid, please try again.")
-    print("🚫 Failed to provide a valid API password after 3 attempts.")
-    sys.exit(1)
+            print("❌ API password is invalid, please try again.", file=sys.stderr)
+    print(
+        "🚫 Failed to provide a valid API password after 3 attempts.", file=sys.stderr
+    )
+    return None
 
 
 def generate_wireguard_keys(force):
     """Generate WireGuard key pair if not already present. Returns public key."""
-
     if not os.path.isdir(WG_DIR):
         print(
-            f"Error: Configuration directory '{WG_DIR}' does not exist.",
+            f"❌ Error: Configuration directory '{WG_DIR}' does not exist.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        return None
 
     private_key_file = os.path.join(WG_DIR, "private.key")
     public_key_file = os.path.join(WG_DIR, "public.key")
 
     if os.path.exists(private_key_file) or os.path.exists(public_key_file):
-        print("⚠️ WireGuard keys already exist.")
+        print("⚠️ WireGuard keys already exist.", file=sys.stderr)
         if not force:
             print(
-                "🚫 Aborting to prevent overwriting existing keys. Use --force to override."
+                "🚫 Aborting to prevent overwriting existing keys. Use --force to override.",
+                file=sys.stderr,
             )
-            sys.exit(1)
+            return None
 
     print("🔑 Generating new WireGuard key pair...")
     private_key = run_command("wg genkey")
     public_key = run_command(f"echo {private_key} | wg pubkey")
 
-    # Write the private key securely using sudo
+    if not private_key or not public_key:
+        print("❌ Error: Failed to generate valid WireGuard keys.", file=sys.stderr)
+        return None
+
     run_command(f"echo '{private_key}' | sudo tee {private_key_file} > /dev/null")
     run_command(f"sudo chmod 600 {private_key_file}")
-
-    # Write the public key (less sensitive)
     run_command(f"echo '{public_key}' | sudo tee {public_key_file} > /dev/null")
 
     print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
@@ -200,11 +212,21 @@ def generate_wireguard_keys(force):
 def compute_hostname(network_name, wg_ip):
     """Compute hostname as {network_name}-{3rd_octet}-{4th_octet}."""
     ip_parts = wg_ip.split(".")
+    if len(ip_parts) != 4:
+        print(f"❌ Error: Invalid IP format '{wg_ip}'.", file=sys.stderr)
+        return None
     return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
 
 def register_peer(server, port, network_name, wg_public_key, api_password, subnet):
     """Register the device with the WireGuard server and return its assigned IP and connection details."""
+    if wg_public_key is None:
+        print(
+            "❌ Error: Invalid WireGuard public key. Skipping peer registration.",
+            file=sys.stderr,
+        )
+        return None, None, None, None, None
+
     server_url = f"http://{server}:{port}/register-peer"
     print(f"📡 Registering device on network '{network_name}' with {server_url}...")
 
@@ -220,25 +242,44 @@ def register_peer(server, port, network_name, wg_public_key, api_password, subne
     print(f"Response Text: {response.text}")
 
     if response.status_code != 200:
-        print(f"❌ Failed to register. Server response: {response.text}")
-        sys.exit(1)
+        print(
+            f"❌ Failed to register. Server response: {response.text}", file=sys.stderr
+        )
+        return None, None, None, None, None
 
     data = response.json()
-    wg_ip = data["wg_ip"]
-    server_pubkey = data["wg_public_key"]
-    wg_public_ip = data["wg_public_ip"]
-    wg_port = data["wg_port"]
+    wg_ip = data.get("wg_ip")
+    server_pubkey = data.get("wg_public_key")
+    wg_public_ip = data.get("wg_public_ip")
+    wg_port = data.get("wg_port")
+
+    if not all([wg_ip, server_pubkey, wg_public_ip, wg_port]):
+        print(
+            "❌ Error: Incomplete data received from peer registration.",
+            file=sys.stderr,
+        )
+        return None, None, None, None, None
 
     hostname = compute_hostname(network_name, wg_ip)
+    if hostname is None:
+        print(
+            "❌ Error: Could not compute hostname due to invalid IP.", file=sys.stderr
+        )
+        return None, None, None, None, None
 
-    # Register the WireGuard public key separately
     register_wireguard_key(server, port, wg_ip, wg_public_key, api_password)
-
     return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
 
 
 def register_wireguard_key(server, port, wg_ip, wg_public_key, api_password):
     """Registers the WireGuard public key for this device."""
+    if wg_ip is None or wg_public_key is None:
+        print(
+            "❌ Error: Missing WireGuard IP or public key for registration.",
+            file=sys.stderr,
+        )
+        return
+
     server_url = f"http://{server}:{port}/register-wireguard-key"
     print(f"🔑 Registering WireGuard public key with {server_url}...")
 
@@ -250,34 +291,38 @@ def register_wireguard_key(server, port, wg_ip, wg_public_key, api_password):
     )
 
     if response.status_code != 200:
-        print(f"❌ Failed to register WireGuard key. Server response: {response.text}")
-        sys.exit(1)
-
-    print(f"✅ WireGuard key registered for {wg_ip}.")
+        print(
+            f"❌ Failed to register WireGuard key. Server response: {response.text}",
+            file=sys.stderr,
+        )
+    else:
+        print(f"✅ WireGuard key registered for {wg_ip}.")
 
 
 def change_hostname(new_hostname):
     """Change the system hostname to the computed value."""
+    if new_hostname is None:
+        print(
+            "❌ Error: New hostname is invalid. Skipping hostname change.",
+            file=sys.stderr,
+        )
+        return
+
     current_hostname = run_command("hostname")
     if current_hostname != new_hostname:
         print(f"🔄 Changing hostname from {current_hostname} to {new_hostname}...")
-
         run_command(f"echo '{new_hostname}' | sudo tee /etc/hostname > /dev/null")
-
         run_command("sudo cp /etc/hosts /etc/hosts.bak")
         hosts = run_command("cat /etc/hosts").splitlines()
-
         updated_hosts = []
         for line in hosts:
             if "127.0.1.1" in line:
                 updated_hosts.append(f"127.0.1.1 {new_hostname}")
             else:
                 updated_hosts.append(line)
-
         run_command(
             f"echo '{chr(10).join(updated_hosts)}' | sudo tee /etc/hosts > /dev/null"
         )
-
         print(
             f"✅ Hostname changed manually to {new_hostname} (will apply after restart)"
         )
@@ -295,25 +340,38 @@ def write_wireguard_config(
     wg_keepalive,
 ):
     """Write the WireGuard configuration file with secure permissions."""
+    if not all([wg_ip, server_pubkey, wg_public_ip, wg_port]):
+        print(
+            "❌ Error: Incomplete WireGuard data. Configuration not written.",
+            file=sys.stderr,
+        )
+        return
 
     private_key_file = os.path.join(WG_DIR, "private.key")
     wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
-
     if os.path.exists(wg_config_file):
-        print(f"⚠️ WireGuard config file {wg_config_file} already exists.")
+        print(
+            f"⚠️ WireGuard config file {wg_config_file} already exists.", file=sys.stderr
+        )
         if not force:
             print(
-                "🚫 Aborting to prevent overwriting existing configuration. Use --force to override."
+                "🚫 Aborting to prevent overwriting existing configuration. Use --force to override.",
+                file=sys.stderr,
             )
-            sys.exit(1)
+            return
 
     private_key = run_command(f"sudo cat {private_key_file}")
+    if not private_key:
+        print(
+            "❌ Error: Private key is missing. Cannot write configuration.",
+            file=sys.stderr,
+        )
+        return
 
-    # Correctly extract the first two octets for AllowedIPs
     ip_parts = wg_ip.split(".")
     if len(ip_parts) != 4:
-        print(f"❌ Error: Invalid IP format received: {wg_ip}")
-        sys.exit(1)
+        print(f"❌ Error: Invalid IP format received: {wg_ip}", file=sys.stderr)
+        return
 
     base_ip = f"{ip_parts[0]}.{ip_parts[1]}"
     allowed_ips = f"{base_ip}.0.0/16"
@@ -330,10 +388,8 @@ AllowedIPs = {allowed_ips}
 PersistentKeepalive = {wg_keepalive}
 """
 
-    # Write the WireGuard configuration securely
     run_command(f"echo '{config}' | sudo tee {wg_config_file} > /dev/null")
     run_command(f"sudo chmod 600 {wg_config_file}")
-
     print(
         f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
     )
@@ -342,62 +398,49 @@ PersistentKeepalive = {wg_keepalive}
 
 def generate_ssh_keys(force):
     """Generate an SSH key pair if not already present."""
-    ssh_dir = os.path.expanduser("~/.ssh")  # Store keys in the home directory
-    os.makedirs(ssh_dir, exist_ok=True)  # Create ~/.ssh if it doesn't exist
-
+    ssh_dir = os.path.expanduser("~/.ssh")
+    os.makedirs(ssh_dir, exist_ok=True)
     private_key_file = os.path.join(ssh_dir, "id_ed25519")
     public_key_file = f"{private_key_file}.pub"
-
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
-        print("⚠️ SSH keys already exist.")
+        print("⚠️ SSH keys already exist.", file=sys.stderr)
         if not force:
             print(
-                "🚫 Aborting to prevent overwriting existing keys. Use --force to override."
+                "🚫 Aborting to prevent overwriting existing keys. Use --force to override.",
+                file=sys.stderr,
             )
-            sys.exit(1)
-
+            return
     print("🔑 Generating new SSH key pair...")
     run_command(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N ''")
-
     if not os.path.exists(public_key_file):
         print(
             f"❌ Error: Failed to generate SSH public key at {public_key_file}",
             file=sys.stderr,
         )
-        sys.exit(1)
-
-    # Secure private key permissions
+        return
     os.chmod(private_key_file, 0o600)
-
     print(f"✅ SSH key generated at {private_key_file} and {public_key_file}.")
 
 
 def extract_ssh_key_params(public_key_file):
     """Extract SSH key type, size, fingerprint, comment, and expiration date, handling missing files."""
-
     if not os.path.exists(public_key_file):
         print(
             f"❌ Error: SSH public key file '{public_key_file}' not found.",
             file=sys.stderr,
         )
         return None, None, None, None, None
-
     try:
-        # Read the public key
         with open(public_key_file, "r") as f:
             key_parts = f.read().strip().split()
-
         if len(key_parts) < 2:
             print(
                 f"❌ Error: Invalid SSH key format in '{public_key_file}'.",
                 file=sys.stderr,
             )
             return None, None, None, None, None
-
-        key_type = key_parts[0]  # e.g., 'ssh-ed25519', 'ssh-rsa', etc.
+        key_type = key_parts[0]
         key_comment = key_parts[-1] if len(key_parts) > 2 else None
-
-        # Get the fingerprint and key size
         key_info = run_command(f"ssh-keygen -lf {public_key_file}")
         if not key_info:
             print(
@@ -405,27 +448,21 @@ def extract_ssh_key_params(public_key_file):
                 file=sys.stderr,
             )
             return key_type, None, key_comment, None, None
-
         key_info_parts = key_info.split()
         if len(key_info_parts) < 2:
             return key_type, None, key_comment, None, None
-
         fingerprint = key_info_parts[1]
-
-        # Ensure key_size is an integer
         try:
-            key_size = int(key_info_parts[0])  # Convert from string to integer
+            key_size = int(key_info_parts[0])
         except ValueError:
             print(
-                f"⚠️ Warning: Failed to parse key size '{key_info_parts[0]}'. Defaulting to None."
+                f"⚠️ Warning: Failed to parse key size '{key_info_parts[0]}'. Defaulting to None.",
+                file=sys.stderr,
             )
             key_size = None
-
-        # Extract expiration date if present in comment
         expires_at = None
         if key_comment:
             try:
-                # Example: "user@host expires:2026-01-01"
                 if "expires:" in key_comment:
                     expires_str = key_comment.split("expires:")[-1].strip()
                     expires_at = datetime.datetime.strptime(
@@ -433,12 +470,11 @@ def extract_ssh_key_params(public_key_file):
                     ).isoformat()
             except ValueError:
                 print(
-                    f"⚠️ Warning: Could not parse expiration date from comment '{key_comment}'."
+                    f"⚠️ Warning: Could not parse expiration date from comment '{key_comment}'.",
+                    file=sys.stderr,
                 )
                 expires_at = None
-
         return key_type, key_size, key_comment, fingerprint, expires_at
-
     except Exception as e:
         print(
             f"❌ Exception while processing '{public_key_file}': {e}", file=sys.stderr
@@ -448,33 +484,26 @@ def extract_ssh_key_params(public_key_file):
 
 def exchange_ssh_keys(server, port, wg_ip, api_password):
     """Registers an SSH public key for this device using its WireGuard IP."""
-
     ssh_dir = os.path.expanduser("~/.ssh")
     public_key_file = os.path.join(ssh_dir, "id_ed25519.pub")
     authorized_keys_file = os.path.join(ssh_dir, "authorized_keys")
-
     if not os.path.exists(public_key_file):
         print(
             f"❌ Error: SSH public key file '{public_key_file}' not found.",
             file=sys.stderr,
         )
-        sys.exit(1)
-
-    # Extract SSH key details
+        return
     username = os.getenv("USER") or run_command("whoami")
     uid = os.getuid()
     key_type, key_size, key_comment, fingerprint, expires_at = extract_ssh_key_params(
         public_key_file
     )
-
     if not key_type or not fingerprint:
         print(
             f"❌ Failed to extract SSH key details from {public_key_file}",
             file=sys.stderr,
         )
-        sys.exit(1)
-
-    # Prepare the payload ensuring correct types
+        return
     payload = {
         "wg_ip": wg_ip,
         "username": username,
@@ -484,33 +513,29 @@ def exchange_ssh_keys(server, port, wg_ip, api_password):
         "key_size": key_size if key_size else None,
         "key_comment": key_comment,
         "fingerprint": fingerprint,
-        "expires_at": (expires_at if expires_at else None),
+        "expires_at": expires_at if expires_at else None,
     }
-
+    if not all([wg_ip, payload["ssh_public_key"], key_type, fingerprint]):
+        print("❌ Error: Incomplete SSH key data. Aborting exchange.", file=sys.stderr)
+        return
     server_url = f"http://{server}:{port}/exchange-ssh-keys"
     print(f"🔑 Registering SSH public key with {server_url}...")
-
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     response = requests.post(server_url, json=payload, headers=headers)
-
     if response.status_code != 200:
-        print(f"❌ Failed to register SSH key. Server response: {response.text}")
-        sys.exit(1)
-
+        print(
+            f"❌ Failed to register SSH key. Server response: {response.text}",
+            file=sys.stderr,
+        )
+        return
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
-
-    # Append the returned SSH public key to authorized_keys
     server_public_key = response.json().get("ssh_public_key")
-
     if not server_public_key:
-        print(f"❌ No SSH public key returned from server.", file=sys.stderr)
-        sys.exit(1)
-
+        print("❌ No SSH public key returned from server.", file=sys.stderr)
+        return
     with open(authorized_keys_file, "a") as auth_keys:
         auth_keys.write(server_public_key + "\n")
-
     print(f"✅ Server public key added to {authorized_keys_file}.")
-
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
 
@@ -520,7 +545,7 @@ def read_file(filepath):
         with open(filepath, "r") as f:
             return f.read().strip()
     except Exception as e:
-        print(f"Error reading file {filepath}: {e}")
+        print(f"❌ Error reading file {filepath}: {e}", file=sys.stderr)
         return None
 
 
@@ -530,7 +555,7 @@ def sudo_read_file(filepath):
         content = run_command(f"sudo cat {filepath}")
         return content.strip()
     except Exception as e:
-        print(f"Error reading {filepath} with sudo: {e}")
+        print(f"❌ Error reading {filepath} with sudo: {e}", file=sys.stderr)
         return None
 
 
@@ -545,7 +570,6 @@ def parse_local_config(config_file):
     content = sudo_read_file(config_file)
     if not content:
         return config
-
     current_section = None
     for line in content.splitlines():
         line = line.strip()
@@ -554,7 +578,6 @@ def parse_local_config(config_file):
         elif "=" in line and current_section:
             key, value = [x.strip() for x in line.split("=", 1)]
             if current_section.lower() == "interface" and key.lower() == "address":
-                # Expecting "Address = 10.0.0.5/32"
                 config["wg_ip"] = value.split("/")[0]
             elif current_section.lower() == "peer" and key.lower() == "publickey":
                 config["server_pubkey"] = value
@@ -570,7 +593,6 @@ def configure_wireguard(args, api_password):
     """
     config_file = os.path.join(WG_DIR, f"{args.network}.conf")
     reconfigure_wg = True
-
     if os.path.exists(config_file):
         print(f"Found WireGuard config at {config_file}.")
         local_config = parse_local_config(config_file)
@@ -603,26 +625,38 @@ def configure_wireguard(args, api_password):
                                 reconfigure_wg = True
                         else:
                             print(
-                                "Mismatch in WireGuard keys detected. Reconfiguration required."
+                                "❌ Mismatch in WireGuard keys detected. Reconfiguration required.",
+                                file=sys.stderr,
                             )
                     else:
                         print(
-                            "Peer not registered in API. Full WireGuard configuration needed."
+                            "❌ Peer not registered in API. Full WireGuard configuration needed.",
+                            file=sys.stderr,
                         )
                 else:
                     print(
-                        f"/get-peer-info returned {resp.status_code}; proceeding with reconfiguration."
+                        f"❌ /get-peer-info returned {resp.status_code}; proceeding with reconfiguration.",
+                        file=sys.stderr,
                     )
             except Exception as e:
-                print("Error accessing /get-peer-info:", e)
+                print("❌ Error accessing /get-peer-info:", e, file=sys.stderr)
         else:
-            print("Local config does not contain a valid WireGuard IP.")
+            print(
+                "❌ Local config does not contain a valid WireGuard IP.",
+                file=sys.stderr,
+            )
     else:
-        print("No local WireGuard configuration file found.")
+        print("❌ No local WireGuard configuration file found.", file=sys.stderr)
 
     if reconfigure_wg:
         print("Reconfiguring WireGuard...")
         wg_public_key = generate_wireguard_keys(args.force)
+        if wg_public_key is None:
+            print(
+                "❌ WireGuard key generation failed. Skipping WireGuard configuration.",
+                file=sys.stderr,
+            )
+            return
         wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
             args.server,
             args.port,
@@ -631,6 +665,12 @@ def configure_wireguard(args, api_password):
             api_password,
             args.subnet,
         )
+        if not wg_ip:
+            print(
+                "❌ Peer registration failed. Skipping WireGuard configuration.",
+                file=sys.stderr,
+            )
+            return
         write_wireguard_config(
             wg_ip,
             server_pubkey,
@@ -648,16 +688,14 @@ def configure_wireguard(args, api_password):
 def configure_ssh(args, api_password):
     """
     Check if SSH keys exist and whether the registered SSH public key (via /get-peer-info)
-    matches the local SSH public key. If missing or mismatched, or if the user chooses
-    to reconfigure (unless --force), generate new SSH keys and exchange them with the server.
+    matches the local SSH public key. If missing or mismatched, or if the user chooses to
+    reconfigure (unless --force), generate new SSH keys and exchange them with the server.
     """
     ssh_private = os.path.expanduser("~/.ssh/id_ed25519")
     ssh_public = os.path.expanduser("~/.ssh/id_ed25519.pub")
     reconfigure_ssh = True
-
     if os.path.exists(ssh_private) and os.path.exists(ssh_public):
         local_ssh_pubkey = read_file(ssh_public)
-        # Attempt to read the WireGuard config using sudo
         config_file = os.path.join(WG_DIR, f"{args.network}.conf")
         wg_config_content = sudo_read_file(config_file)
         if wg_config_content:
@@ -686,19 +724,27 @@ def configure_ssh(args, api_password):
                                 reconfigure_ssh = True
                         else:
                             print(
-                                "Local SSH key does not match API. Reconfiguration required."
+                                "❌ Local SSH key does not match API. Reconfiguration required.",
+                                file=sys.stderr,
                             )
                     else:
                         print(
-                            f"/get-peer-info returned {resp.status_code} for SSH; reconfiguring SSH."
+                            f"❌ /get-peer-info returned {resp.status_code} for SSH; reconfiguring SSH.",
+                            file=sys.stderr,
                         )
                 except Exception as e:
-                    print("Error accessing /get-peer-info for SSH:", e)
+                    print(
+                        "❌ Error accessing /get-peer-info for SSH:", e, file=sys.stderr
+                    )
             else:
-                print("No WG IP found in local config; cannot verify SSH keys.")
+                print(
+                    "❌ No WG IP found in local config; cannot verify SSH keys.",
+                    file=sys.stderr,
+                )
         else:
             print(
-                "No local WireGuard config available (cannot read with sudo); skipping SSH key exchange."
+                "❌ No local WireGuard config available (cannot read with sudo); skipping SSH key exchange.",
+                file=sys.stderr,
             )
     else:
         print("SSH keys not found; new keys will be generated.")
@@ -706,7 +752,6 @@ def configure_ssh(args, api_password):
     if reconfigure_ssh:
         print("Reconfiguring SSH keys...")
         generate_ssh_keys(args.force)
-        # Attempt SSH key exchange using the WG IP from the config (read with sudo)
         config_file = os.path.join(WG_DIR, f"{args.network}.conf")
         wg_config_content = sudo_read_file(config_file)
         if wg_config_content:
@@ -715,9 +760,15 @@ def configure_ssh(args, api_password):
                 wg_ip = local_config["wg_ip"]
                 exchange_ssh_keys(args.server, args.port, wg_ip, api_password)
             else:
-                print("No WG IP available in config; cannot exchange SSH keys.")
+                print(
+                    "❌ No WG IP available in config; cannot exchange SSH keys.",
+                    file=sys.stderr,
+                )
         else:
-            print("No local WG config available; skipping SSH key exchange.")
+            print(
+                "❌ No local WG config available; skipping SSH key exchange.",
+                file=sys.stderr,
+            )
     else:
         print("Keeping existing SSH key configuration.")
 
@@ -725,11 +776,8 @@ def configure_ssh(args, api_password):
 def validate_registry_password(registry_info, registry_password):
     url = f"https://{registry_info['registry_ip']}:{registry_info['registry_port']}/v2/"
     auth = (registry_info["registry_user"], registry_password)
-
     try:
-        response = requests.get(
-            url, auth=auth, timeout=5, verify=False
-        )  # 🔴 Ignore TLS errors
+        response = requests.get(url, auth=auth, timeout=5, verify=False)
         return response.status_code == 200
     except requests.exceptions.RequestException as e:
         print(f"❌ Debug: Error during request: {e}", file=sys.stderr)
@@ -737,9 +785,6 @@ def validate_registry_password(registry_info, registry_password):
 
 
 def get_registry_info_from_api(server, port, api_password):
-    """
-    Retrieve Sensos registry connection details from the API (which reads them from the database).
-    """
     url = f"http://{server}:{port}/get-registry-info"
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     try:
@@ -747,18 +792,29 @@ def get_registry_info_from_api(server, port, api_password):
         if response.status_code == 200:
             return response.json()
         else:
-            print(f"Error retrieving registry info: Status code {response.status_code}")
-            sys.exit(1)
+            print(
+                f"❌ Error retrieving registry info: Status code {response.status_code}",
+                file=sys.stderr,
+            )
+            return None
     except Exception as e:
-        print(f"Error retrieving registry info: {e}")
-        sys.exit(1)
+        print(f"❌ Error retrieving registry info: {e}", file=sys.stderr)
+        return None
 
 
 def save_registry_config(registry_info, registry_password):
-    """
-    Save the Sensos registry configuration to a local JSON file with secure permissions.
-    The configuration is stored in ~/.sensos_registry_config.json.
-    """
+    if not registry_info or not registry_password:
+        print(
+            "❌ Error: Incomplete registry configuration data. Not saving.",
+            file=sys.stderr,
+        )
+        return
+    required_keys = ["registry_ip", "registry_port", "registry_user"]
+    if not all(registry_info.get(key) for key in required_keys):
+        print(
+            "❌ Error: Registry information is incomplete. Not saving.", file=sys.stderr
+        )
+        return
     config = {
         "registry_ip": registry_info["registry_ip"],
         "registry_port": registry_info["registry_port"],
@@ -773,11 +829,6 @@ def save_registry_config(registry_info, registry_password):
 
 
 def get_registry_password_from_info(registry_info):
-    """
-    Retrieve or prompt for the registry password using the provided registry_info dict,
-    validate it by testing the connection, save it locally, and return the password.
-    Allows up to 3 attempts.
-    """
     tries = 3
     for attempt in range(tries):
         if os.path.exists(REGISTRY_PASSWORD_FILE):
@@ -788,51 +839,49 @@ def get_registry_password_from_info(registry_info):
                 print("✅ Registry password from file is valid.")
                 return stored_password
             else:
-                print("⚠️ Stored registry password is invalid.")
-        # Prompt user for a new registry password
+                print("⚠️ Stored registry password is invalid.", file=sys.stderr)
         registry_password = input("🔑 Enter registry password: ").strip()
+        if not registry_password:
+            print("❌ Error: Empty registry password provided.", file=sys.stderr)
+            continue
         if validate_registry_password(registry_info, registry_password):
             save_registry_config(registry_info, registry_password)
             print(f"✅ Registry password saved securely in {REGISTRY_PASSWORD_FILE}.")
             return registry_password
         else:
-            print("❌ Registry password is invalid, please try again.")
-    print("🚫 Failed to provide a valid registry password after 3 attempts.")
-    sys.exit(1)
+            print("❌ Registry password is invalid, please try again.", file=sys.stderr)
+    print(
+        "🚫 Failed to provide a valid registry password after 3 attempts.",
+        file=sys.stderr,
+    )
+    return None
 
 
 def get_all_passwords(args):
-    """
-    Prompt for and validate the API password, then retrieve registry info from the API,
-    and finally prompt for and validate the registry password.
-    Returns a dict with:
-      - api_password
-      - registry_info: dict with keys "registry_ip", "registry_port", "registry_user"
-      - registry_password
-    """
-    # Get and validate the API password
     api_password = get_api_password(args.server, args.port)
-
-    # Retrieve registry info from the API
+    if not api_password:
+        print(
+            "❌ Error: API password not obtained. Aborting further configuration.",
+            file=sys.stderr,
+        )
+        return {"api_password": None, "registry_info": None, "registry_password": None}
     registry_info = get_registry_info_from_api(args.server, args.port, api_password)
     required_keys = ["registry_ip", "registry_port", "registry_user"]
-    if not all(key in registry_info for key in required_keys):
-        print("❌ Registry information is incomplete from API. Aborting.")
-        sys.exit(1)
-
+    if not registry_info or not all(key in registry_info for key in required_keys):
+        print("❌ Registry information is incomplete from API.", file=sys.stderr)
+        return {
+            "api_password": api_password,
+            "registry_info": None,
+            "registry_password": None,
+        }
     print(
         f"Registry info: IP={registry_info['registry_ip']}, Port={registry_info['registry_port']}, User={registry_info['registry_user']}"
     )
-
-    # Retrieve and validate the registry password using the registry_info dict
     registry_password = get_registry_password_from_info(registry_info)
-
-    # Now registry information and password are stored for future use.
     print("Registry configuration:")
     print(f"  IP: {registry_info['registry_ip']}")
     print(f"  Port: {registry_info['registry_port']}")
     print(f"  User: {registry_info['registry_user']}")
-
     return {
         "api_password": api_password,
         "registry_info": registry_info,
@@ -841,78 +890,69 @@ def get_all_passwords(args):
 
 
 def write_client_settings(args):
-    """
-    Write fundamental client settings (no secrets) to /etc/sensos/settings.conf.
-    The settings include:
-      - SERVER_IP: the API server hostname or IP
-      - SERVER_PORT: the API server port
-      - NETWORK_NAME: the network name
-    This function uses sudo to write to /etc/sensos/settings.conf.
-    """
-    import subprocess
-
+    """Write client settings to /etc/sensos/settings.conf after validating the data."""
+    if not all([args.server, args.port, args.network]):
+        print(
+            "❌ Error: Incomplete client settings. Not writing settings file.",
+            file=sys.stderr,
+        )
+        return
     settings_file = "/etc/sensos/settings.conf"
     settings_dir = os.path.dirname(settings_file)
-
-    # Ensure the settings directory exists using sudo
     subprocess.run(["sudo", "mkdir", "-p", settings_dir], check=True)
-
-    # Create the content to write
-    content = (
-        f"SERVER_IP={args.server}\n"
-        f"SERVER_PORT={args.port}\n"
-        f"NETWORK_NAME={args.network}\n"
-    )
-
-    # Write the content to the settings file using sudo tee
+    content = f"SERVER_IP={args.server}\nSERVER_PORT={args.port}\nNETWORK_NAME={args.network}\n"
     subprocess.run(["sudo", "tee", settings_file], input=content, text=True, check=True)
-
-    # Set file permissions to 644
     subprocess.run(["sudo", "chmod", "644", settings_file], check=True)
-
     print(f"✅ Client settings written to {settings_file}")
 
 
 def enable_service(service_name, start=False):
-    """
-    Enable and optionally start the specified systemd service using sudo.
-
-    Parameters:
-      service_name (str): The name of the service (e.g., "monitor-connectivity.service")
-      start (bool): If True, start the service after enabling it (default: False)
-    """
-    # Enable the service
-    subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
-    if start:
-        subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
-        print(f"✅ Service {service_name} enabled and started.")
-    else:
-        print(f"✅ Service {service_name} enabled.")
+    """Enable and optionally start the specified systemd service using sudo."""
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
+        if start:
+            subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
+            print(f"✅ Service {service_name} enabled and started.")
+        else:
+            print(f"✅ Service {service_name} enabled.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
 
 
 def main():
     args = parse_args()
     print("🚀 Starting device configuration...")
-
-    # Get both API and registry passwords up front, storing registry info for later use.
     creds = get_all_passwords(args)
     api_password = creds["api_password"]
-
-    # Proceed with the rest of your configuration flows.
+    if not api_password:
+        print(
+            "❌ Critical error: API password not obtained. Aborting configuration.",
+            file=sys.stderr,
+        )
+        return
     configure_wireguard(args, api_password)
     configure_ssh(args, api_password)
-
     print("Starting WireGuard and SSH services...")
     try:
         enable_wireguard(args.network)
         enable_ssh(passwords=args.enable_ssh_passwords)
         print("✅ Services started successfully.")
     except Exception as e:
-        print("❌ Error starting services:", e)
-
+        print("❌ Error starting services:", e, file=sys.stderr)
     write_client_settings(args)
-    enable_service("monitor-connectivity.service")
-
+    # Enable connectivity check service only if not in no-connectivity-checks mode
+    if not args.no_connectivity_checks:
+        enable_service("monitor-connectivity.service")
+    else:
+        print(
+            "ℹ️ No-connectivity-checks mode active. Skipping connectivity check service enablement."
+        )
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
 
