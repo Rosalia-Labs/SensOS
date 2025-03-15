@@ -19,7 +19,7 @@ DEFAULT_NETWORK_NAME = "sensos"
 DEFAULT_KEEPALIVE = "0"
 
 API_PASSWORD_FILE = os.path.expanduser("~/.sensos_api_password")
-REGISTRY_PASSWORD_FILE = os.path.expanduser("~/.sensos_registry_password")
+REGISTRY_CONFIG_FILE = os.path.expanduser("~/.sensos_registry_config.json")
 
 
 def parse_args():
@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument(
         "--subnet",
         type=int,
-        default=1,  # Default to starting at x.x.1.1
+        default=1,
         help="Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
     )
     parser.add_argument(
@@ -786,24 +786,6 @@ def validate_registry_password(registry_info, registry_password):
         return False
 
 
-def get_registry_info_from_api(server, port, api_password):
-    url = f"http://{server}:{port}/get-registry-info"
-    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(
-                f"❌ Error retrieving registry info: Status code {response.status_code}",
-                file=sys.stderr,
-            )
-            return None
-    except Exception as e:
-        print(f"❌ Error retrieving registry info: {e}", file=sys.stderr)
-        return None
-
-
 def save_registry_config(registry_info, registry_password):
     if not registry_info or not registry_password:
         print(
@@ -812,7 +794,7 @@ def save_registry_config(registry_info, registry_password):
         )
         return
     required_keys = ["registry_ip", "registry_port", "registry_user"]
-    if not all(registry_info.get(key) for key in required_keys):
+    if not all(key in registry_info for key in required_keys):
         print(
             "❌ Error: Registry information is incomplete. Not saving.", file=sys.stderr
         )
@@ -823,72 +805,40 @@ def save_registry_config(registry_info, registry_password):
         "registry_user": registry_info["registry_user"],
         "registry_password": registry_password,
     }
-    config_file = os.path.expanduser("~/.sensos_registry_config.json")
-    with open(config_file, "w") as f:
-        json.dump(config, f, indent=2)
-    os.chmod(config_file, stat.S_IRUSR | stat.S_IWUSR)
-    print(f"✅ Registry configuration saved to {config_file}.")
+    with open(REGISTRY_CONFIG_FILE, "w") as f:
+        json.dump(config, f)
+    os.chmod(REGISTRY_CONFIG_FILE, 0o600)
+    print(f"✅ Registry configuration saved to {REGISTRY_CONFIG_FILE}.")
 
 
 def get_registry_password_from_info(registry_info):
     tries = 3
     for attempt in range(tries):
-        if os.path.exists(REGISTRY_PASSWORD_FILE):
-            with open(REGISTRY_PASSWORD_FILE, "r") as f:
-                stored_password = f.read().strip()
-            print("Testing stored registry password...")
-            if validate_registry_password(registry_info, stored_password):
-                print("✅ Registry password from file is valid.")
-                return stored_password
-            else:
-                print("⚠️ Stored registry password is invalid.", file=sys.stderr)
+        if os.path.exists(REGISTRY_CONFIG_FILE):
+            with open(REGISTRY_CONFIG_FILE, "r") as f:
+                stored_config = json.load(f)
+                stored_password = stored_config.get("registry_password")
+                if stored_password:
+                    return stored_password
+            print(
+                "⚠️ Password not found in config file or file malformed.",
+                file=sys.stderr,
+            )
+
+        # Prompt if password isn't stored yet or config missing
         registry_password = input("🔑 Enter registry password: ").strip()
         if not registry_password:
             print("❌ Error: Empty registry password provided.", file=sys.stderr)
             continue
         if validate_registry_password(registry_info, registry_password):
             save_registry_config(registry_info, registry_password)
-            print(f"✅ Registry password saved securely in {REGISTRY_PASSWORD_FILE}.")
+            print(f"✅ Registry password saved to {REGISTRY_CONFIG_FILE}.")
             return registry_password
-        else:
-            print("❌ Registry password is invalid, please try again.", file=sys.stderr)
     print(
-        "🚫 Failed to provide a valid registry password after 3 attempts.",
+        "❌ Failed to obtain a valid registry password after 3 attempts.",
         file=sys.stderr,
     )
     return None
-
-
-def get_all_passwords(args):
-    api_password = get_api_password(args.server, args.port)
-    if not api_password:
-        print(
-            "❌ Error: API password not obtained. Aborting further configuration.",
-            file=sys.stderr,
-        )
-        return {"api_password": None, "registry_info": None, "registry_password": None}
-    registry_info = get_registry_info_from_api(args.server, args.port, api_password)
-    required_keys = ["registry_ip", "registry_port", "registry_user"]
-    if not registry_info or not all(key in registry_info for key in required_keys):
-        print("❌ Registry information is incomplete from API.", file=sys.stderr)
-        return {
-            "api_password": api_password,
-            "registry_info": None,
-            "registry_password": None,
-        }
-    print(
-        f"Registry info: IP={registry_info['registry_ip']}, Port={registry_info['registry_port']}, User={registry_info['registry_user']}"
-    )
-    registry_password = get_registry_password_from_info(registry_info)
-    print("Registry configuration:")
-    print(f"  IP: {registry_info['registry_ip']}")
-    print(f"  Port: {registry_info['registry_port']}")
-    print(f"  User: {registry_info['registry_user']}")
-    return {
-        "api_password": api_password,
-        "registry_info": registry_info,
-        "registry_password": registry_password,
-    }
 
 
 def compute_api_server_wg_ip(client_wg_ip):
@@ -915,7 +865,9 @@ def write_client_settings(args, server_wg_ip):
     settings_file = "/etc/sensos/settings.conf"
     settings_dir = os.path.dirname(settings_file)
     subprocess.run(["sudo", "mkdir", "-p", settings_dir], check=True)
-    content = f"SERVER_IP={server_wg_ip}\nSERVER_PORT={args.port}\nNETWORK_NAME={args.network}\n"
+    content = (
+        f"SERVER_IP={server_wg_ip}\nSERVER_PORT=8000\nNETWORK_NAME={args.network}\n"
+    )
     subprocess.run(["sudo", "tee", settings_file], input=content, text=True, check=True)
     subprocess.run(["sudo", "chmod", "644", settings_file], check=True)
     print(f"✅ Client settings written to {settings_file}")
@@ -943,8 +895,7 @@ def enable_service(service_name, start=False):
 def main():
     args = parse_args()
     print("🚀 Starting device configuration...")
-    creds = get_all_passwords(args)
-    api_password = creds["api_password"]
+    api_password = get_api_password(args.server, args.port)
     if not api_password:
         print(
             "❌ Critical error: API password not obtained. Aborting configuration.",

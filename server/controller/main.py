@@ -80,11 +80,6 @@ def resolve_hostname(value):
     return None  # Return None if resolution fails
 
 
-# Registry values
-SENSOS_REGISTRY_IP = resolve_hostname(os.getenv("SENSOS_REGISTRY_IP", "127.0.0.1"))
-SENSOS_REGISTRY_USER = os.getenv("SENSOS_REGISTRY_USER", "sensos")
-SENSOS_REGISTRY_PORT = os.getenv("SENSOS_REGISTRY_PORT", "5000")
-
 # Log versioning details at startup
 logger.info("🔍 Application Version Information:")
 logger.info(
@@ -355,8 +350,12 @@ def create_wireguard_configs(
     # Assign fixed IPs
     base_ip = ip_range.split("/")[0]  # Get the base IP without CIDR
     network_prefix = ".".join(base_ip.split(".")[:3])  # Extract "x.x.0"
-    controller_ip = f"{network_prefix}.1"  # Controller gets x.x.0.1
-    wireguard_ip = f"{network_prefix}.2"  # WireGuard gets x.x.0.2
+    api_proxy_ip = f"{network_prefix}.1"
+    controller_ip = f"{network_prefix}.2"  # Controller gets x.x.0.1
+    wireguard_ip = f"{network_prefix}.3"  # WireGuard gets x.x.0.2
+
+    # API proxy container will register wireguard key later
+    insert_peer(network_id, api_proxy_ip)
 
     # Generate keys for the controller itself
     controller_private_key, controller_public_key = generate_wireguard_keys()
@@ -451,30 +450,6 @@ AllowedIPs = {wg_ip}/32
 
     logger.info(
         "✅ WireGuard configuration regenerated for all networks with secure permissions."
-    )
-
-
-def create_config_table(cur):
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sensos.config (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        """
-    )
-
-
-def update_config_table(cur):
-    cur.execute(
-        """
-        INSERT INTO sensos.config (key, value) VALUES
-            ('registry_ip', %s),
-            ('registry_port', %s),
-            ('registry_user', %s)
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
-        """,
-        (SENSOS_REGISTRY_IP, SENSOS_REGISTRY_PORT, SENSOS_REGISTRY_USER),
     )
 
 
@@ -670,8 +645,6 @@ def bootstrap():
             with conn.cursor() as cur:
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
-                create_config_table(cur)
-                update_config_table(cur)
                 create_version_history_table(cur)
                 update_version_history_table(cur)
                 create_networks_table(cur)
@@ -1240,28 +1213,6 @@ def get_peer_info(
     }
 
 
-@app.get("/get-registry-info")
-def get_registry_info(credentials: HTTPBasicCredentials = Depends(authenticate)):
-    """
-    Retrieves the Sensos Registry connection details from the database:
-      - registry_ip: The IP address for the registry container.
-      - registry_port: The port on which the registry is listening.
-      - registry_user: The username for registry authentication.
-    """
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT key, value FROM sensos.config WHERE key IN ('registry_ip', 'registry_port', 'registry_user');"
-            )
-            rows = cur.fetchall()
-            config = {key: value for key, value in rows}
-    return {
-        "registry_ip": config.get("registry_ip", SENSOS_REGISTRY_IP),
-        "registry_port": config.get("registry_port", SENSOS_REGISTRY_PORT),
-        "registry_user": config.get("registry_user", SENSOS_REGISTRY_USER),
-    }
-
-
 class ClientStatusRequest(BaseModel):
     client_id: int
     uptime: Optional[timedelta] = None
@@ -1313,3 +1264,35 @@ def client_status(
             )
             conn.commit()
     return {"message": "Client status updated successfully"}
+
+
+@app.get("/get-network-info")
+def get_network_info(
+    network_name: str, credentials: HTTPBasicCredentials = Depends(authenticate)
+):
+    """Retrieve all details for a given network, excluding the database ID."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT name, ip_range, wg_public_ip, wg_port, wg_public_key
+                FROM sensos.networks
+                WHERE name = %s;
+                """,
+                (network_name,),
+            )
+            result = cur.fetchone()
+
+    if not result:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No network found with name '{network_name}'"},
+        )
+
+    return {
+        "name": result[0],
+        "ip_range": result[1],
+        "wg_public_ip": result[2],
+        "wg_port": result[3],
+        "wg_public_key": result[4],
+    }

@@ -27,7 +27,6 @@ Options:
   --wg-port PORT          Set WireGuard port (default: $DEFAULT_WG_PORT)
   --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
   --api-password PWD      Set API password (default: $DEFAULT_API_PASSWORD)
-  --registry-ip IP        Set registry IP (default: --wg-server-ip setting)
   --registry-port PORT    Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)
   --registry-user USER    Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)
   --registry-password PWD Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)
@@ -67,10 +66,6 @@ while [[ $# -gt 0 ]]; do
         API_PASSWORD="$2"
         shift 2
         ;;
-    --registry-ip)
-        SENSOS_REGISTRY_IP="$2"
-        shift 2
-        ;;
     --registry-port)
         SENSOS_REGISTRY_PORT="$2"
         shift 2
@@ -99,7 +94,6 @@ WG_PORT=${WG_PORT:-$DEFAULT_WG_PORT}
 WG_SERVER_IP=${WG_SERVER_IP:-$DEFAULT_WG_SERVER_IP}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-$DEFAULT_POSTGRES_PASSWORD}
 API_PASSWORD=${API_PASSWORD:-$DEFAULT_API_PASSWORD}
-SENSOS_REGISTRY_IP=${SENSOS_REGISTRY_IP:-$WG_SERVER_IP}
 SENSOS_REGISTRY_PORT=${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}
 SENSOS_REGISTRY_USER=${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}
 SENSOS_REGISTRY_PASSWORD=${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}
@@ -121,7 +115,6 @@ WG_PORT=$WG_PORT
 WG_SERVER_IP=$WG_SERVER_IP
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 API_PASSWORD=$API_PASSWORD
-SENSOS_REGISTRY_IP=$SENSOS_REGISTRY_IP
 SENSOS_REGISTRY_PORT=$SENSOS_REGISTRY_PORT
 SENSOS_REGISTRY_USER=$SENSOS_REGISTRY_USER
 SENSOS_REGISTRY_PASSWORD=$SENSOS_REGISTRY_PASSWORD
@@ -137,12 +130,12 @@ chmod 600 "$AUTH_DIR/htpasswd"
 echo "✅ htpasswd file created at $AUTH_DIR/htpasswd."
 
 if [ ! -f "$AUTH_DIR/domain.crt" ] || [ ! -f "$AUTH_DIR/domain.key" ]; then
-    docker run --rm -v "$AUTH_DIR":/certs frapsoft/openssl req \
+    docker run --rm --entrypoint openssl frapsoft/openssl req \
         -newkey rsa:4096 -nodes -sha256 \
         -keyout /certs/domain.key \
         -x509 -days 365 \
         -out /certs/domain.crt \
-        -subj "/CN=${SENSOS_REGISTRY_IP}"
+        -subj "/CN=${WG_SERVER_IP}"
     chmod 600 "$AUTH_DIR/domain.crt" "$AUTH_DIR/domain.key"
     echo "✅ TLS certificate and key generated."
 fi
