@@ -10,6 +10,7 @@ import docker
 import time
 import re
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Form
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -27,7 +28,46 @@ logger = logging.getLogger(__name__)
 WG_CONFIG_DIR = Path("/config/wg_confs")
 CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Called lifespan async context manager...")
+
+    # Startup code here
+    logger.info("Starting up!")
+
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                logger.info("Creating schema 'sensos' if not exists...")
+                cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+                create_version_history_table(cur)
+                update_version_history_table(cur)
+                create_networks_table(cur)
+                create_wireguard_peers_table(cur)
+                create_wireguard_keys_table(cur)
+                create_ssh_keys_table(cur)
+                create_client_status_table(cur)
+                network_id = create_initial_network(cur)
+                if network_id:
+                    add_peers_to_wireguard()
+                    restart_wireguard_container()
+                    start_controller_wireguard()
+                    logger.info("✅ WireGuard setup completed.")
+
+        logger.info("✅ Database schema and tables initialized successfully.")
+
+    except Exception as e:
+        logger.error(f"❌ Error initializing database: {e}", exc_info=True)
+
+    yield  # Application runs here
+
+    # Optional shutdown logic can go here
+    logger.info("Shutting down!")
+
+
+app = FastAPI(lifespan=lifespan)
+
 security = HTTPBasic()
 
 POSTGRES_USER = "postgres"
@@ -53,6 +93,8 @@ GIT_COMMIT = os.getenv("GIT_COMMIT", "Unknown")
 GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
 GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
+
+EXPOSE_CONTAINERS = os.getenv("EXPOSE_CONTAINERS", "false").lower() == "true"
 
 
 def resolve_hostname(value):
@@ -338,48 +380,101 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
+def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
+    wg_public_ip = wg_public_ip or resolve_hostname(
+        os.getenv("WG_SERVER_IP", "127.0.0.1")
+    )
+    wg_port = wg_port or int(os.getenv("WG_PORT", "51820"))
+
+    ip_range = generate_default_ip_range(name)
+    private_key, public_key = generate_wireguard_keys()
+
+    try:
+        cur.execute(
+            """
+            INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id;
+            """,
+            (name, ip_range, wg_public_ip, wg_port, public_key),
+        )
+        network_id = cur.fetchone()[0]
+        logger.info(f"✅ Network '{name}' created with ID: {network_id}")
+
+        # Call create_wireguard_configs here:
+        create_wireguard_configs(network_id, name, ip_range, private_key, public_key)
+
+        return {
+            "id": network_id,
+            "name": name,
+            "ip_range": ip_range,
+            "wg_public_ip": wg_public_ip,
+            "wg_port": wg_port,
+            "wg_public_key": public_key,
+            "private_key": private_key,  # Optionally return this if needed later
+        }
+
+    except psycopg.errors.UniqueViolation:
+        logger.warning(f"⚠️ Network '{name}' already exists. Fetching existing details.")
+        cur.execute(
+            "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
+            (name,),
+        )
+        existing_network = cur.fetchone()
+        network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
+
+        return {
+            "id": network_id,
+            "name": name,
+            "ip_range": ip_range,
+            "wg_public_ip": wg_public_ip,
+            "wg_port": wg_port,
+            "wg_public_key": wg_public_key,
+        }
+
+
 def create_wireguard_configs(
     network_id: int, name: str, ip_range: str, private_key: str, wg_public_key: str
 ):
-    """Creates WireGuard configuration files for both the WireGuard container and the controller."""
-
-    # Define paths
     wg_config_path = WG_CONFIG_DIR / f"{name}.conf"
     controller_config_path = CONTROLLER_CONFIG_DIR / f"{name}.conf"
 
-    # Assign fixed IPs
-    base_ip = ip_range.split("/")[0]  # Get the base IP without CIDR
-    network_prefix = ".".join(base_ip.split(".")[:3])  # Extract "x.x.0"
+    base_ip = ip_range.split("/")[0]
+    network_prefix = ".".join(base_ip.split(".")[:3])
+
+    # API Proxy always assigned prefix.1
     api_proxy_ip = f"{network_prefix}.1"
-    controller_ip = f"{network_prefix}.2"  # Controller gets x.x.0.1
-    wireguard_ip = f"{network_prefix}.3"  # WireGuard gets x.x.0.2
-
-    # API proxy container will register wireguard key later
     insert_peer(network_id, api_proxy_ip)
+    # (No API proxy public key yet; will be registered later.)
 
-    # Generate keys for the controller itself
-    controller_private_key, controller_public_key = generate_wireguard_keys()
+    wg_interface_ip = ""
+    wg_peers = []
 
-    insert_peer(network_id, controller_ip)
-    register_wireguard_key_in_db(controller_ip, controller_public_key)
+    if EXPOSE_CONTAINERS:
+        # WireGuard server container IP is prefix.2
+        wg_interface_ip = f"{network_prefix}.2/16"
 
-    insert_peer(network_id, wireguard_ip)
-    register_wireguard_key_in_db(wireguard_ip, wg_public_key)
-    wireguard_container_ip = get_container_ip("sensos-wireguard")
+        # Controller IP is prefix.3
+        controller_ip = f"{network_prefix}.3/16"
+        controller_private_key, controller_public_key = generate_wireguard_keys()
 
-    # WireGuard container config (main server)
-    wg_config_content = f"""[Interface]
-Address = {wireguard_ip}/16
-ListenPort = 51820
-PrivateKey = {private_key}
+        # Register Controller as peer
+        insert_peer(network_id, controller_ip.split("/")[0])
+        register_wireguard_key_in_db(controller_ip.split("/")[0], controller_public_key)
 
+        # WireGuard container (server) config will include controller peer
+        wg_peers.append(
+            f"""
 [Peer]
 PublicKey = {controller_public_key}
-AllowedIPs = {controller_ip}/32
+AllowedIPs = {controller_ip.split('/')[0]}/32
 """
+        )
 
-    # Controller config (acts as a peer)
-    controller_config_content = f"""[Interface]
+        wireguard_container_ip = get_container_ip("sensos-wireguard")
+
+        # Controller's own WireGuard config
+        controller_config_content = f"""[Interface]
 Address = {controller_ip}
 PrivateKey = {controller_private_key}
 
@@ -390,21 +485,28 @@ Endpoint = {wireguard_container_ip}:51820
 PersistentKeepalive = 25
 """
 
-    # Write WireGuard container config
+        # Write controller config file
+        with open(controller_config_path, "w") as f:
+            f.write(controller_config_content)
+        os.chmod(controller_config_path, stat.S_IRUSR | stat.S_IWUSR)
+        logger.info(f"✅ Controller WireGuard config written: {controller_config_path}")
+
+    # WireGuard server container config (written by controller)
+    wg_config_content = f"""[Interface]
+{"Address = " + wg_interface_ip if wg_interface_ip else ""}
+ListenPort = 51820
+PrivateKey = {private_key}
+""" + "".join(
+        wg_peers
+    )
+
+    # Write server config file
     with open(wg_config_path, "w") as f:
-        f.write(wg_config_content)
+        f.write(wg_config_content.strip() + "\n")
     os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
+    logger.info(f"✅ WireGuard server config written: {wg_config_path}")
 
-    # Write Controller config
-    logger.info(f"Attempting to write WireGuard config to {controller_config_path}")
-
-    with open(controller_config_path, "w") as f:
-        f.write(controller_config_content)
-    os.chmod(controller_config_path, stat.S_IRUSR | stat.S_IWUSR)
-
-    logger.info(f"Successfully wrote WireGuard config to {controller_config_path}")
-
-    return wg_config_path, controller_config_path
+    return wg_config_path, controller_config_path if EXPOSE_CONTAINERS else None
 
 
 def add_peers_to_wireguard():
@@ -578,89 +680,38 @@ def update_version_history_table(cur):
     )
 
 
-def ensure_network_exists(cur):
+def create_initial_network(cur):
     network_name = os.getenv("INITIAL_NETWORK")
     if not network_name:
         logger.error("❌ INITIAL_NETWORK is not set in .env. Exiting.")
         return None
 
-    logger.info(f"🔍 Checking if network '{network_name}' exists...")
     cur.execute(
-        """
-        SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key 
-        FROM sensos.networks WHERE name = %s;
-        """,
+        "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
         (network_name,),
     )
     existing_network = cur.fetchone()
 
     if existing_network:
         network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
-        logger.info(f"✅ Network '{network_name}' already exists.")
+        logger.info(f"✅ Network '{network_name}' already exists (ID: {network_id}).")
+        # Optionally update missing details
         if not wg_public_ip or not wg_port:
-            logger.warning(
-                f"⚠️ Updating missing WireGuard IP/port for '{network_name}'..."
-            )
             wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
             wg_port = int(os.getenv("WG_PORT", "51820"))
             cur.execute(
-                """
-                UPDATE sensos.networks 
-                SET wg_public_ip = %s, wg_port = %s 
-                WHERE id = %s;
-                """,
+                "UPDATE sensos.networks SET wg_public_ip = %s, wg_port = %s WHERE id = %s;",
                 (wg_public_ip, wg_port, network_id),
             )
             logger.info(
-                f"✅ Updated '{network_name}' with WireGuard IP {wg_public_ip} and port {wg_port}."
+                f"✅ Network '{network_name}' updated with IP {wg_public_ip}, port {wg_port}."
             )
     else:
-        logger.info(f"🆕 Creating new network '{network_name}'...")
-        ip_range = generate_default_ip_range(network_name)
-        wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
-        wg_port = int(os.getenv("WG_PORT", "51820"))
-        private_key, public_key = generate_wireguard_keys()
-        cur.execute(
-            """
-            INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id;
-            """,
-            (network_name, ip_range, wg_public_ip, wg_port, public_key),
-        )
-        network_id = cur.fetchone()[0]
-        logger.info(f"✅ Created new network '{network_name}' (ID: {network_id}).")
-        create_wireguard_configs(
-            network_id, network_name, ip_range, private_key, public_key
-        )
+        logger.info(f"Creating network '{network_name}'...")
+        result = create_network_entry(cur, network_name)
+        network_id = result["id"]
+
     return network_id
-
-
-@app.on_event("startup")
-def bootstrap():
-    """Ensure the database schema, tables, and network exist at startup."""
-    logger.info("Initializing database schema and tables...")
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                logger.info("Creating schema 'sensos' if not exists...")
-                cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
-                create_version_history_table(cur)
-                update_version_history_table(cur)
-                create_networks_table(cur)
-                create_wireguard_peers_table(cur)
-                create_wireguard_keys_table(cur)
-                create_ssh_keys_table(cur)
-                create_client_status_table(cur)
-                network_id = ensure_network_exists(cur)
-                if network_id:
-                    add_peers_to_wireguard()
-                    restart_wireguard_container()
-                    start_controller_wireguard()
-                    logger.info("✅ WireGuard setup completed.")
-        logger.info("✅ Database schema and tables initialized successfully.")
-    except Exception as e:
-        logger.error(f"❌ Error initializing database: {e}", exc_info=True)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -791,67 +842,26 @@ def create_network(
     credentials: HTTPBasicCredentials = Depends(authenticate),
     name: str = Form(...),
     wg_public_ip: Optional[str] = Form(None),
-    wg_port: Optional[str] = Form(None),  # Accept as string to validate manually
+    wg_port: Optional[str] = Form(None),
 ):
-    """Creates a new sensor network, sets up WireGuard, and saves it to PostgreSQL."""
-
-    # Use environment variables if not provided
-    wg_public_ip = wg_public_ip or resolve_hostname(
-        os.getenv("WG_SERVER_IP", "127.0.0.1")
-    )
-
-    # Ensure wg_port is a valid integer
+    """Creates a new sensor network and sets up WireGuard."""
     try:
         wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", 51820))
-        if not (1 <= wg_port <= 65535):  # Valid port range check
-            raise ValueError("Port must be between 1 and 65535.")
+        if not (1 <= wg_port <= 65535):
+            raise ValueError()
     except ValueError:
         return JSONResponse(
             status_code=400,
-            content={
-                "error": "Invalid WireGuard port. Must be a number between 1 and 65535."
-            },
+            content={"error": "Invalid WireGuard port. Must be between 1 and 65535."},
         )
 
-    ip_range = generate_default_ip_range(name)
-
-    # Generate WireGuard key pair
-    private_key, public_key = generate_wireguard_keys()
-
     with get_db() as conn:
-        with conn.cursor() as cur:
-            try:
-                cur.execute(
-                    """
-                    INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING id;
-                    """,
-                    (name, ip_range, wg_public_ip, wg_port, public_key),
-                )
-                network_id = cur.fetchone()[0]
-            except psycopg.errors.UniqueViolation:
-                return JSONResponse(
-                    status_code=400, content={"error": "Network already exists"}
-                )
+        result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
+        add_peers_to_wireguard()
+        restart_wireguard_container()
+        start_wireguard(name)
 
-    # Pass network_id to create_wireguard_configs
-    create_wireguard_configs(network_id, name, ip_range, private_key, public_key)
-
-    add_peers_to_wireguard()
-    restart_wireguard_container()
-
-    # Start WireGuard after config is created
-    start_wireguard(name)
-
-    return {
-        "id": network_id,
-        "name": name,
-        "ip_range": ip_range,
-        "wg_public_ip": wg_public_ip,
-        "wg_port": wg_port,
-        "wg_public_key": public_key,
-    }
+    return result
 
 
 @app.get("/list-peers", response_class=HTMLResponse)
