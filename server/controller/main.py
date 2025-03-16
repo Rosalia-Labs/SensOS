@@ -11,7 +11,7 @@ import time
 import re
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Form
+from fastapi import FastAPI, Depends, HTTPException, Form, BackgroundTasks
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.errors import UniqueViolation
@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
                 network_id = create_initial_network(cur)
                 if network_id:
                     add_peers_to_wireguard()
-                    restart_wireguard_container()
+                    restart_container("sensos-wireguard")
                     start_controller_wireguard()
                     logger.info("✅ WireGuard setup completed.")
 
@@ -253,10 +253,9 @@ def get_container_ip(container_name):
     return None
 
 
-def restart_wireguard_container():
+def restart_container(container_name: str):
     """Restarts the WireGuard container, supporting both Linux and Windows."""
     client = get_docker_client()
-    container_name = "sensos-wireguard"
 
     try:
         container = client.containers.get(container_name)
@@ -401,8 +400,9 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
         network_id = cur.fetchone()[0]
         logger.info(f"✅ Network '{name}' created with ID: {network_id}")
 
-        # Call create_wireguard_configs here:
+        # Only perform full WireGuard setup for a new network.
         create_wireguard_configs(network_id, name, ip_range, private_key, public_key)
+        add_peers_to_wireguard()
 
         return {
             "id": network_id,
@@ -411,7 +411,6 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
             "wg_public_ip": wg_public_ip,
             "wg_port": wg_port,
             "wg_public_key": public_key,
-            "private_key": private_key,  # Optionally return this if needed later
         }
 
     except psycopg.errors.UniqueViolation:
@@ -421,8 +420,13 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
             (name,),
         )
         existing_network = cur.fetchone()
+        if existing_network is None:
+            raise HTTPException(
+                status_code=500, detail="Error fetching existing network."
+            )
         network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
 
+        # Do not reinitialize configuration; simply return the existing record.
         return {
             "id": network_id,
             "name": name,
@@ -582,7 +586,7 @@ def create_networks_table(cur):
             name TEXT UNIQUE NOT NULL,
             ip_range CIDR UNIQUE NOT NULL,
             wg_public_ip INET NOT NULL,
-            wg_port INTEGER UNIQUE NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
+            wg_port INTEGER NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
             wg_public_key TEXT UNIQUE NOT NULL
         );
         """
@@ -709,6 +713,8 @@ def create_initial_network(cur):
     else:
         logger.info(f"Creating network '{network_name}'...")
         result = create_network_entry(cur, network_name)
+        restart_container("sensos-wireguard")
+        restart_container("sensos-api-proxy")
         network_id = result["id"]
 
     return network_id
@@ -839,14 +845,14 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
 
 @app.post("/create-network")
 def create_network(
+    background_tasks: BackgroundTasks,
     credentials: HTTPBasicCredentials = Depends(authenticate),
     name: str = Form(...),
     wg_public_ip: Optional[str] = Form(None),
     wg_port: Optional[str] = Form(None),
 ):
-    """Creates a new sensor network and sets up WireGuard."""
     try:
-        wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", 51820))
+        wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", "51820"))
         if not (1 <= wg_port <= 65535):
             raise ValueError()
     except ValueError:
@@ -857,9 +863,12 @@ def create_network(
 
     with get_db() as conn:
         result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
-        add_peers_to_wireguard()
-        restart_wireguard_container()
+        logger.info(f"create_network_entry returned: {result}")
         start_wireguard(name)
+
+    # Schedule the restart of the API proxy container in the background
+    background_tasks.add_task(restart_container, "sensos-wireguard")
+    background_tasks.add_task(restart_container, "sensos-api-proxy")
 
     return result
 
@@ -991,7 +1000,7 @@ def register_wireguard_key(
         )
 
     add_peers_to_wireguard()
-    restart_wireguard_container()
+    restart_container("sensos-wireguard")
 
     return result
 
@@ -1274,6 +1283,15 @@ def client_status(
             )
             conn.commit()
     return {"message": "Client status updated successfully"}
+
+
+@app.get("/get-wireguard-network-names")
+def get_defined_networks():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM sensos.networks;")
+            network_names = [row[0] for row in cur.fetchall()]
+    return {"networks": network_names}
 
 
 @app.get("/get-network-info")
