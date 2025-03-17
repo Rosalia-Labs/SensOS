@@ -7,7 +7,7 @@
 set -e
 
 # Default values
-SENSOS_REGISTRY_IP="auto"
+SENSOS_REGISTRY_IP="localhost"
 SENSOS_REGISTRY_PORT=5000
 SENSOS_REGISTRY_USER="sensos"
 SENSOS_REGISTRY_PASSWORD="sensos"
@@ -45,15 +45,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     esac
 done
-
-# If the registry IP is set to "auto", determine it from the sensos-api-proxy container
-if [ "$SENSOS_REGISTRY_IP" = "auto" ]; then
-    SENSOS_REGISTRY_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' sensos-api-proxy)
-    if [ -z "$SENSOS_REGISTRY_IP" ]; then
-        echo "Failed to determine sensos-api-proxy IP address. Is the container running?"
-        exit 1
-    fi
-fi
 
 echo "Using registry IP: $SENSOS_REGISTRY_IP"
 
