@@ -5,7 +5,7 @@ set -e
 API_USERNAME=${API_USERNAME:-sensos}
 API_PASSWORD=${API_PASSWORD}
 WG_SERVER_IP=${WG_SERVER_IP} # This may be used as a fallback.
-WG_PORT=${WG_PORT:-51820}
+WG_PORT=51820
 
 if [ -z "$API_PASSWORD" ]; then
     echo "API_PASSWORD is not set. Exiting."
