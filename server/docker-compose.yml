@@ -35,7 +35,7 @@ services:
     cap_add:
       - NET_ADMIN
     volumes:
-      - sensos_wireguard_config:/config
+      - sensos_controller_config:/config
       - sensos_controller_wg_dir:/etc/wireguard
       - /var/run/docker.sock:/var/run/docker.sock
     expose:
@@ -116,6 +116,8 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
       - "${SENSOS_REGISTRY_PORT:-5000}:5000"
+    volumes:
+      - sensos_api_proxy_wg_config:/etc/wireguard
     networks:
       - sensos_network
 
@@ -128,6 +130,10 @@ volumes:
     name: sensos_controller_wg_dir
   sensos_registry:
     name: sensos_registry
+  sensos_controller_config:
+    name: sensos_controller_config
+  sensos_api_proxy_wg_config:
+    name: sensos_api_proxy_wg_config
 
 networks:
   sensos_network:
