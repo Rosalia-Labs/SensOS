@@ -2,7 +2,8 @@
 # registry-update.sh
 # This script builds Docker images from subdirectories and pushes them to the sensos registry
 # if they are updated. It accepts command-line options to override default registry connection parameters.
-# This version uses HTTP (insecure) and supports the switches: --registry-ip, --registry-port, --registry-user, and --registry-password.
+# This version uses HTTP (insecure) and supports the switches:
+# --registry-ip, --registry-port, --registry-user, and --registry-password.
 
 set -e # Exit on error
 
@@ -79,6 +80,10 @@ for dir in */; do
     # Get the remote image digest from the registry via response headers
     remote_digest=$(curl -sI -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" \
         "http://$DOCKER_REGISTRY/v2/$dir/manifests/latest" | grep -i "^Docker-Content-Digest:" | awk '{print $2}' | tr -d '\r')
+
+    if [ -z "$remote_digest" ]; then
+        echo "No remote digest found; assuming image has not been pushed previously."
+    fi
 
     echo "Local digest:  $local_digest"
     echo "Remote digest: $remote_digest"
