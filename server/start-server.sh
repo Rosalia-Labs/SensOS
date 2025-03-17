@@ -66,6 +66,12 @@ done
 export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
 export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
 
+echo "📦 Pre-pulling required images..."
+docker pull debian:bookworm-slim
+docker pull postgres:17-bookworm
+docker pull lscr.io/linuxserver/wireguard:latest
+docker pull registry:2
+
 # Start Docker Compose services with or without rebuild
 if [ "$REBUILD" = true ]; then
     echo "🚀 Starting Docker Compose services with build..."

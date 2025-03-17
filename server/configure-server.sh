@@ -137,15 +137,11 @@ docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SEN
 chmod 600 "$AUTH_DIR/htpasswd"
 echo "✅ htpasswd file created at $AUTH_DIR/htpasswd."
 
-if [ ! -f "$AUTH_DIR/domain.crt" ] || [ ! -f "$AUTH_DIR/domain.key" ]; then
-    docker run --rm --entrypoint openssl frapsoft/openssl req \
-        -newkey rsa:4096 -nodes -sha256 \
-        -keyout /certs/domain.key \
-        -x509 -days 365 \
-        -out /certs/domain.crt \
-        -subj "/CN=${WG_SERVER_IP}"
-    chmod 600 "$AUTH_DIR/domain.crt" "$AUTH_DIR/domain.key"
-    echo "✅ TLS certificate and key generated."
-fi
+docker run --rm -v "$(pwd)/.registry_auth:/certs" --entrypoint openssl frapsoft/openssl req \
+    -newkey rsa:4096 -nodes -sha256 \
+    -keyout /certs/domain.key \
+    -x509 -days 36525 \
+    -out /certs/domain.crt \
+    -subj "/CN=${WG_SERVER_IP}"
 
 echo "✅ Setup completed successfully."
