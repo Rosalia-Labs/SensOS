@@ -35,7 +35,7 @@ services:
     cap_add:
       - NET_ADMIN
     volumes:
-      - sensos_controller_config:/config
+      - sensos_wireguard_config:/config
       - sensos_controller_wg_dir:/etc/wireguard
       - /var/run/docker.sock:/var/run/docker.sock
     expose:
@@ -130,8 +130,6 @@ volumes:
     name: sensos_controller_wg_dir
   sensos_registry:
     name: sensos_registry
-  sensos_controller_config:
-    name: sensos_controller_config
   sensos_api_proxy_wg_config:
     name: sensos_api_proxy_wg_config
 
