@@ -1,24 +1,23 @@
 #!/bin/bash
-
 set -e
 
 # Default options
 REBUILD=false
+DETACH=true
 
 # Load environment variables from .env if available
-if [ -f .env ]; then
+if [ -f "$(dirname "$0")/.env" ]; then
     echo "📄 Loading environment variables from .env..."
     set -a
-    source .env
+    source "$(dirname "$0")/.env"
     set +a
 else
-    echo "❌ .env file not found. Run configure-server.sh. Exiting."
+    echo "❌ .env file not found at $(dirname "$0")/.env. Exiting."
     exit 1
 fi
 
 # Load versioning information from ../VERSION if available
 VERSION_FILE="$(dirname "$0")/../VERSION"
-
 if [ -f "$VERSION_FILE" ]; then
     echo "📄 Loading versioning information from $VERSION_FILE..."
     VERSION_MAJOR=$(awk -F' = ' '/^major/ {print $2}' "$VERSION_FILE")
@@ -51,8 +50,11 @@ while [ $# -gt 0 ]; do
     --rebuild-containers)
         REBUILD=true
         ;;
+    --no-detach)
+        DETACH=false
+        ;;
     --help)
-        echo "Usage: $0 [--rebuild-containers]"
+        echo "Usage: $0 [--rebuild-containers] [--no-detach]"
         exit 0
         ;;
     *)
@@ -72,14 +74,22 @@ docker pull postgres:17-bookworm
 docker pull lscr.io/linuxserver/wireguard:latest
 docker pull registry:2
 
-# Start Docker Compose services with or without rebuild
+# Construct the docker compose command using an array
 if [ "$REBUILD" = true ]; then
-    echo "🚀 Starting Docker Compose services with build..."
-    docker compose up -d --build
+    if [ "$DETACH" = true ]; then
+        CMD=(docker compose up -d --build)
+    else
+        CMD=(docker compose up --build)
+    fi
 else
-    echo "🚀 Starting Docker Compose services without rebuild..."
-    docker compose up -d
+    if [ "$DETACH" = true ]; then
+        CMD=(docker compose up -d)
+    else
+        CMD=(docker compose up)
+    fi
 fi
+
+echo "🚀 Executing command: ${CMD[*]}"
 
 echo "✅ Done."
 
@@ -87,3 +97,6 @@ echo "✅ Done."
 echo "📌 Running software version:"
 echo "   Version: ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}"
 echo "   Git: commit=${GIT_COMMIT}, branch=${GIT_BRANCH}, tag=${GIT_TAG}, dirty=${GIT_DIRTY}"
+
+# Execute the constructed command as the last line
+exec "${CMD[@]}"

@@ -1,0 +1,16 @@
+[Unit]
+Description=SensOS Server
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/sensos/SensOS/server
+EnvironmentFile=/home/sensos/SensOS/server/.env
+ExecStart=/home/sensos/SensOS/server/start-server.sh --no-detach
+ExecStop=/home/sensos/SensOS/server/stop-server.sh
+User=sensos
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
