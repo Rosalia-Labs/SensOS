@@ -14,7 +14,6 @@ DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 DEFAULT_INITIAL_NETWORK="sensos"
 DEFAULT_EXPOSE_CONTAINERS="false"
-DEFAULT_REGISTRY_DNS="registry.sensos.internal"
 
 # Print help message
 print_help() {
@@ -33,7 +32,6 @@ Options:
   --registry-user USER     Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)
   --registry-password PWD  Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)
   --expose-containers      Add containers to WireGuard (default: $DEFAULT_EXPOSE_CONTAINERS)
-  --registry-dns NAME      Set fixed DNS name for the registry certificate (default: $DEFAULT_REGISTRY_DNS)
   -h, --help               Show this help message
 EOF
     exit 0
@@ -86,10 +84,6 @@ while [[ $# -gt 0 ]]; do
         EXPOSE_CONTAINERS="true"
         shift
         ;;
-    --registry-dns)
-        REGISTRY_DNS="$2"
-        shift 2
-        ;;
     -h | --help)
         print_help
         ;;
@@ -112,7 +106,6 @@ SENSOS_REGISTRY_PORT=${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}
 SENSOS_REGISTRY_USER=${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}
 SENSOS_REGISTRY_PASSWORD=${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}
 EXPOSE_CONTAINERS=${EXPOSE_CONTAINERS:-$DEFAULT_EXPOSE_CONTAINERS}
-REGISTRY_DNS=${REGISTRY_DNS:-$DEFAULT_REGISTRY_DNS}
 
 # Backup existing .env if it exists
 if [ -f .env ]; then
@@ -134,26 +127,8 @@ SENSOS_REGISTRY_PORT=$SENSOS_REGISTRY_PORT
 SENSOS_REGISTRY_USER=$SENSOS_REGISTRY_USER
 SENSOS_REGISTRY_PASSWORD=$SENSOS_REGISTRY_PASSWORD
 EXPOSE_CONTAINERS=$EXPOSE_CONTAINERS
-REGISTRY_DNS=$REGISTRY_DNS
 EOF
 
 chmod 600 .env
 echo "✅ Environment configuration written to .env."
-
-# Set up registry authentication
-AUTH_DIR="./.registry_auth"
-mkdir -p "$AUTH_DIR"
-docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >"$AUTH_DIR/htpasswd"
-chmod 600 "$AUTH_DIR/htpasswd"
-echo "✅ htpasswd file created at $AUTH_DIR/htpasswd."
-
-# Generate certificate using a fixed DNS name
-docker run --rm -v "$(pwd)/.registry_auth:/certs" --entrypoint openssl frapsoft/openssl req \
-    -newkey rsa:4096 -nodes -sha256 \
-    -keyout /certs/domain.key \
-    -x509 -days 36525 \
-    -out /certs/domain.crt \
-    -subj "/CN=${REGISTRY_DNS}" \
-    -addext "subjectAltName=DNS:${REGISTRY_DNS}"
-
 echo "✅ Setup completed successfully."

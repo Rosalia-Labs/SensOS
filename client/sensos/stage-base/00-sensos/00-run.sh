@@ -1,8 +1,5 @@
 #!/bin/bash -e
 
-# Copy the registry certificate into the trusted CA directory
-install -m 644 files/domain.crt "${ROOTFS_DIR}/usr/local/share/ca-certificates/domain.crt"
-
 # Install the sensos client configuration script
 install -m 755 files/config-sensos-client "${ROOTFS_DIR}/usr/local/bin"
 install -m 755 files/config-eeprom "${ROOTFS_DIR}/usr/local/bin"

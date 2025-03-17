@@ -87,16 +87,8 @@ services:
     image: registry:2
     container_name: sensos-registry
     restart: always
-    environment:
-      REGISTRY_HTTP_ADDR: "0.0.0.0:${SENSOS_REGISTRY_PORT:-5000}"
-      REGISTRY_AUTH: htpasswd
-      REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
-      REGISTRY_AUTH_HTPASSWD_PATH: "/auth/htpasswd"
-      REGISTRY_HTTP_TLS_CERTIFICATE: /auth/domain.crt
-      REGISTRY_HTTP_TLS_KEY: /auth/domain.key
     volumes:
       - sensos_registry:/var/lib/registry
-      - ./.registry_auth:/auth
     expose:
       - "5000"
     networks:
@@ -118,7 +110,6 @@ services:
       - "${SENSOS_REGISTRY_PORT:-5000}:5000"
     volumes:
       - sensos_api_proxy_wg_config:/etc/wireguard
-      - ./.registry_auth:/auth
     networks:
       - sensos_network
 
