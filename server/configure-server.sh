@@ -14,6 +14,7 @@ DEFAULT_POSTGRES_PASSWORD="sensos"
 DEFAULT_API_PASSWORD="sensos"
 DEFAULT_INITIAL_NETWORK="sensos"
 DEFAULT_EXPOSE_CONTAINERS="false"
+DEFAULT_REGISTRY_DNS="registry.sensos.internal"
 
 # Print help message
 print_help() {
@@ -21,18 +22,19 @@ print_help() {
 Usage: $0 [options]
 
 Options:
-  --db-port PORT          Set database port (default: $DEFAULT_DB_PORT)
-  --api-port PORT         Set API port (default: $DEFAULT_API_PORT)
-  --wg-network NAME       Set WireGuard network name (default: $DEFAULT_INITIAL_NETWORK)
-  --wg-server-ip IP       Set WireGuard IP (default: $DEFAULT_WG_SERVER_IP)
-  --wg-port PORT          Set WireGuard port (default: $DEFAULT_WG_PORT)
-  --postgres-password PWD Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
-  --api-password PWD      Set API password (default: $DEFAULT_API_PASSWORD)
-  --registry-port PORT    Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)
-  --registry-user USER    Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)
-  --registry-password PWD Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)
-  --expose-containers     Add containers to wireguard (default: $DEFAULT_EXPOSE_CONTAINERS)
-  -h, --help              Show this help message
+  --db-port PORT           Set database port (default: $DEFAULT_DB_PORT)
+  --api-port PORT          Set API port (default: $DEFAULT_API_PORT)
+  --wg-network NAME        Set WireGuard network name (default: $DEFAULT_INITIAL_NETWORK)
+  --wg-server-ip IP        Set WireGuard IP (default: $DEFAULT_WG_SERVER_IP)
+  --wg-port PORT           Set WireGuard port (default: $DEFAULT_WG_PORT)
+  --postgres-password PWD  Set PostgreSQL password (default: $DEFAULT_POSTGRES_PASSWORD)
+  --api-password PWD       Set API password (default: $DEFAULT_API_PASSWORD)
+  --registry-port PORT     Set registry port (default: $DEFAULT_SENSOS_REGISTRY_PORT)
+  --registry-user USER     Set registry username (default: $DEFAULT_SENSOS_REGISTRY_USER)
+  --registry-password PWD  Set registry password (default: $DEFAULT_SENSOS_REGISTRY_PASSWORD)
+  --expose-containers      Add containers to WireGuard (default: $DEFAULT_EXPOSE_CONTAINERS)
+  --registry-dns NAME      Set fixed DNS name for the registry certificate (default: $DEFAULT_REGISTRY_DNS)
+  -h, --help               Show this help message
 EOF
     exit 0
 }
@@ -84,7 +86,13 @@ while [[ $# -gt 0 ]]; do
         EXPOSE_CONTAINERS="true"
         shift
         ;;
-    -h | --help) print_help ;;
+    --registry-dns)
+        REGISTRY_DNS="$2"
+        shift 2
+        ;;
+    -h | --help)
+        print_help
+        ;;
     *)
         echo "Unknown option: $1" >&2
         print_help
@@ -103,17 +111,17 @@ API_PASSWORD=${API_PASSWORD:-$DEFAULT_API_PASSWORD}
 SENSOS_REGISTRY_PORT=${SENSOS_REGISTRY_PORT:-$DEFAULT_SENSOS_REGISTRY_PORT}
 SENSOS_REGISTRY_USER=${SENSOS_REGISTRY_USER:-$DEFAULT_SENSOS_REGISTRY_USER}
 SENSOS_REGISTRY_PASSWORD=${SENSOS_REGISTRY_PASSWORD:-$DEFAULT_SENSOS_REGISTRY_PASSWORD}
-INITIAL_NETWORK=${INITIAL_NETWORK:-$DEFAULT_INITIAL_NETWORK}
 EXPOSE_CONTAINERS=${EXPOSE_CONTAINERS:-$DEFAULT_EXPOSE_CONTAINERS}
+REGISTRY_DNS=${REGISTRY_DNS:-$DEFAULT_REGISTRY_DNS}
 
-# Backup existing .env
+# Backup existing .env if it exists
 if [ -f .env ]; then
     mv .env .env.bak
     chmod 600 .env.bak
     echo "✅ Current environment configuration backed up to .env.bak."
 fi
 
-# Write to .env
+# Write configuration to .env
 cat >.env <<EOF
 DB_PORT=$DB_PORT
 API_PORT=$API_PORT
@@ -126,22 +134,26 @@ SENSOS_REGISTRY_PORT=$SENSOS_REGISTRY_PORT
 SENSOS_REGISTRY_USER=$SENSOS_REGISTRY_USER
 SENSOS_REGISTRY_PASSWORD=$SENSOS_REGISTRY_PASSWORD
 EXPOSE_CONTAINERS=$EXPOSE_CONTAINERS
+REGISTRY_DNS=$REGISTRY_DNS
 EOF
 
 chmod 600 .env
 echo "✅ Environment configuration written to .env."
 
+# Set up registry authentication
 AUTH_DIR="./.registry_auth"
 mkdir -p "$AUTH_DIR"
 docker run --rm --entrypoint htpasswd httpd:2 -Bbn "$SENSOS_REGISTRY_USER" "$SENSOS_REGISTRY_PASSWORD" >"$AUTH_DIR/htpasswd"
 chmod 600 "$AUTH_DIR/htpasswd"
 echo "✅ htpasswd file created at $AUTH_DIR/htpasswd."
 
+# Generate certificate using a fixed DNS name
 docker run --rm -v "$(pwd)/.registry_auth:/certs" --entrypoint openssl frapsoft/openssl req \
     -newkey rsa:4096 -nodes -sha256 \
     -keyout /certs/domain.key \
     -x509 -days 36525 \
     -out /certs/domain.crt \
-    -subj "/CN=${WG_SERVER_IP}"
+    -subj "/CN=${REGISTRY_DNS}" \
+    -addext "subjectAltName=DNS:${REGISTRY_DNS}"
 
 echo "✅ Setup completed successfully."

@@ -2,6 +2,7 @@
 # registry-list.sh
 # This script lists repositories and tags from the sensos registry.
 # It accepts command-line options to override default connection parameters.
+# It uses jq for JSON parsing if available.
 
 # Default values
 SENSOS_REGISTRY_IP="auto"
@@ -57,11 +58,17 @@ echo "Using registry IP: $SENSOS_REGISTRY_IP"
 # Define the registry URL (using HTTPS)
 REGISTRY="https://$SENSOS_REGISTRY_IP:$SENSOS_REGISTRY_PORT"
 
-# Get list of repositories (images)
-REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/_catalog" |
-    grep -o '"repositories":\[[^]]*' | cut -d '[' -f2 | tr -d '"]' | tr ',' '\n')
+# Check if jq is available
+if command -v jq >/dev/null 2>&1; then
+    # Use jq to parse the catalog JSON
+    REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/_catalog" | jq -r '.repositories[]?')
+else
+    # Fallback to grep/cut parsing if jq isn't available
+    REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/_catalog" |
+        grep -o '"repositories":\[[^]]*' | cut -d '[' -f2 | tr -d '"]' | tr ',' '\n')
+fi
 
-# Check if there are any images
+# Check if any repositories were found
 if [ -z "$REPOS" ]; then
     echo "No repositories found or registry unreachable."
     exit 1
@@ -70,8 +77,12 @@ fi
 # List images and their tags
 for repo in $REPOS; do
     echo "Image: $repo"
-    TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/$repo/tags/list" |
-        grep -o '"tags":\[[^]]*' | cut -d '[' -f2 | tr -d '"]' | tr ',' '\n')
+    if command -v jq >/dev/null 2>&1; then
+        TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/$repo/tags/list" | jq -r '.tags[]?')
+    else
+        TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/$repo/tags/list" |
+            grep -o '"tags":\[[^]]*' | cut -d '[' -f2 | tr -d '"]' | tr ',' '\n')
+    fi
     if [ -z "$TAGS" ]; then
         echo "  (No tags found)"
     else
