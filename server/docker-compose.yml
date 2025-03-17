@@ -118,6 +118,7 @@ services:
       - "${SENSOS_REGISTRY_PORT:-5000}:5000"
     volumes:
       - sensos_api_proxy_wg_config:/etc/wireguard
+      - ./.registry_auth:/auth
     networks:
       - sensos_network
 

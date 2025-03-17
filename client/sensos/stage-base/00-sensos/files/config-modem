@@ -1,0 +1,67 @@
+#!/bin/bash
+# modem-setup.sh
+# This script sets up an LTE modem connection using nmcli.
+# It requires a --service parameter (e.g. "1nce") and optionally allows overrides
+# for the modem interface and internal modem name.
+
+# Default values
+SERVICE=""
+MODEM_IFACE="wwan0"
+MODEM_INTERNAL_NAME="cdc-wdm0"
+
+usage() {
+    echo "Usage: $0 --service <service> [--modem-iface <iface>] [--modem-internal-name <internal_name>]"
+    exit 1
+}
+
+# Process command-line arguments
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+    --service)
+        SERVICE="$2"
+        shift 2
+        ;;
+    --modem-iface)
+        MODEM_IFACE="$2"
+        shift 2
+        ;;
+    --modem-internal-name)
+        MODEM_INTERNAL_NAME="$2"
+        shift 2
+        ;;
+    --help)
+        usage
+        ;;
+    *)
+        echo "Unknown option: $1"
+        usage
+        ;;
+    esac
+done
+
+# Ensure a service is specified
+if [ -z "$SERVICE" ]; then
+    echo "Error: Service must be specified."
+    usage
+fi
+
+# Check if nmcli is available
+if ! command -v nmcli >/dev/null; then
+    echo "Error: nmcli command not found. Please install NetworkManager."
+    exit 1
+fi
+
+# Set APN based on the service value
+if [ "$SERVICE" = "1nce" ]; then
+    APN="iot.1nce.net"
+else
+    echo "Service '$SERVICE' is not supported by this script."
+    exit 1
+fi
+
+# Create the LTE connection profile and bring it up
+nmcli c add type gsm ifname "$MODEM_IFACE" con-name "lte" \
+    connection.interface-name "$MODEM_INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
+
+nmcli c up "lte" && echo "LTE interface is up" || echo "Failed to bring up LTE interface"
