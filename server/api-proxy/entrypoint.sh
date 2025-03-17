@@ -5,7 +5,6 @@ set -e
 API_USERNAME=${API_USERNAME:-sensos}
 API_PASSWORD=${API_PASSWORD}
 WG_SERVER_IP=${WG_SERVER_IP} # This may be used as a fallback.
-WG_PORT=51820
 
 if [ -z "$API_PASSWORD" ]; then
     echo "API_PASSWORD is not set. Exiting."
@@ -109,7 +108,7 @@ PrivateKey = ${CLIENT_PRIVATE_KEY}
 
 [Peer]
 PublicKey = ${WG_SERVER_PUBLIC_KEY}
-Endpoint = ${WG_DOCKER_IP}:${WG_PORT}
+Endpoint = ${WG_DOCKER_IP}:51820
 AllowedIPs = ${WG_NETWORK_PREFIX}.0.0/16
 PersistentKeepalive = 25
 EOF
