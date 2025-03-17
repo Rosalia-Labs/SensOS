@@ -4,6 +4,8 @@
 # It accepts command-line options to override default connection parameters.
 # It uses jq for JSON parsing if available.
 
+set -e
+
 # Default values
 SENSOS_REGISTRY_IP="auto"
 SENSOS_REGISTRY_PORT=5000
@@ -55,32 +57,33 @@ fi
 
 echo "Using registry IP: $SENSOS_REGISTRY_IP"
 
-# Define the registry URL (using HTTPS)
-REGISTRY="https://$SENSOS_REGISTRY_IP:$SENSOS_REGISTRY_PORT"
+# Define the registry URL (using HTTP, since TLS is removed)
+REGISTRY="http://$SENSOS_REGISTRY_IP:$SENSOS_REGISTRY_PORT"
 
 # Check if jq is available
 if command -v jq >/dev/null 2>&1; then
     # Use jq to parse the catalog JSON
-    REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/_catalog" | jq -r '.repositories[]?')
+    REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" "$REGISTRY/v2/_catalog" | jq -r '.repositories[]?')
 else
     # Fallback to grep/cut parsing if jq isn't available
-    REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/_catalog" |
+    REPOS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" "$REGISTRY/v2/_catalog" |
         grep -o '"repositories":\[[^]]*' | cut -d '[' -f2 | tr -d '"]' | tr ',' '\n')
 fi
 
-# Check if any repositories were found
+# Split the output into two clear cases:
 if [ -z "$REPOS" ]; then
-    echo "No repositories found or registry unreachable."
+    echo "No repositories found."
     exit 1
 fi
 
+echo "Repositories found:"
 # List images and their tags
 for repo in $REPOS; do
     echo "Image: $repo"
     if command -v jq >/dev/null 2>&1; then
-        TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/$repo/tags/list" | jq -r '.tags[]?')
+        TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" "$REGISTRY/v2/$repo/tags/list" | jq -r '.tags[]?')
     else
-        TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" --insecure "$REGISTRY/v2/$repo/tags/list" |
+        TAGS=$(curl -s -u "$SENSOS_REGISTRY_USER:$SENSOS_REGISTRY_PASSWORD" "$REGISTRY/v2/$repo/tags/list" |
             grep -o '"tags":\[[^]]*' | cut -d '[' -f2 | tr -d '"]' | tr ',' '\n')
     fi
     if [ -z "$TAGS" ]; then
