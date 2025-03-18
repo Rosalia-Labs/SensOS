@@ -1,0 +1,51 @@
+services:
+  database:
+    image: "192.168.65.254:5000/database"
+    container_name: database
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sensos
+      POSTGRES_PASSWORD: sensos
+      POSTGRES_DB: sensos_db
+    volumes:
+      - /var/lib/postgresql/data
+    networks:
+      - sensos_net
+
+  capture_sound:
+    image: "192.168.65.254:5000/sound_capture"
+    container_name: capture_sound
+    restart: unless-stopped
+    depends_on:
+      - database
+    devices:
+      - "/dev/snd:/dev/snd"
+    networks:
+      - sensos_net
+    environment:
+      DB_HOST: database
+      DB_USER: sensos
+      DB_PASS: sensos
+      DB_NAME: sensos_db
+    volumes:
+      - /home/sensos:/home/sensos
+
+  birdnet:
+    image: "192.168.65.254:5000/birdnet"
+    container_name: birdnet
+    restart: unless-stopped
+    depends_on:
+      - database
+    networks:
+      - sensos_net
+    environment:
+      DB_HOST: database
+      DB_USER: sensos
+      DB_PASS: sensos
+      DB_NAME: sensos_db
+    volumes:
+      - /home/sensos:/home/sensos
+
+networks:
+  sensos_net:
+    driver: bridge
