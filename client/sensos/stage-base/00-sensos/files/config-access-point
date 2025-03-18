@@ -83,15 +83,14 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-# Validate password length (WPA2 requires at least 8 characters)
-if [[ ${#PASSWORD} -lt 8 ]]; then
-    echo "ERROR: Password must be at least 8 characters long."
+if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
+    echo "ERROR: WPA2 password must be between 8 and 63 characters."
     exit 1
 fi
 
 # Auto-detect WiFi interface if not set
 if [[ -z "$INTERFACE" ]]; then
-    INTERFACE=$(nmcli device status | awk '$2 == "wifi" {print $1; exit}')
+    INTERFACE=$(nmcli device show | awk -F': ' '/GENERAL.TYPE/ && /wifi/ {getline; print $2; exit}')
 
     # Fallback to `iw dev` if `nmcli` is unavailable
     if [[ -z "$INTERFACE" ]]; then
@@ -126,8 +125,8 @@ echo "WiFi Access Point configuration saved to $CONFIG_FILE."
 if [[ "$ENABLE_SERVICE" == "true" ]]; then
     echo "Enabling and starting WiFi Access Point service..."
     sudo systemctl daemon-reload
-    sudo systemctl enable wifi-access-point
-    sudo systemctl restart wifi-access-point
+    sudo systemctl enable wifi-access-point.service
+    sudo systemctl restart wifi-access-point.service
     echo "WiFi Access Point service enabled and started."
 else
     echo "WiFi Access Point service NOT enabled (per user request)."

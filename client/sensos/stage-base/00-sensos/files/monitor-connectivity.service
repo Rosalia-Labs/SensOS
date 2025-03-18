@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/sensos/settings.conf
+EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/monitor-connectivity.sh
 Restart=always
 RestartSec=5

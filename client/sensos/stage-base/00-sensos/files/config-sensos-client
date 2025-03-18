@@ -873,21 +873,30 @@ def compute_api_server_wg_ip(client_wg_ip):
 
 
 def write_client_settings(args, server_wg_ip):
-    """Write client settings to /etc/sensos/settings.conf after validating the data."""
+    """Write client settings to ${HOME}/etc/settings.conf after validating the data."""
     if not all([server_wg_ip, args.port, args.network]):
-        print(
-            "❌ Error: Incomplete client settings. Not writing settings file.",
-            file=sys.stderr,
-        )
+        print("❌ Error: Incomplete client settings. Not writing settings file.")
         return
-    settings_file = "/etc/sensos/settings.conf"
-    settings_dir = os.path.dirname(settings_file)
-    subprocess.run(["sudo", "mkdir", "-p", settings_dir], check=True)
+
+    # Resolve user home directory
+    home_dir = os.path.expanduser("~")
+    settings_dir = os.path.join(home_dir, "etc")
+    settings_file = os.path.join(settings_dir, "settings.conf")
+
+    # Ensure the directory exists
+    os.makedirs(settings_dir, exist_ok=True)
+
+    # Prepare configuration content
     content = (
         f"SERVER_IP={server_wg_ip}\nSERVER_PORT=8000\nNETWORK_NAME={args.network}\n"
     )
-    subprocess.run(["sudo", "tee", settings_file], input=content, text=True, check=True)
-    subprocess.run(["sudo", "chmod", "644", settings_file], check=True)
+
+    # Write the configuration file
+    with open(settings_file, "w") as f:
+        f.write(content)
+
+    os.chmod(settings_file, 0o644)
+
     print(f"✅ Client settings written to {settings_file}")
 
 
@@ -910,45 +919,59 @@ def enable_service(service_name, start=False):
         print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
 
 
+def setup_logging():
+    """Configure logging to write to ${HOME}/log/sensos_setup.log."""
+    home_dir = os.path.expanduser("~")
+    log_dir = os.path.join(home_dir, "log")
+    log_file = os.path.join(log_dir, "sensos_setup.log")
+
+    os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
+
+    sys.stdout = open(log_file, "a")  # Redirect stdout to log file
+    sys.stderr = sys.stdout  # Redirect stderr to stdout for logging
+
+
 def main():
+    setup_logging()
     args = parse_args()
     print("🚀 Starting device configuration...")
+
     api_password = get_api_password(args.config_server, args.port)
     if not api_password:
-        print(
-            "❌ Critical error: API password not obtained. Aborting configuration.",
-            file=sys.stderr,
-        )
+        print("❌ Critical error: API password not obtained. Aborting configuration.")
         return
+
     # Get the client’s WireGuard IP (assigned during peer registration or from the local config)
     client_wg_ip = configure_wireguard(args, api_password)
     if not client_wg_ip:
-        print("❌ WireGuard configuration failed. Aborting.", file=sys.stderr)
+        print("❌ WireGuard configuration failed. Aborting.")
         return
 
     # Compute the API server’s WireGuard IP as x.x.0.1 based on the client’s WireGuard IP.
     server_wg_ip = compute_api_server_wg_ip(client_wg_ip)
     if not server_wg_ip:
-        print(
-            "❌ Failed to compute API server WireGuard IP. Aborting.", file=sys.stderr
-        )
+        print("❌ Failed to compute API server WireGuard IP. Aborting.")
         return
 
     configure_ssh(args, api_password)
+
     print("Starting WireGuard and SSH services...")
     try:
         enable_wireguard(args.network)
         enable_ssh(passwords=args.enable_ssh_passwords)
         print("✅ Services started successfully.")
     except Exception as e:
-        print("❌ Error starting services:", e, file=sys.stderr)
+        print(f"❌ Error starting services: {e}")
+
     write_client_settings(args, server_wg_ip)
+
     if not args.no_connectivity_checks:
         enable_service("monitor-connectivity.service")
     else:
         print(
             "ℹ️ No-connectivity-checks mode active. Skipping connectivity check service enablement."
         )
+
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
 

@@ -1,17 +1,21 @@
 #!/bin/bash
 
-# Read first user from /etc/sensos/first-user-name.conf or fallback to UID 1000
-FIRST_USER=$(cat /etc/sensos/first-user-name.conf 2>/dev/null || id -nu 1000)
-USER_HOME=$(eval echo ~$FIRST_USER)
+# Ensure SENSOS_USER is set
+if [[ -z "$SENSOS_USER" ]]; then
+    echo "ERROR: SENSOS_USER is not set. Exiting."
+    exit 1
+fi
 
-CONFIG_FILE="/etc/sensos/modem.conf"
+USER_HOME=$(eval echo ~$SENSOS_USER)
+
+CONFIG_FILE="${USER_HOME}/etc/modem.conf"
 LOG_DIR="$USER_HOME/logs"
 LOG_FILE="$LOG_DIR/modem.log"
 
-# Ensure the log directory exists
+# Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
-# Ensure the config file exists
+# Ensure modem configuration file exists
 if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "Error: Modem configuration file $CONFIG_FILE not found." | tee -a "$LOG_FILE"
     exit 1
@@ -20,30 +24,42 @@ fi
 # Load modem configuration
 source "$CONFIG_FILE"
 
+# Rotate log if > 5MB
+if [[ -f "$LOG_FILE" && $(stat -c%s "$LOG_FILE") -gt 5000000 ]]; then
+    mv "$LOG_FILE" "$LOG_FILE.$(date +'%Y-%m-%d_%H-%M-%S')"
+fi
+
+# Delete logs older than 30 days
+find "$LOG_DIR" -name "modem.log.*" -mtime +30 -delete
+
 # Check if nmcli is available
 if ! command -v nmcli >/dev/null; then
     echo "Error: nmcli command not found. Please install NetworkManager." | tee -a "$LOG_FILE"
     exit 1
 fi
 
-# Bring up the LTE connection if not already active
-while true; do
-    # Check if the connection exists
-    if nmcli connection show "lte" >/dev/null 2>&1; then
-        STATUS=$(nmcli device status | grep "$MODEM_IFACE" | awk '{print $3}')
-        if [[ "$STATUS" == "connected" ]]; then
-            echo "LTE connection is up." | tee -a "$LOG_FILE"
-        else
-            echo "Reconnecting LTE modem..." | tee -a "$LOG_FILE"
-            nmcli c up "lte"
-        fi
-    else
-        echo "Creating new LTE connection..." | tee -a "$LOG_FILE"
+# Function to restart the LTE modem if disconnected
+restart_lte() {
+    echo "Reconnecting LTE modem..." | tee -a "$LOG_FILE"
+    nmcli c up "lte" || {
+        echo "Failed to bring up LTE connection. Deleting and recreating..." | tee -a "$LOG_FILE"
+        nmcli connection delete "lte" 2>/dev/null
         nmcli c add type gsm ifname "$MODEM_IFACE" con-name "lte" \
             connection.interface-name "$MODEM_INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
         nmcli c up "lte"
+    }
+}
+
+# Main loop to monitor and restart LTE connection
+while true; do
+    STATUS=$(nmcli device status | grep "$MODEM_IFACE" | awk '{print $3}')
+
+    if [[ "$STATUS" == "connected" ]]; then
+        echo "LTE connection is up." | tee -a "$LOG_FILE"
+    else
+        restart_lte
     fi
 
-    # Check every 30 seconds
+    # Sleep for 30 seconds before checking again
     sleep 30
 done

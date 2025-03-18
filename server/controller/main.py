@@ -347,13 +347,17 @@ def generate_wireguard_keys():
     return private_key, public_key
 
 
-def insert_peer(network_id: int, wg_ip: str) -> int:
+def insert_peer(network_id: int, wg_ip: str, note: Optional[str] = None) -> int:
     """Insert a new peer into the database and return its ID."""
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO sensos.wireguard_peers (network_id, wg_ip) VALUES (%s, %s) RETURNING id;",
-                (network_id, wg_ip),
+                """
+                INSERT INTO sensos.wireguard_peers (network_id, wg_ip, note)
+                VALUES (%s, %s, %s)
+                RETURNING id;
+                """,
+                (network_id, wg_ip, note),
             )
             return cur.fetchone()[0]
 
@@ -448,7 +452,7 @@ def create_wireguard_configs(
 
     # API Proxy always assigned prefix.1
     api_proxy_ip = f"{network_prefix}.1"
-    insert_peer(network_id, api_proxy_ip)
+    insert_peer(network_id, api_proxy_ip, "API server")
     # (No API proxy public key yet; will be registered later.)
 
     wg_interface_ip = ""
@@ -599,7 +603,9 @@ def create_wireguard_peers_table(cur):
         CREATE TABLE IF NOT EXISTS sensos.wireguard_peers (
             id SERIAL PRIMARY KEY,
             network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
-            wg_ip INET UNIQUE NOT NULL
+            wg_ip INET UNIQUE NOT NULL,
+            note TEXT DEFAULT NULL,
+            registered_at TIMESTAMP DEFAULT NOW()
         );
         """
     )

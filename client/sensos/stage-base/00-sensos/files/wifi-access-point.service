@@ -9,11 +9,9 @@ Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-access-point
-ExecStop=/bin/bash -c 'nmcli connection down access-point || true'
+ExecStop=/bin/bash -c 'nmcli connection down access-point; sleep 3; nmcli device disconnect $INTERFACE || true'
 Restart=on-failure
-RestartSec=5
-StandardOutput=append:/home/%SENSOS_USER%/logs/wifi-ap.log
-StandardError=append:/home/%SENSOS_USER%/logs/wifi-ap.log
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

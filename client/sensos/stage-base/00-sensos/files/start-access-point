@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Use the SENSOS_USER environment variable set by systemd
+# Use systemd environment variable
 if [[ -z "$SENSOS_USER" ]]; then
     echo "ERROR: SENSOS_USER is not set. Exiting."
     exit 1
@@ -31,12 +31,16 @@ POWER_SAVE=$(awk -F' = ' '/^power_save/ {print $2}' "$CONFIG_FILE")
 LIMIT_WIDTH=$(awk -F' = ' '/^limit_width/ {print $2}' "$CONFIG_FILE")
 BEACON_INTERVAL=$(awk -F' = ' '/^beacon_interval/ {print $2}' "$CONFIG_FILE")
 
-# Apply country code (needed for WiFi to work in many regions)
+# Ensure WPA2 password is valid
+if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
+    echo "ERROR: WPA2 password must be between 8 and 63 characters." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+# Apply WiFi country code the correct way (Raspberry Pi OS)
 if [[ -n "$COUNTRY_CODE" ]]; then
     echo "Setting WiFi country code to $COUNTRY_CODE..." | tee -a "$LOG_FILE"
-    sudo iw reg set "$COUNTRY_CODE"
-    echo "country=$COUNTRY_CODE" | sudo tee /etc/wpa_supplicant/wpa_supplicant.conf >/dev/null
-    sudo systemctl restart wpa_supplicant
+    sudo raspi-config nonint do_wifi_country "$COUNTRY_CODE"
 fi
 
 # Apply settings

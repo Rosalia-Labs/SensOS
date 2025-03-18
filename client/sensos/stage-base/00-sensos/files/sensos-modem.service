@@ -8,9 +8,8 @@ Requires=NetworkManager.service
 Type=simple
 Restart=always
 RestartSec=10
+EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-modem
-StandardOutput=append:/var/log/modem.log
-StandardError=append:/var/log/modem.log
 
 [Install]
 WantedBy=multi-user.target
