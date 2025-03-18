@@ -26,3 +26,7 @@ apt-get update &&
         containerd.io \
         docker-buildx-plugin \
         docker-compose-plugin
+
+if [ -n "${FIRST_USER_NAME}" ]; then
+    adduser "${FIRST_USER_NAME}" docker
+fi

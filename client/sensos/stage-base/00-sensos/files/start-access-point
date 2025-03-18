@@ -43,12 +43,16 @@ if [[ -n "$COUNTRY_CODE" ]]; then
     sudo raspi-config nonint do_wifi_country "$COUNTRY_CODE"
 fi
 
-# Apply settings
+# Remove any existing hotspot connection named "accesspoint"
 nmcli connection delete accesspoint 2>/dev/null
-nmcli connection add type wifi ifname "$INTERFACE" con-name accesspoint autoconnect yes ssid "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PASSWORD" 802-11-wireless.mode ap ipv4.method shared
 
-[[ -n "$BAND" ]] && nmcli connection modify accesspoint 802-11-wireless.band "$BAND"
-[[ -n "$CHANNEL" ]] && nmcli connection modify accesspoint 802-11-wireless.channel "$CHANNEL"
+# Build the hotspot command
+CMD="nmcli device wifi hotspot ifname \"$INTERFACE\" con-name accesspoint ssid \"$SSID\" password \"$PASSWORD\""
+[[ -n "$BAND" ]] && CMD+=" band $BAND"
+[[ -n "$CHANNEL" ]] && CMD+=" channel $CHANNEL"
+
+echo "Executing: $CMD" | tee -a "$LOG_FILE"
+eval $CMD
 
 [[ "$LOW_TXPOWER" == "true" ]] && iwconfig "$INTERFACE" txpower 5
 [[ "$POWER_SAVE" == "true" ]] && iw dev "$INTERFACE" set power_save on
