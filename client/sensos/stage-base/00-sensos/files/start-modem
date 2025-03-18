@@ -9,7 +9,7 @@ fi
 USER_HOME=$(eval echo ~$SENSOS_USER)
 
 CONFIG_FILE="${USER_HOME}/etc/modem.conf"
-LOG_DIR="$USER_HOME/logs"
+LOG_DIR="$USER_HOME/log"
 LOG_FILE="$LOG_DIR/modem.log"
 
 # Ensure log directory exists

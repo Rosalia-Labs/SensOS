@@ -2,7 +2,7 @@
 
 CONFIG_DIR="$HOME/etc"
 CONFIG_FILE="$CONFIG_DIR/wifi-ap.conf"
-LOG_DIR="$HOME/logs"
+LOG_DIR="$HOME/log"
 ENABLE_SERVICE="true" # Default: Enable & start service
 INTERFACE=""
 
