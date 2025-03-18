@@ -89,8 +89,8 @@ services:
     restart: always
     volumes:
       - sensos_registry:/var/lib/registry
-    expose:
-      - "5000"
+    ports:
+      - "5001:5000"
     networks:
       - sensos_network
 
