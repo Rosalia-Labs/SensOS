@@ -1,0 +1,16 @@
+[Unit]
+Description=Keep LTE Modem Connection Alive
+Wants=network-online.target
+After=network-online.target NetworkManager.service
+Requires=NetworkManager.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+ExecStart=/usr/local/bin/start-modem
+StandardOutput=append:/var/log/modem.log
+StandardError=append:/var/log/modem.log
+
+[Install]
+WantedBy=multi-user.target

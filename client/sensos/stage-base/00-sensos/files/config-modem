@@ -1,8 +1,10 @@
 #!/bin/bash
-# modem-setup.sh
-# This script sets up an LTE modem connection using nmcli.
-# It requires a --service parameter (e.g. "1nce") and optionally allows overrides
-# for the modem interface and internal modem name.
+
+CONFIG_DIR="/etc/sensos"
+CONFIG_FILE="$CONFIG_DIR/modem.conf"
+
+# Ensure necessary directories exist
+mkdir -p "$CONFIG_DIR"
 
 # Default values
 SERVICE=""
@@ -10,9 +12,11 @@ MODEM_IFACE="wwan0"
 MODEM_INTERNAL_NAME="cdc-wdm0"
 
 usage() {
-    echo "Usage: $0 --service <service> [--modem-iface <iface>] [--modem-internal-name <internal_name>]"
+    echo "Usage: $0 --service <service> [--modem-iface <iface>] [--modem-internal-name <internal_name>] [--no-enable]"
     exit 1
 }
+
+ENABLE_SERVICE="true"
 
 # Process command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -30,6 +34,10 @@ while [[ $# -gt 0 ]]; do
         MODEM_INTERNAL_NAME="$2"
         shift 2
         ;;
+    --no-enable)
+        ENABLE_SERVICE="false"
+        shift
+        ;;
     --help)
         usage
         ;;
@@ -46,12 +54,6 @@ if [ -z "$SERVICE" ]; then
     usage
 fi
 
-# Check if nmcli is available
-if ! command -v nmcli >/dev/null; then
-    echo "Error: nmcli command not found. Please install NetworkManager."
-    exit 1
-fi
-
 # Set APN based on the service value
 if [ "$SERVICE" = "1nce" ]; then
     APN="iot.1nce.net"
@@ -60,8 +62,23 @@ else
     exit 1
 fi
 
-# Create the LTE connection profile and bring it up
-nmcli c add type gsm ifname "$MODEM_IFACE" con-name "lte" \
-    connection.interface-name "$MODEM_INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
+# Save configuration
+cat >"$CONFIG_FILE" <<EOF
+SERVICE=$SERVICE
+MODEM_IFACE=$MODEM_IFACE
+MODEM_INTERNAL_NAME=$MODEM_INTERNAL_NAME
+APN=$APN
+EOF
 
-nmcli c up "lte" && echo "LTE interface is up" || echo "Failed to bring up LTE interface"
+echo "Modem configuration saved to $CONFIG_FILE."
+
+# Enable and start the modem service unless --no-enable was used
+if [[ "$ENABLE_SERVICE" == "true" ]]; then
+    echo "Enabling and starting modem service..."
+    sudo systemctl daemon-reload
+    sudo systemctl enable modem-connection
+    sudo systemctl restart modem-connection
+    echo "Modem service enabled and started."
+else
+    echo "Modem service NOT enabled (per user request)."
+fi

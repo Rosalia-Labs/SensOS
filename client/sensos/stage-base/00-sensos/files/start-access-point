@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# Read the first username from /etc/sensos/first-user-name.conf or fall back
+FIRST_USER=$(cat /etc/sensos/first-user-name.conf 2>/dev/null || true)
+if [[ -z "$FIRST_USER" ]]; then
+    FIRST_USER=$(id -nu 1000 2>/dev/null || getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 {print $1; exit}')
+fi
+
+USER_HOME=$(eval echo ~$FIRST_USER)
+
+CONFIG_FILE="$USER_HOME/etc/wifi-ap.conf"
+LOG_FILE="$USER_HOME/logs/wifi-ap.log"
+
+# Ensure log directory exists
+mkdir -p "$(dirname "$LOG_FILE")"
+
+# Load configuration
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Error: Configuration file $CONFIG_FILE not found." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+SSID=$(awk -F' = ' '/^ssid/ {print $2}' "$CONFIG_FILE")
+PASSWORD=$(awk -F' = ' '/^password/ {print $2}' "$CONFIG_FILE")
+INTERFACE=$(awk -F' = ' '/^interface/ {print $2}' "$CONFIG_FILE")
+BAND=$(awk -F' = ' '/^band/ {print $2}' "$CONFIG_FILE")
+CHANNEL=$(awk -F' = ' '/^channel/ {print $2}' "$CONFIG_FILE")
+
+LOW_TXPOWER=$(awk -F' = ' '/^low_txpower/ {print $2}' "$CONFIG_FILE")
+POWER_SAVE=$(awk -F' = ' '/^power_save/ {print $2}' "$CONFIG_FILE")
+LIMIT_WIDTH=$(awk -F' = ' '/^limit_width/ {print $2}' "$CONFIG_FILE")
+BEACON_INTERVAL=$(awk -F' = ' '/^beacon_interval/ {print $2}' "$CONFIG_FILE")
+
+# Apply settings
+nmcli connection delete access-point 2>/dev/null
+nmcli connection add type wifi ifname "$INTERFACE" con-name access-point autoconnect yes ssid "$SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PASSWORD" 802-11-wireless.mode ap ipv4.method shared
+
+[[ -n "$BAND" ]] && nmcli connection modify access-point 802-11-wireless.band "$BAND"
+[[ -n "$CHANNEL" ]] && nmcli connection modify access-point 802-11-wireless.channel "$CHANNEL"
+
+[[ "$LOW_TXPOWER" == "true" ]] && iwconfig "$INTERFACE" txpower 5
+[[ "$POWER_SAVE" == "true" ]] && iw dev "$INTERFACE" set power_save on
+[[ "$LIMIT_WIDTH" == "true" ]] && nmcli connection modify access-point 802-11-wireless.channel-width 20
+[[ "$BEACON_INTERVAL" == "true" ]] && nmcli connection modify access-point 802-11-wireless.beacon-interval 300
+
+nmcli connection up access-point
+echo "WiFi Access Point started successfully." | tee -a "$LOG_FILE"

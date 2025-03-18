@@ -1,0 +1,11 @@
+[Unit]
+Description=Detect First User and Set SENSOS_USER
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/set-sensos-user.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=WiFi Access Point Manager
+Wants=network-online.target
+After=network-online.target NetworkManager.service
+Requires=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/start-access-point
+ExecStop=/bin/bash -c 'nmcli connection down access-point'
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/sensos/logs/wifi-ap.log
+StandardError=append:/home/sensos/logs/wifi-ap.log
+
+[Install]
+WantedBy=multi-user.target

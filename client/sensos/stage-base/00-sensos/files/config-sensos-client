@@ -123,9 +123,9 @@ def get_basic_auth(api_password):
     return base64.b64encode(auth_str.encode()).decode()
 
 
-def validate_api_password(server, port, api_password):
+def validate_api_password(config_server, port, api_password):
     """Test the API password by sending a GET request to a /validate endpoint."""
-    url = f"http://{server}:{port}/"
+    url = f"http://{config_server}:{port}/"
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     try:
         response = requests.get(url, headers=headers, timeout=5)
@@ -142,7 +142,7 @@ def validate_api_password(server, port, api_password):
         return False
 
 
-def get_api_password(server, port):
+def get_api_password(config_server, port):
     """Retrieve or prompt for API password, testing it with the server.
     Allows up to 3 attempts.
     """
@@ -152,13 +152,13 @@ def get_api_password(server, port):
             with open(API_PASSWORD_FILE, "r") as f:
                 stored_password = f.read().strip()
             print("Testing stored API password...")
-            if validate_api_password(server, port, stored_password):
+            if validate_api_password(config_server, port, stored_password):
                 print("✅ API password from file is valid.")
                 return stored_password
             else:
                 print("⚠️ Stored API password is invalid.", file=sys.stderr)
         api_password = input("🔑 Enter API password: ").strip()
-        if validate_api_password(server, port, api_password):
+        if validate_api_password(config_server, port, api_password):
             if api_password is None or api_password == "":
                 print("❌ Error: API password is empty. Not saving.", file=sys.stderr)
                 continue
@@ -223,7 +223,9 @@ def compute_hostname(network_name, wg_ip):
     return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
 
-def register_peer(server, port, network_name, wg_public_key, api_password, subnet):
+def register_peer(
+    config_server, port, network_name, wg_public_key, api_password, subnet
+):
     """Register the device with the WireGuard server and return its assigned IP and connection details."""
     if wg_public_key is None:
         print(
@@ -232,7 +234,7 @@ def register_peer(server, port, network_name, wg_public_key, api_password, subne
         )
         return None, None, None, None, None
 
-    server_url = f"http://{server}:{port}/register-peer"
+    server_url = f"http://{config_server}:{port}/register-peer"
     print(f"📡 Registering device on network '{network_name}' with {server_url}...")
 
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
@@ -272,11 +274,11 @@ def register_peer(server, port, network_name, wg_public_key, api_password, subne
         )
         return None, None, None, None, None
 
-    register_wireguard_key(server, port, wg_ip, wg_public_key, api_password)
+    register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_password)
     return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
 
 
-def register_wireguard_key(server, port, wg_ip, wg_public_key, api_password):
+def register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_password):
     """Registers the WireGuard public key for this device."""
     if wg_ip is None or wg_public_key is None:
         print(
@@ -285,7 +287,7 @@ def register_wireguard_key(server, port, wg_ip, wg_public_key, api_password):
         )
         return
 
-    server_url = f"http://{server}:{port}/register-wireguard-key"
+    server_url = f"http://{config_server}:{port}/register-wireguard-key"
     print(f"🔑 Registering WireGuard public key with {server_url}...")
 
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
@@ -487,7 +489,7 @@ def extract_ssh_key_params(public_key_file):
         return None, None, None, None, None
 
 
-def exchange_ssh_keys(server, port, wg_ip, api_password):
+def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     """Registers an SSH public key for this device using its WireGuard IP."""
     ssh_dir = os.path.expanduser("~/.ssh")
     public_key_file = os.path.join(ssh_dir, "id_ed25519.pub")
@@ -523,7 +525,7 @@ def exchange_ssh_keys(server, port, wg_ip, api_password):
     if not all([wg_ip, payload["ssh_public_key"], key_type, fingerprint]):
         print("❌ Error: Incomplete SSH key data. Aborting exchange.", file=sys.stderr)
         return
-    server_url = f"http://{server}:{port}/exchange-ssh-keys"
+    server_url = f"http://{config_server}:{port}/exchange-ssh-keys"
     print(f"🔑 Registering SSH public key with {server_url}...")
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     response = requests.post(server_url, json=payload, headers=headers)
