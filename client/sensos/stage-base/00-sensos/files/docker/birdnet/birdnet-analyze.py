@@ -15,7 +15,7 @@ DB_PARAMS = {
 }
 
 # Load BirdNET TFLite model
-MODEL_PATH = "/app/model/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
+MODEL_PATH = "/app/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
 interpreter = tflite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
 
@@ -28,7 +28,7 @@ SAMPLE_RATE = 48000
 SEGMENT_DURATION = 3  # seconds
 SEGMENT_SIZE = SAMPLE_RATE * SEGMENT_DURATION  # Number of samples per segment
 
-LABELS_PATH = "/app/model/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
+LABELS_PATH = "/app/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 with open(LABELS_PATH, "r") as f:
     LABELS = [line.strip() for line in f.readlines()]
 

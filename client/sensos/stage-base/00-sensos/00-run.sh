@@ -23,7 +23,10 @@ install -m 755 files/set-sensos-user.sh "${BIN_DIR}"
 install -m 755 files/run-compose.sh "${BIN_DIR}"
 
 # Install docker-compose.yml to /usr/local/share/sensos
-install -m 644 files/docker-compose.yml "${SHARE_DIR}/docker-compose.yml"
+install -m 644 files/docker/docker-compose.yml "${SHARE_DIR}/docker-compose.yml"
+cp -r files/docker/birdnet "${SHARE_DIR}"
+cp -r files/docker/database "${SHARE_DIR}"
+cp -r files/docker/sound_capture "${SHARE_DIR}"
 
 # Install init.d script for EEPROM configuration
 install -m 755 files/config-eeprom-once "${ROOTFS_DIR}/etc/init.d/"

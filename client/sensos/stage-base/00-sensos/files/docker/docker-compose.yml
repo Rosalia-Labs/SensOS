@@ -1,29 +1,26 @@
 services:
-  sensos-client-test-database:
+  sensos-client-database:
     build: ./database
-    container_name: sensos-client-test-database
+    container_name: sensos-client-database
     restart: always
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    tmpfs:
-      - /var/lib/postgresql/data
+    volumes:
+      - sensos-db-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  sensos-client-test-sound-capture:
+  sensos-client-sound-capture:
     build: ./sound_capture
-    container_name: sensos-client-test-sound-capture
+    container_name: sensos-client-sound-capture
     restart: always
     depends_on:
-      - sensos-client-test-database
-    volumes:
-      - ./sound_capture/record-audio.py:/app/record-audio.py
-      - ./soundscape.wav:/app/test.wav
+      - sensos-client-database
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -37,13 +34,13 @@ services:
         condition: on-failure
         max_attempts: 3
 
-  sensos-client-test-birdnet:
+  sensos-client-birdnet:
     build: ./birdnet
-    container_name: sensos-client-test-birdnet
+    container_name: sensos-client-birdnet
     restart: always
     depends_on:
-      - sensos-client-test-database
-      - sensos-client-test-sound-capture
+      - sensos-client-database
+      - sensos-client-sound-capture
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -54,3 +51,6 @@ services:
       restart_policy:
         condition: on-failure
         max_attempts: 3
+
+volumes:
+  sensos-db-data:

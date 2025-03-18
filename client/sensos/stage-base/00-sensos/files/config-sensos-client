@@ -175,8 +175,8 @@ def get_api_password(config_server, port):
     return None
 
 
-def generate_wireguard_keys(force):
-    """Generate WireGuard key pair if not already present. Returns public key."""
+def generate_wireguard_keys(network_name, force):
+    """Generate or retrieve WireGuard key pair with network-specific file names. Returns public key."""
     if not os.path.isdir(WG_DIR):
         print(
             f"❌ Error: Configuration directory '{WG_DIR}' does not exist.",
@@ -184,17 +184,27 @@ def generate_wireguard_keys(force):
         )
         return None
 
-    private_key_file = os.path.join(WG_DIR, "private.key")
-    public_key_file = os.path.join(WG_DIR, "public.key")
+    # Use network-specific file names
+    private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
+    public_key_file = os.path.join(WG_DIR, f"{network_name}-public.key")
 
-    if os.path.exists(private_key_file) or os.path.exists(public_key_file):
-        print("⚠️ WireGuard keys already exist.", file=sys.stderr)
-        if not force:
-            print(
-                "🚫 Aborting to prevent overwriting existing keys. Use --force to override.",
-                file=sys.stderr,
-            )
-            return None
+    # If both keys exist, use them without overwriting
+    if os.path.exists(private_key_file) and os.path.exists(public_key_file):
+        print(
+            f"ℹ️ Existing WireGuard keys found for network '{network_name}'. Using existing keys."
+        )
+        public_key = run_command(f"sudo cat {public_key_file}")
+        return public_key
+
+    # If one exists but not both, warn and abort unless forced
+    if (
+        os.path.exists(private_key_file) or os.path.exists(public_key_file)
+    ) and not force:
+        print(
+            "❌ Incomplete key files exist. Use --force to regenerate keys.",
+            file=sys.stderr,
+        )
+        return None
 
     print("🔑 Generating new WireGuard key pair...")
     private_key = run_command("wg genkey")
@@ -208,9 +218,9 @@ def generate_wireguard_keys(force):
     run_command(f"sudo chmod 600 {private_key_file}")
     run_command(f"echo '{public_key}' | sudo tee {public_key_file} > /dev/null")
 
+    print(f"✅ WireGuard keys generated:")
     print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
-    print(f"  - Public Key: {public_key}")
-
+    print(f"  - Public Key stored in: {public_key_file}")
     return public_key
 
 
@@ -615,7 +625,7 @@ def configure_wireguard(args, api_password):
                     if peer_info.get("exists"):
                         local_server_pubkey = local_config.get("server_pubkey")
                         local_peer_pubkey = read_file(
-                            os.path.join(WG_DIR, "public.key")
+                            os.path.join(WG_DIR, f"{args.network}-public.key")
                         )
                         if local_server_pubkey == peer_info.get(
                             "network_wg_public_key"
@@ -657,14 +667,16 @@ def configure_wireguard(args, api_password):
 
     if reconfigure_wg:
         print("Reconfiguring WireGuard...")
-        wg_public_key = generate_wireguard_keys(args.force)
+        # Generate or retrieve network-specific keys
+        wg_public_key = generate_wireguard_keys(args.network, args.force)
         if wg_public_key is None:
             print(
-                "❌ WireGuard key generation failed. Skipping WireGuard configuration.",
+                "❌ WireGuard key generation/retrieval failed. Skipping WireGuard configuration.",
                 file=sys.stderr,
             )
             return None
 
+        # Now register peer using the obtained public key
         wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
             args.config_server,
             args.port,
