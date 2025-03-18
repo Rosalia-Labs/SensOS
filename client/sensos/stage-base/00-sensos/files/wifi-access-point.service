@@ -7,12 +7,13 @@ Requires=NetworkManager.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-access-point
-ExecStop=/bin/bash -c 'nmcli connection down access-point'
+ExecStop=/bin/bash -c 'nmcli connection down access-point || true'
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:/home/sensos/logs/wifi-ap.log
-StandardError=append:/home/sensos/logs/wifi-ap.log
+StandardOutput=append:/home/%SENSOS_USER%/logs/wifi-ap.log
+StandardError=append:/home/%SENSOS_USER%/logs/wifi-ap.log
 
 [Install]
 WantedBy=multi-user.target

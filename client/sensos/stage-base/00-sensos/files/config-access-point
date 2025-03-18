@@ -12,9 +12,10 @@ mkdir -p "$LOG_DIR"
 
 # Default values
 SSID="SensOSNet"
-PASSWORD="sensos"
+PASSWORD="sensos123" # WPA2 requires at least 8 characters
 BAND=""
 CHANNEL=""
+COUNTRY_CODE="US" # Default country code
 LOW_TXPOWER="false"
 POWER_SAVE="false"
 LIMIT_WIDTH="false"
@@ -28,6 +29,7 @@ usage() {
     echo "  --interface INTERFACE  Set WiFi interface (default: auto-detect)"
     echo "  --band BAND            Set WiFi band (bg for 2.4GHz, a for 5GHz, default: auto)"
     echo "  --channel CHANNEL      Set WiFi channel (default: auto)"
+    echo "  --country CODE         Set WiFi country code (default: US)"
     echo ""
     echo "Optional power-saving settings:"
     echo "  --low-txpower          Reduce transmit power to 5 dBm (saves power, reduces range)"
@@ -54,13 +56,17 @@ while [[ "$#" -gt 0 ]]; do
     --interface)
         INTERFACE="$2"
         shift
-        ;; # Allow manual interface selection
+        ;;
     --band)
         BAND="$2"
         shift
         ;;
     --channel)
         CHANNEL="$2"
+        shift
+        ;;
+    --country)
+        COUNTRY_CODE="$2"
         shift
         ;;
     --low-txpower) LOW_TXPOWER="true" ;;
@@ -77,6 +83,12 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+# Validate password length (WPA2 requires at least 8 characters)
+if [[ ${#PASSWORD} -lt 8 ]]; then
+    echo "ERROR: Password must be at least 8 characters long."
+    exit 1
+fi
+
 # Auto-detect WiFi interface if not set
 if [[ -z "$INTERFACE" ]]; then
     INTERFACE=$(nmcli device status | awk '$2 == "wifi" {print $1; exit}')
@@ -91,7 +103,7 @@ if [[ -z "$INTERFACE" ]]; then
     echo "Auto-detected WiFi interface: $INTERFACE"
 fi
 
-# Save configuration
+# Save configuration (including country code)
 cat >"$CONFIG_FILE" <<EOF
 [WiFi]
 ssid = $SSID
@@ -99,6 +111,7 @@ password = $PASSWORD
 interface = $INTERFACE
 band = $BAND
 channel = $CHANNEL
+country = $COUNTRY_CODE
 
 [PowerSaving]
 low_txpower = $LOW_TXPOWER

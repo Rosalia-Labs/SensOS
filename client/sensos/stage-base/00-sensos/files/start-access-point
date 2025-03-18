@@ -1,13 +1,12 @@
 #!/bin/bash
 
-# Read the first username from /etc/sensos/first-user-name.conf or fall back
-FIRST_USER=$(cat /etc/sensos/first-user-name.conf 2>/dev/null || true)
-if [[ -z "$FIRST_USER" ]]; then
-    FIRST_USER=$(id -nu 1000 2>/dev/null || getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 {print $1; exit}')
+# Use the SENSOS_USER environment variable set by systemd
+if [[ -z "$SENSOS_USER" ]]; then
+    echo "ERROR: SENSOS_USER is not set. Exiting."
+    exit 1
 fi
 
-USER_HOME=$(eval echo ~$FIRST_USER)
-
+USER_HOME=$(eval echo ~$SENSOS_USER)
 CONFIG_FILE="$USER_HOME/etc/wifi-ap.conf"
 LOG_FILE="$USER_HOME/logs/wifi-ap.log"
 
@@ -25,11 +24,20 @@ PASSWORD=$(awk -F' = ' '/^password/ {print $2}' "$CONFIG_FILE")
 INTERFACE=$(awk -F' = ' '/^interface/ {print $2}' "$CONFIG_FILE")
 BAND=$(awk -F' = ' '/^band/ {print $2}' "$CONFIG_FILE")
 CHANNEL=$(awk -F' = ' '/^channel/ {print $2}' "$CONFIG_FILE")
+COUNTRY_CODE=$(awk -F' = ' '/^country/ {print $2}' "$CONFIG_FILE")
 
 LOW_TXPOWER=$(awk -F' = ' '/^low_txpower/ {print $2}' "$CONFIG_FILE")
 POWER_SAVE=$(awk -F' = ' '/^power_save/ {print $2}' "$CONFIG_FILE")
 LIMIT_WIDTH=$(awk -F' = ' '/^limit_width/ {print $2}' "$CONFIG_FILE")
 BEACON_INTERVAL=$(awk -F' = ' '/^beacon_interval/ {print $2}' "$CONFIG_FILE")
+
+# Apply country code (needed for WiFi to work in many regions)
+if [[ -n "$COUNTRY_CODE" ]]; then
+    echo "Setting WiFi country code to $COUNTRY_CODE..." | tee -a "$LOG_FILE"
+    sudo iw reg set "$COUNTRY_CODE"
+    echo "country=$COUNTRY_CODE" | sudo tee /etc/wpa_supplicant/wpa_supplicant.conf >/dev/null
+    sudo systemctl restart wpa_supplicant
+fi
 
 # Apply settings
 nmcli connection delete access-point 2>/dev/null
