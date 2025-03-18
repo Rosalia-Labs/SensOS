@@ -17,7 +17,7 @@ fi
 USER_HOME=$(eval echo ~$SENSOS_USER)
 LOG_DIR="$USER_HOME/log"
 LOGFILE="$LOG_DIR/connectivity_check.log"
-SETTINGS_FILE="$USER_HOME/etc/settings.conf"
+SETTINGS_FILE="$USER_HOME/etc/network.conf"
 
 # Ensure necessary directories exist
 mkdir -p "$LOG_DIR"

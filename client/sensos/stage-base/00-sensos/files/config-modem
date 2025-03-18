@@ -79,11 +79,11 @@ if [[ "$ENABLE_SERVICE" == "true" ]]; then
     sudo systemctl daemon-reload
 
     # Only enable the service if it's not already enabled
-    if ! sudo systemctl is-enabled modem-connection &>/dev/null; then
-        sudo systemctl enable modem-connection
+    if ! sudo systemctl is-enabled sensos-modem.service &>/dev/null; then
+        sudo systemctl enable sensos-modem.service
     fi
 
-    sudo systemctl restart modem-connection
+    sudo systemctl restart sensos-modem.service
     echo "Modem service enabled and started."
 else
     echo "Modem service NOT enabled (per user request)."

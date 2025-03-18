@@ -20,6 +20,7 @@ install -m 755 files/config-access-point "${BIN_DIR}"
 install -m 755 files/start-access-point "${BIN_DIR}"
 install -m 755 files/start-modem "${BIN_DIR}"
 install -m 755 files/set-sensos-user.sh "${BIN_DIR}"
+install -m 755 files/run-compose.sh "${BIN_DIR}"
 
 # Install docker-compose.yml to /usr/local/share/sensos
 install -m 644 files/docker-compose.yml "${SHARE_DIR}/docker-compose.yml"

@@ -90,16 +90,16 @@ fi
 
 # Auto-detect WiFi interface if not set
 if [[ -z "$INTERFACE" ]]; then
-    INTERFACE=$(nmcli device show | awk -F': ' '/GENERAL.TYPE/ && /wifi/ {getline; print $2; exit}')
+    INTERFACE=$(nmcli device show | awk -F': ' '/GENERAL.TYPE/ && /wifi/ {getline; print $2; exit}' | xargs)
 
     # Fallback to `iw dev` if `nmcli` is unavailable
     if [[ -z "$INTERFACE" ]]; then
-        INTERFACE=$(iw dev | awk '$1 == "Interface" {print $2; exit}')
+        INTERFACE=$(iw dev | awk '$1 == "Interface" {print $2; exit}' | xargs)
     fi
 
     # If still empty, default to wlan0
     INTERFACE=${INTERFACE:-wlan0}
-    echo "Auto-detected WiFi interface: $INTERFACE"
+    echo "Auto-detected WiFi interface: '$INTERFACE'"
 fi
 
 # Save configuration (including country code)

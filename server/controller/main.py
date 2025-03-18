@@ -935,7 +935,8 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
 
 class RegisterPeerRequest(BaseModel):
     network_name: str
-    subnet_offset: int = 0  # New: Start from x.x.<subnet_offset>.1
+    subnet_offset: int = 0
+    note: Optional[str] = None
 
 
 @app.post("/register-peer")
@@ -976,7 +977,7 @@ def register_peer(
             content={"error": f"No available IPs in subnet {request.subnet_offset}."},
         )
 
-    insert_peer(network_id, wg_ip)
+    insert_peer(network_id, wg_ip, note=request.note)
 
     return {
         "wg_ip": wg_ip,

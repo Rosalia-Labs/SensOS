@@ -873,7 +873,7 @@ def compute_api_server_wg_ip(client_wg_ip):
 
 
 def write_client_settings(args, server_wg_ip):
-    """Write client settings to ${HOME}/etc/settings.conf after validating the data."""
+    """Write client settings to ${HOME}/etc/network.conf after validating the data."""
     if not all([server_wg_ip, args.port, args.network]):
         print("❌ Error: Incomplete client settings. Not writing settings file.")
         return
@@ -881,7 +881,7 @@ def write_client_settings(args, server_wg_ip):
     # Resolve user home directory
     home_dir = os.path.expanduser("~")
     settings_dir = os.path.join(home_dir, "etc")
-    settings_file = os.path.join(settings_dir, "settings.conf")
+    settings_file = os.path.join(settings_dir, "network.conf")
 
     # Ensure the directory exists
     os.makedirs(settings_dir, exist_ok=True)
@@ -919,16 +919,34 @@ def enable_service(service_name, start=False):
         print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
 
 
+class Tee:
+    """A class that writes output to both stdout/stderr and a file."""
+
+    def __init__(self, filename, mode="a"):
+        self.terminal = sys.stdout
+        self.log = open(filename, mode)
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.terminal.flush()
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+
 def setup_logging():
-    """Configure logging to write to ${HOME}/log/sensos_setup.log."""
+    """Configure logging to write to ${HOME}/log/sensos_setup.log while also displaying output."""
     home_dir = os.path.expanduser("~")
     log_dir = os.path.join(home_dir, "log")
     log_file = os.path.join(log_dir, "sensos_setup.log")
 
     os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
 
-    sys.stdout = open(log_file, "a")  # Redirect stdout to log file
-    sys.stderr = sys.stdout  # Redirect stderr to stdout for logging
+    sys.stdout = Tee(log_file)
+    sys.stderr = sys.stdout  # Redirect stderr to the same Tee object
 
 
 def main():
