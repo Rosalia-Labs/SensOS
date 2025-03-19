@@ -12,6 +12,7 @@ SYSD_SYS_DIR="${ROOTFS_DIR}/etc/systemd/system"
 SERVICES_DIR=files/services
 SCRIPTS_DIR=files/scripts
 DOCKER_DIR=files/docker
+KEYS_DIR=files/keys
 
 # Ensure /usr/local/share/sensos exists
 mkdir -p "$SHARE_DIR"
@@ -50,14 +51,5 @@ cp -r "$DOCKER_DIR/birdnet" "${SHARE_DIR}"
 # Install init.d script for EEPROM configuration
 install -m 755 "${SCRIPTS_DIR}/config-eeprom-once" "${ROOTFS_DIR}/etc/init.d/"
 
-USERNAME="sensos-admin"
-AUTHORIZED_KEYS="files/keys/sensos_admin_authorized_keys"
-TARGET_HOME="/home/$USERNAME"
-
-install -d -m 700 "$TARGET_HOME/.ssh"
-
-if [[ -f "$AUTHORIZED_KEYS" ]]; then
-    install -m 600 "$AUTHORIZED_KEYS" "$TARGET_HOME/.ssh/authorized_keys"
-else
-    echo "WARNING: No authorized_keys file found at $AUTHORIZED_KEYS"
-fi
+AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
+install -m 777 "$AUTHORIZED_KEYS" "${SHARE_DIR}"

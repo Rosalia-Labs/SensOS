@@ -1,11 +1,14 @@
 #!/bin/bash
 
-# Compute the absolute path to the current directory (sensos/)
-SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Compute the absolute path to the directory of the script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Compute the path to the target config file
+CONFIG_FILE="${SCRIPT_DIR}/../pi-gen/config"
 
 # Default values for always-included variables
 PI_GEN_RELEASE="SensOS reference"
-PIGEN_DOCKER_OPTS="-v $SENSOS_DIR:/sensos"
+PIGEN_DOCKER_OPTS="-v $SCRIPT_DIR:/sensos"
 SENSOS_STAGES=$(echo "stage-base" | awk '{for(i=1;i<=NF;i++) $i="/sensos/"$i}1')
 STAGE_LIST="stage0 stage1 $SENSOS_STAGES stage2"
 IMG_NAME="sensos"
@@ -186,12 +189,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -f "$SENSOS_DIR/../../server/.registry_auth/domain.crt" ]; then
-    cp -a "$SENSOS_DIR/../../server/.registry_auth/domain.crt" "$SENSOS_DIR/stage-base/00-sensos/files"
-else
-    echo "Registry certificate not found. Be sure to configure the server before the client." >&2
-fi
+# Ensure the target directory exists
+mkdir -p "$(dirname "$CONFIG_FILE")"
 
-# Emit configuration to stdout
-echo "# Auto-generated configuration file"
-printf "%s\n" "${CONFIG[@]}"
+echo
+echo "Settings:"
+echo
+
+# Write configuration to file
+{
+    printf "%s\n" "${CONFIG[@]}"
+} | tee "$CONFIG_FILE"
+
+echo
+echo "Config file written. Now go to the pi-gen directory and run ./build-docker.sh"
+echo

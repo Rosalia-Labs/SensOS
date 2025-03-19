@@ -28,7 +28,9 @@ apt-get update &&
         docker-compose-plugin
 
 if [ -n "${FIRST_USER_NAME}" ]; then
-    adduser "${FIRST_USER_NAME}" docker
+    if ! groups "${FIRST_USER_NAME}" | grep -q "\bdocker\b"; then
+        adduser "${FIRST_USER_NAME}" docker
+    fi
 fi
 
 USERNAME="sensos-admin"
@@ -41,14 +43,8 @@ fi
 install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
-if [[ -d "$TARGET_HOME" ]]; then
-    OWNER=$(stat -c "%U" "$TARGET_HOME")
-    if [[ "$OWNER" != "$USERNAME" ]]; then
-        echo "⚠️ Home directory $TARGET_HOME is owned by $OWNER. Fixing ownership..."
-        chown -R "$USERNAME:$USERNAME" "$TARGET_HOME"
-    fi
-fi
-
-chown -R "$USERNAME:$USERNAME" "$TARGET_HOME/.ssh"
+KEYS_DIR=/usr/local/share/sensos
+install -m 600 "${KEYS_DIR}/sensos_admin_authorized_keys" "${TARGET_HOME}/.ssh"
+rm -f "${KEYS_DIR}/sensos_admin_authorized_keys"
 
 passwd -l "$USERNAME"
