@@ -332,6 +332,18 @@ def wait_for_container_stop():
         cleanup()
 
 
+def callback(indata, frames, time_info, status):
+    if status:
+        print(status, file=sys.stderr)
+    # For demonstration, simply append the recorded data into the global buffer
+    # Note: you might want a more sophisticated implementation that handles overlapping segments.
+    global buffer
+    # Append the incoming data (assuming mono channel) to the buffer.
+    # This example shifts the buffer and fills the new data at the end.
+    buffer = np.roll(buffer, -frames)
+    buffer[-frames:] = indata[:, 0]
+
+
 def run_recording():
     """Handles live recording or test signal generation."""
     start_time = time.time()
