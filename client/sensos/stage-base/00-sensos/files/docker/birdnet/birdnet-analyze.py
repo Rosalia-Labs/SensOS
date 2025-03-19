@@ -10,7 +10,7 @@ DB_PARAMS = {
     "dbname": os.getenv("POSTGRES_DB", "postgres"),
     "user": os.getenv("POSTGRES_USER", "postgres"),
     "password": os.getenv("POSTGRES_PASSWORD", "sensos"),
-    "host": os.getenv("DB_HOST", "sensos-client-test-database"),
+    "host": os.getenv("DB_HOST", "sensos-client-database"),
     "port": os.getenv("DB_PORT", "5432"),
 }
 

@@ -4,9 +4,9 @@ services:
     container_name: sensos-client-database
     restart: always
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: sensos
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - sensos-db-data:/var/lib/postgresql/data
     healthcheck:
@@ -22,13 +22,13 @@ services:
     depends_on:
       - sensos-client-database
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: sensos
-      DB_HOST: sensos-client-database
-      DB_PORT: 5432
-      AUDIO_SOURCE: default
-      RECORD_DURATION: 0
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      AUDIO_SOURCE: ${AUDIO_SOURCE}
+      RECORD_DURATION: ${RECORD_DURATION}
     deploy:
       restart_policy:
         condition: on-failure
@@ -42,11 +42,11 @@ services:
       - sensos-client-database
       - sensos-client-sound-capture
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: sensos
-      DB_HOST: sensos-client-database
-      DB_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
     deploy:
       restart_policy:
         condition: on-failure

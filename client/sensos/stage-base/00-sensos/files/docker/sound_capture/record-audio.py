@@ -15,7 +15,7 @@ import os
 db_name = os.environ.get("POSTGRES_DB", "postgres")
 db_user = os.environ.get("POSTGRES_USER", "postgres")
 db_password = os.environ.get("POSTGRES_PASSWORD", "sensos")
-db_host = os.environ.get("DB_HOST", "sensos-client-test-database")
+db_host = os.environ.get("DB_HOST", "sensos-client-database")
 db_port = os.environ.get("DB_PORT", "5432")
 DB_PARAMS = f"dbname={db_name} user={db_user} password={db_password} host={db_host} port={db_port}"
 
