@@ -333,15 +333,18 @@ def wait_for_container_stop():
 
 
 def callback(indata, frames, time_info, status):
-    if status:
-        print(status, file=sys.stderr)
-    # For demonstration, simply append the recorded data into the global buffer
-    # Note: you might want a more sophisticated implementation that handles overlapping segments.
+    """Processes incoming audio in real-time."""
     global buffer
-    # Append the incoming data (assuming mono channel) to the buffer.
-    # This example shifts the buffer and fills the new data at the end.
-    buffer = np.roll(buffer, -frames)
-    buffer[-frames:] = indata[:, 0]
+    if status:
+        print(status)
+    # Shift buffer left and append new data.
+    buffer = np.roll(buffer, -STEP_SIZE_FRAMES)
+    buffer[-STEP_SIZE_FRAMES:] = indata[:, 0]
+    # Store precise timestamps for this segment.
+    start_timestamp = datetime.datetime.utcnow()
+    end_timestamp = start_timestamp + datetime.timedelta(seconds=SEGMENT_DURATION)
+    # Send segment to the queue (non-blocking).
+    audio_queue.put((buffer.copy(), start_timestamp, end_timestamp))
 
 
 def run_recording():
