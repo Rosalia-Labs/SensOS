@@ -932,6 +932,36 @@ def enable_service(service_name, start=False):
         print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
 
 
+def check_sensos_user():
+    """Ensure SENSOS_USER is defined and matches the current user."""
+    current_user = os.getenv("USER") or run_command("whoami")  # Get the current user
+    sensos_user = os.getenv("SENSOS_USER")
+
+    if sensos_user:
+        if sensos_user != current_user:
+            print(
+                f"⚠️ WARNING: Current user '{current_user}' does not match SENSOS_USER '{sensos_user}'.",
+                file=sys.stderr,
+            )
+            print(
+                "   This may cause issues with permissions and configuration. Ensure you are logged in as the correct user.",
+                file=sys.stderr,
+            )
+    else:
+        # If SENSOS_USER is not defined, assume the user created a new user at first boot
+        print(f"ℹ️ Setting SENSOS_USER={current_user} in /etc/environment...")
+        try:
+            run_command(
+                f"echo 'SENSOS_USER={current_user}' | sudo tee -a /etc/environment > /dev/null"
+            )
+            print("✅ SENSOS_USER set successfully. It will take effect on next login.")
+        except Exception as e:
+            print(
+                f"❌ ERROR: Failed to set SENSOS_USER in /etc/environment: {e}",
+                file=sys.stderr,
+            )
+
+
 class Tee:
     """A class that writes output to both stdout/stderr and a file."""
 
@@ -964,6 +994,7 @@ def setup_logging():
 
 def main():
     setup_logging()
+    check_sensos_user()
     args = parse_args()
     print("🚀 Starting device configuration...")
 

@@ -37,7 +37,7 @@ AUTHORIZED_KEYS="files/keys/sensos_admin_authorized_keys"
 
 # Create the user without a password and disable console login
 if ! id "$USERNAME" &>/dev/null; then
-    useradd -m -s /bin/bash -G sudo,adm,netdev,docker -c "Sensos Admin" "$USERNAME"
+    useradd -m -s /bin/bash -G sudo -c "Sensos Admin" "$USERNAME"
 fi
 
 # Grant sudo privileges
