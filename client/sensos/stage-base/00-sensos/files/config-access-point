@@ -88,16 +88,16 @@ if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
     exit 1
 fi
 
-# Auto-detect WiFi interface if not set
 if [[ -z "$INTERFACE" ]]; then
-    INTERFACE=$(nmcli device show | awk -F': ' '/GENERAL.TYPE/ && /wifi/ {getline; print $2; exit}' | xargs)
+    # Use nmcli to list devices in terse mode, filtering by type "wifi"
+    INTERFACE=$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi" {print $1; exit}')
 
-    # Fallback to `iw dev` if `nmcli` is unavailable
+    # Fallback to `iw dev` if nmcli didn't work
     if [[ -z "$INTERFACE" ]]; then
-        INTERFACE=$(iw dev | awk '$1 == "Interface" {print $2; exit}' | xargs)
+        INTERFACE=$(iw dev | awk '$1=="Interface" {print $2; exit}')
     fi
 
-    # If still empty, default to wlan0
+    # Default to wlan0 if nothing is found
     INTERFACE=${INTERFACE:-wlan0}
     echo "Auto-detected WiFi interface: '$INTERFACE'"
 fi

@@ -193,7 +193,7 @@ def generate_wireguard_keys(network_name, force):
         print(
             f"ℹ️ Existing WireGuard keys found for network '{network_name}'. Using existing keys."
         )
-        public_key = run_command(f"sudo cat {public_key_file}")
+        public_key = sudo_read_file(public_key_file)
         return public_key
 
     # If one exists but not both, warn and abort unless forced
@@ -364,7 +364,8 @@ def write_wireguard_config(
         )
         return
 
-    private_key_file = os.path.join(WG_DIR, "private.key")
+    # Use network-specific key file for consistency with generate_wireguard_keys
+    private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
     if os.path.exists(wg_config_file):
         print(
@@ -377,7 +378,7 @@ def write_wireguard_config(
             )
             return
 
-    private_key = run_command(f"sudo cat {private_key_file}")
+    private_key = sudo_read_file(private_key_file)
     if not private_key:
         print(
             "❌ Error: Private key is missing. Cannot write configuration.",
