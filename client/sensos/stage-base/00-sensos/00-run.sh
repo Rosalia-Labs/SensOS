@@ -17,9 +17,12 @@ DOCKER_DIR=files/docker
 mkdir -p "$SHARE_DIR"
 
 # Install scripts to /usr/local/bin
+install -m 755 "${SCRIPTS_DIR}/config-wifi-access-point" "${BIN_DIR}"
+install -m 755 "${SCRIPTS_DIR}/config-sensos-containers" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/list-registry-images" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/push-registry-images" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-sensos-client" "${BIN_DIR}"
+install -m 755 "${SCRIPTS_DIR}/config-sensos-modem" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-eeprom" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/show-eeprom" "${BIN_DIR}"
 
@@ -29,17 +32,12 @@ install -m 644 "${SERVICES_DIR}/wifi-access-point.service" "${SYSD_SYS_DIR}"
 install -m 644 "${SERVICES_DIR}/set-sensos-user.service" "${SYSD_SYS_DIR}"
 install -m 644 "${SERVICES_DIR}/sensos-modem.service" "${SYSD_SYS_DIR}"
 
-# Install config scripts to /usr/local/bin
-install -m 755 ${SERVICES_DIR}/config-sensos-modem "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/config-wifi-access-point "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/config-sensos-containers "${BIN_DIR}"
-
 # Install service start scripts
 install -m 755 ${SERVICES_DIR}/start-monitor-connectivity.sh "${BIN_DIR}"
+install -m 755 ${SERVICES_DIR}/start-wifi-access-point.sh "${BIN_DIR}"
 install -m 755 ${SERVICES_DIR}/start-sensos-containers.sh "${BIN_DIR}"
 install -m 755 ${SERVICES_DIR}/start-set-sensos-user.sh "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-wifi-access-point "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-sensos-modem "${BIN_DIR}"
+install -m 755 ${SERVICES_DIR}/start-sensos-modem.sh "${BIN_DIR}"
 
 # Install docker-compose.yml to /usr/local/share/sensos
 install -m 644 "$DOCKER_DIR/docker-compose.yml" "${SHARE_DIR}/docker-compose.yml"
