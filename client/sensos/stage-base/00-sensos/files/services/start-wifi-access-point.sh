@@ -37,10 +37,18 @@ if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
     exit 1
 fi
 
-# Apply WiFi country code correctly (Raspberry Pi OS)
-if [[ -n "$COUNTRY_CODE" ]]; then
+# Apply WiFi country code only if explicitly set in the config file
+if [[ -n "$COUNTRY_CODE" && "$COUNTRY_CODE" != "unset" ]]; then
     echo "Setting WiFi country code to $COUNTRY_CODE..." | tee -a "$LOG_FILE"
     sudo raspi-config nonint do_wifi_country "$COUNTRY_CODE"
+else
+    echo "Skipping WiFi country code change (not set in configuration)." | tee -a "$LOG_FILE"
+fi
+
+if rfkill list wifi | grep -q "Soft blocked: yes"; then
+    echo "WiFi is soft-blocked. Unblocking..."
+    sudo rfkill unblock wifi
+    sleep 2 # Give it a moment to take effect
 fi
 
 # Remove any existing hotspot connection named "accesspoint"
@@ -59,20 +67,29 @@ nmcli device wifi hotspot \
     exit 1
 }
 
-# Apply additional settings
-[[ "$LOW_TXPOWER" == "true" ]] && iwconfig "$INTERFACE" txpower 5
-[[ "$POWER_SAVE" == "true" ]] && iw dev "$INTERFACE" set power_save on
-[[ "$LIMIT_WIDTH" == "true" ]] && nmcli connection modify accesspoint 802-11-wireless.channel-width 20
-if [[ "$BEACON_INTERVAL" =~ ^[0-9]+$ ]]; then
-    nmcli connection modify accesspoint 802-11-wireless.beacon-interval "$BEACON_INTERVAL"
-fi
-
 # Activate the access point
 nmcli connection up accesspoint || {
     echo "ERROR: Failed to bring up access point." | tee -a "$LOG_FILE"
     exit 1
 }
 
-# Assign an additional hostname
-sudo nmcli connection modify accesspoint ipv4.dns-search device.local
-echo "WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"
+# Get the dynamically assigned IP address of the host on the hotspot network
+HOTSPOT_IP=$(nmcli -g IP4.ADDRESS connection show accesspoint | cut -d'/' -f1)
+
+if [[ -z "$HOTSPOT_IP" ]]; then
+    echo "ERROR: Failed to determine hotspot IP address." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+echo "Hotspot host IP is $HOTSPOT_IP" | tee -a "$LOG_FILE"
+
+# Configure dnsmasq for device.local resolution
+DNSMASQ_CONF="/etc/dnsmasq.d/hotspot.conf"
+echo "Configuring dnsmasq for local hostname resolution..." | tee -a "$LOG_FILE"
+echo "address=/device.local/$HOTSPOT_IP" | sudo tee "$DNSMASQ_CONF" >/dev/null
+
+# Restart dnsmasq to apply changes
+sudo systemctl restart dnsmasq
+echo "✅ dnsmasq restarted. device.local should now resolve to $HOTSPOT_IP." | tee -a "$LOG_FILE"
+
+echo "✅ WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"

@@ -31,30 +31,24 @@ if [ -n "${FIRST_USER_NAME}" ]; then
     adduser "${FIRST_USER_NAME}" docker
 fi
 
-# Create user for ssh admin sessions
 USERNAME="sensos-admin"
-AUTHORIZED_KEYS="files/keys/sensos_admin_authorized_keys"
+TARGET_HOME="/home/$USERNAME"
 
-# Create the user without a password and disable console login
 if ! id "$USERNAME" &>/dev/null; then
     useradd -m -s /bin/bash -G sudo -c "Sensos Admin" "$USERNAME"
 fi
 
-# Grant sudo privileges
-echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/$USERNAME
-chmod 0440 /etc/sudoers.d/$USERNAME
+install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
+echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
-# Copy the authorized_keys file from a predefined location
-if [[ -f "$AUTHORIZED_KEYS" ]]; then
-    mkdir -p /home/$USERNAME/.ssh
-    chmod 700 /home/$USERNAME/.ssh
-    chown $USERNAME:$USERNAME /home/$USERNAME/.ssh
-    cp "$AUTHORIZED_KEYS" /home/$USERNAME/.ssh/authorized_keys
-    chmod 600 /home/$USERNAME/.ssh/authorized_keys
-    chown $USERNAME:$USERNAME /home/$USERNAME/.ssh/authorized_keys
-else
-    echo "WARNING: No authorized_keys file found at $AUTHORIZED_KEYS"
+if [[ -d "$TARGET_HOME" ]]; then
+    OWNER=$(stat -c "%U" "$TARGET_HOME")
+    if [[ "$OWNER" != "$USERNAME" ]]; then
+        echo "⚠️ Home directory $TARGET_HOME is owned by $OWNER. Fixing ownership..."
+        chown -R "$USERNAME:$USERNAME" "$TARGET_HOME"
+    fi
 fi
 
-# Ensure user cannot log in with a password
+chown -R "$USERNAME:$USERNAME" "$TARGET_HOME/.ssh"
+
 passwd -l "$USERNAME"

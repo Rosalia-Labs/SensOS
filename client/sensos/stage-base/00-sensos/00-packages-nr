@@ -1,4 +1,6 @@
 wireguard
 wireguard-tools
 openresolv
+dnsmasq
+
 

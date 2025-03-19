@@ -20,7 +20,7 @@ SSID=""
 PASSWORD="" # WPA2 requires at least 8 characters
 BAND=""
 CHANNEL=""
-COUNTRY_CODE="US" # Default country code
+COUNTRY_CODE="" # Only set if explicitly provided
 LOW_TXPOWER="false"
 POWER_SAVE="false"
 LIMIT_WIDTH="false"
@@ -38,7 +38,7 @@ usage() {
     echo "  --interface INTERFACE  Set WiFi interface (default: auto-detect)"
     echo "  --band BAND            Set WiFi band (bg for 2.4GHz, a for 5GHz, default: auto)"
     echo "  --channel CHANNEL      Set WiFi channel (default: auto)"
-    echo "  --country CODE         Set WiFi country code (default: US)"
+    echo "  --country CODE         Set WiFi country code (only if specified, otherwise leave unchanged)"
     echo ""
     echo "Optional power-saving settings:"
     echo "  --low-txpower          Reduce transmit power to 5 dBm (saves power, reduces range)"
@@ -112,21 +112,26 @@ if [[ -z "$INTERFACE" ]]; then
 fi
 
 # Save configuration
-cat >"$CONFIG_FILE" <<EOF
-[WiFi]
-ssid = $SSID
-password = $PASSWORD
-interface = $INTERFACE
-band = $BAND
-channel = $CHANNEL
-country = $COUNTRY_CODE
+{
+    echo "[WiFi]"
+    echo "ssid = $SSID"
+    echo "password = $PASSWORD"
+    echo "interface = $INTERFACE"
+    echo "band = $BAND"
+    echo "channel = $CHANNEL"
 
-[PowerSaving]
-low_txpower = $LOW_TXPOWER
-power_save = $POWER_SAVE
-limit_width = $LIMIT_WIDTH
-beacon_interval = $BEACON_INTERVAL
-EOF
+    # Only write country if explicitly specified
+    if [[ -n "$COUNTRY_CODE" ]]; then
+        echo "country = $COUNTRY_CODE"
+    fi
+
+    echo ""
+    echo "[PowerSaving]"
+    echo "low_txpower = $LOW_TXPOWER"
+    echo "power_save = $POWER_SAVE"
+    echo "limit_width = $LIMIT_WIDTH"
+    echo "beacon_interval = $BEACON_INTERVAL"
+} >"$CONFIG_FILE"
 
 echo "WiFi Access Point configuration saved to $CONFIG_FILE."
 

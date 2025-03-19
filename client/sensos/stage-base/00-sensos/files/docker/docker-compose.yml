@@ -29,6 +29,10 @@ services:
       DB_PORT: ${DB_PORT}
       AUDIO_SOURCE: ${AUDIO_SOURCE}
       RECORD_DURATION: ${RECORD_DURATION}
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - "audio"
     deploy:
       restart_policy:
         condition: on-failure
