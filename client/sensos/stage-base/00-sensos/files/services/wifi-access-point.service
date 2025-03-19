@@ -8,8 +8,8 @@ Requires=NetworkManager.service
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/etc/environment
-ExecStart=/usr/local/bin/start-access-point
-ExecStop=/bin/bash -c 'nmcli connection down access-point; sleep 3; nmcli device disconnect $INTERFACE || true'
+ExecStart=/usr/local/bin/start-wifi-access-point.sh
+ExecStop=/bin/bash -c 'nmcli connection down accesspoint; sleep 3; nmcli device disconnect $INTERFACE || true'
 Restart=on-failure
 RestartSec=10
 

@@ -7,15 +7,15 @@ if [[ -z "$SENSOS_USER" ]]; then
 fi
 
 USER_HOME=$(eval echo ~$SENSOS_USER)
-CONFIG_FILE="$USER_HOME/etc/wifi-ap.conf"
-LOG_FILE="$USER_HOME/log/wifi-ap.log"
+CONFIG_FILE="$USER_HOME/etc/wifi_access_point.conf"
+LOG_FILE="$USER_HOME/log/wifi_access_point.log"
 
 # Ensure log directory exists
 mkdir -p "$(dirname "$LOG_FILE")"
 
 # Load configuration
 if [[ ! -f "$CONFIG_FILE" ]]; then
-    echo "Error: Configuration file $CONFIG_FILE not found." | tee -a "$LOG_FILE"
+    echo "ERROR: Configuration file $CONFIG_FILE not found." | tee -a "$LOG_FILE"
     exit 1
 fi
 
@@ -37,27 +37,42 @@ if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
     exit 1
 fi
 
-# Apply WiFi country code the correct way (Raspberry Pi OS)
+# Apply WiFi country code correctly (Raspberry Pi OS)
 if [[ -n "$COUNTRY_CODE" ]]; then
     echo "Setting WiFi country code to $COUNTRY_CODE..." | tee -a "$LOG_FILE"
     sudo raspi-config nonint do_wifi_country "$COUNTRY_CODE"
 fi
 
 # Remove any existing hotspot connection named "accesspoint"
-nmcli connection delete accesspoint 2>/dev/null
+nmcli connection delete accesspoint 2>/dev/null || echo "No existing access point to delete." | tee -a "$LOG_FILE"
 
-# Build the hotspot command
-CMD="nmcli device wifi hotspot ifname \"$INTERFACE\" con-name accesspoint ssid \"$SSID\" password \"$PASSWORD\""
-[[ -n "$BAND" ]] && CMD+=" band $BAND"
-[[ -n "$CHANNEL" ]] && CMD+=" channel $CHANNEL"
+# Build and execute the hotspot command
+echo "Creating WiFi Access Point..." | tee -a "$LOG_FILE"
+nmcli device wifi hotspot \
+    ifname "$INTERFACE" \
+    con-name accesspoint \
+    ssid "$SSID" \
+    password "$PASSWORD" \
+    ${BAND:+band "$BAND"} \
+    ${CHANNEL:+channel "$CHANNEL"} || {
+    echo "ERROR: Failed to create hotspot." | tee -a "$LOG_FILE"
+    exit 1
+}
 
-echo "Executing: $CMD" | tee -a "$LOG_FILE"
-eval $CMD
-
+# Apply additional settings
 [[ "$LOW_TXPOWER" == "true" ]] && iwconfig "$INTERFACE" txpower 5
 [[ "$POWER_SAVE" == "true" ]] && iw dev "$INTERFACE" set power_save on
 [[ "$LIMIT_WIDTH" == "true" ]] && nmcli connection modify accesspoint 802-11-wireless.channel-width 20
-[[ "$BEACON_INTERVAL" == "true" ]] && nmcli connection modify accesspoint 802-11-wireless.beacon-interval 300
+if [[ "$BEACON_INTERVAL" =~ ^[0-9]+$ ]]; then
+    nmcli connection modify accesspoint 802-11-wireless.beacon-interval "$BEACON_INTERVAL"
+fi
 
-nmcli connection up accesspoint
-echo "WiFi Access Point started successfully." | tee -a "$LOG_FILE"
+# Activate the access point
+nmcli connection up accesspoint || {
+    echo "ERROR: Failed to bring up access point." | tee -a "$LOG_FILE"
+    exit 1
+}
+
+# Assign an additional hostname
+sudo nmcli connection modify accesspoint ipv4.dns-search device.local
+echo "WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"

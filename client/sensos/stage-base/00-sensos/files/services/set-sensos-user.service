@@ -4,7 +4,7 @@ After=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/set-sensos-user.sh
+ExecStart=/usr/local/bin/start-set-sensos-user.sh
 RemainAfterExit=yes
 
 [Install]

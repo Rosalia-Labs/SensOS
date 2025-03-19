@@ -1,18 +1,23 @@
 #!/bin/bash
 
 CONFIG_DIR="$HOME/etc"
-CONFIG_FILE="$CONFIG_DIR/wifi-ap.conf"
+CONFIG_FILE="$CONFIG_DIR/wifi_access_point.conf"
 LOG_DIR="$HOME/log"
 ENABLE_SERVICE="true" # Default: Enable & start service
 INTERFACE=""
+
+# Check if SENSOS_USER is set and warn if it differs from the current user
+if [[ -n "$SENSOS_USER" && "$USER" != "$SENSOS_USER" ]]; then
+    echo "WARNING: Current user ($USER) does not match SENSOS_USER ($SENSOS_USER). Configuration may not work."
+fi
 
 # Ensure necessary directories exist
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$LOG_DIR"
 
 # Default values
-SSID="SensOSNet"
-PASSWORD="sensos123" # WPA2 requires at least 8 characters
+SSID=""
+PASSWORD="" # WPA2 requires at least 8 characters
 BAND=""
 CHANNEL=""
 COUNTRY_CODE="US" # Default country code
@@ -24,6 +29,10 @@ BEACON_INTERVAL="false"
 # Function to display usage
 usage() {
     echo "Usage: $0 --ssid SSID --password PASSWORD [options]"
+    echo ""
+    echo "Required options:"
+    echo "  --ssid SSID            Set the WiFi SSID (network name)"
+    echo "  --password PASSWORD    Set the WiFi password (8-63 characters)"
     echo ""
     echo "Optional network settings:"
     echo "  --interface INTERFACE  Set WiFi interface (default: auto-detect)"
@@ -83,26 +92,26 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
+# **Enforce required arguments**
+if [[ -z "$SSID" || -z "$PASSWORD" ]]; then
+    echo "ERROR: Both --ssid and --password are required."
+    usage
+fi
+
+# Validate WPA2 password length
 if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
     echo "ERROR: WPA2 password must be between 8 and 63 characters."
     exit 1
 fi
 
+# Auto-detect WiFi interface if not specified
 if [[ -z "$INTERFACE" ]]; then
-    # Use nmcli to list devices in terse mode, filtering by type "wifi"
     INTERFACE=$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi" {print $1; exit}')
-
-    # Fallback to `iw dev` if nmcli didn't work
-    if [[ -z "$INTERFACE" ]]; then
-        INTERFACE=$(iw dev | awk '$1=="Interface" {print $2; exit}')
-    fi
-
-    # Default to wlan0 if nothing is found
-    INTERFACE=${INTERFACE:-wlan0}
+    INTERFACE=${INTERFACE:-wlan0} # Default to wlan0 if no interface found
     echo "Auto-detected WiFi interface: '$INTERFACE'"
 fi
 
-# Save configuration (including country code)
+# Save configuration
 cat >"$CONFIG_FILE" <<EOF
 [WiFi]
 ssid = $SSID

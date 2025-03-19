@@ -9,7 +9,7 @@ Type=simple
 Restart=always
 RestartSec=10
 EnvironmentFile=/etc/environment
-ExecStart=/usr/local/bin/start-modem
+ExecStart=/usr/local/bin/start-sensos-modem.sh
 
 [Install]
 WantedBy=multi-user.target

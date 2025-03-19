@@ -1,7 +1,7 @@
 #!/bin/bash
 
 CONFIG_DIR="${HOME}/etc"
-CONFIG_FILE="$CONFIG_DIR/modem.conf"
+CONFIG_FILE="$CONFIG_DIR/sensos_modem.conf"
 
 # Ensure necessary directories exist
 mkdir -p "$CONFIG_DIR"
@@ -11,6 +11,11 @@ SERVICE=""
 MODEM_IFACE="wwan0"
 MODEM_INTERNAL_NAME="cdc-wdm0"
 ENABLE_SERVICE="true"
+
+# Check if SENSOS_USER is set and warn if it differs from the current user
+if [[ -n "$SENSOS_USER" && "$USER" != "$SENSOS_USER" ]]; then
+    echo "WARNING: Current user ($USER) does not match SENSOS_USER ($SENSOS_USER). Configuration may not work."
+fi
 
 usage() {
     echo "Usage: $0 --service <service> [--modem-iface <iface>] [--modem-internal-name <internal_name>] [--no-enable]"
@@ -47,7 +52,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Ensure a service is specified
-if [ -z "$SERVICE" ]; then
+if [[ -z "$SERVICE" ]]; then
     echo "Error: Service must be specified."
     usage
 fi

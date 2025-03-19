@@ -1,0 +1,5 @@
+#!/bin/bash
+
+echo "Current EEPROM Configuration:"
+echo "----------------------------"
+sudo rpi-eeprom-config

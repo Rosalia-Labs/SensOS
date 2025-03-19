@@ -8,7 +8,7 @@ fi
 
 USER_HOME=$(eval echo ~$SENSOS_USER)
 
-CONFIG_FILE="${USER_HOME}/etc/modem.conf"
+CONFIG_FILE="${USER_HOME}/etc/sensos_modem.conf"
 LOG_DIR="$USER_HOME/log"
 LOG_FILE="$LOG_DIR/modem.log"
 
