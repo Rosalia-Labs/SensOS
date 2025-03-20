@@ -1,7 +1,11 @@
 #!/bin/bash
+
 set -e
 
-# Ensure SENSOS_USER is set
+if [[ -z "$SENSOS_USER" ]]; then
+    . /etc/environment
+fi
+
 if [[ -z "$SENSOS_USER" ]]; then
     echo "ERROR: SENSOS_USER is not set. Exiting."
     exit 1
@@ -51,5 +55,5 @@ DOCKER_COMPOSE_DIR="/home/${SENSOS_USER}/docker"
 echo "Changing working directory to ${DOCKER_COMPOSE_DIR}"
 cd "$DOCKER_COMPOSE_DIR"
 
-echo "Running: docker-compose up $DETACH_FLAG $BUILD_FLAG"
+echo "Running: docker compose up $DETACH_FLAG $BUILD_FLAG"
 docker-compose up $DETACH_FLAG $BUILD_FLAG

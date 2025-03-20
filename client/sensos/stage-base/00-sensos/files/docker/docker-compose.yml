@@ -1,6 +1,8 @@
 services:
   sensos-client-database:
-    build: ./database
+    build:
+      context: ./database
+      platforms: [linux/arm64]
     container_name: sensos-client-database
     restart: always
     environment:
@@ -16,7 +18,9 @@ services:
       retries: 5
 
   sensos-client-sound-capture:
-    build: ./sound_capture
+    build:
+      context: ./sound_capture
+      platforms: [linux/arm64]
     container_name: sensos-client-sound-capture
     restart: always
     depends_on:
@@ -40,7 +44,9 @@ services:
         max_attempts: 3
 
   sensos-client-birdnet:
-    build: ./birdnet
+    build:
+      context: ./birdnet
+      platforms: [linux/arm64]
     container_name: sensos-client-birdnet
     restart: always
     depends_on:
@@ -57,7 +63,9 @@ services:
         max_attempts: 3
 
   sensos-sound-analyzer:
-    build: ./sound_analyzer
+    build:
+      context: ./sound_analyzer
+      platforms: [linux/arm64]
     container_name: sensos-client-sound-analyzer
     restart: always
     depends_on:

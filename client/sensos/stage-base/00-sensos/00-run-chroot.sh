@@ -25,7 +25,10 @@ apt-get update &&
         docker-ce-cli \
         containerd.io \
         docker-buildx-plugin \
-        docker-compose-plugin
+        docker-compose-plugin \
+        docker-buildx-plugin \
+        docker-compose-plugin \
+        qemu-user-static
 
 if [ -n "${FIRST_USER_NAME}" ]; then
     if ! groups "${FIRST_USER_NAME}" | grep -q "\bdocker\b"; then
@@ -51,15 +54,17 @@ mv "${SHARE_DIR}/sensos_admin_authorized_keys" "${USER_HOME}/.ssh/authorized_key
 chmod 600 "${USER_HOME}/.ssh/authorized_keys"
 chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/.ssh"
 
-mv -f ${SHARE_DIR}/docker ${USER_HOME}
-chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/docker"
-
 passwd -l "$USERNAME"
 
 if [ -n "${FIRST_USER_NAME}" ]; then
-    chown -R "${FIRST_USER_NAME}:${FIRST_USER_NAME}" "${SHARE_DIR}"
-fi
 
-dphys-swapfile swapoff
-systemctl disable dphys-swapfile
-dphys-swapfile uninstall
+    USERNAME="${FIRST_USER_NAME}"
+    USER_HOME="/home/$USERNAME"
+
+    mv -f ${SHARE_DIR}/docker ${USER_HOME}
+    chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/docker"
+
+    chown -R "${FIRST_USER_NAME}:${FIRST_USER_NAME}" "${SHARE_DIR}"
+else
+    echo "No first user. Docker setup is in ${SHARE_DIR}."
+fi

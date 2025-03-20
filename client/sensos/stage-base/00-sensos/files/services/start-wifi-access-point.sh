@@ -65,4 +65,7 @@ nmcli device wifi hotspot \
     exit 1
 }
 
+systemctl enable ssh
+systemctl start ssh
+
 echo "✅ WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"
