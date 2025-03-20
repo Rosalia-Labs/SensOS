@@ -71,6 +71,10 @@ def initialize_schema():
     cursor.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
     cursor.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
     cursor.execute(
+        f"ALTER DATABASE {os.environ.get('POSTGRES_DB', 'postgres')} SET search_path TO sensos, public;"
+    )
+
+    cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.recording_sessions (
             id SERIAL PRIMARY KEY,
