@@ -59,6 +59,11 @@ def initialize_schema():
 
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE EXTENSION IF NOT EXISTS vector;
+                """
+            )
             # Table for embeddings
             cur.execute(
                 """
