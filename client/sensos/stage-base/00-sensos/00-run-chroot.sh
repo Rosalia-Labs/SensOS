@@ -44,7 +44,12 @@ install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
 KEYS_DIR=/usr/local/share/sensos
-install -m 600 "${KEYS_DIR}/sensos_admin_authorized_keys" "${TARGET_HOME}/.ssh"
+install -m 600 "${KEYS_DIR}/sensos_admin_authorized_keys" "${TARGET_HOME}/.ssh/authorized_keys"
 rm -f "${KEYS_DIR}/sensos_admin_authorized_keys"
+chown -R "${USERNAME}:${USERNAME}" "${TARGET_HOME}/.ssh"
 
 passwd -l "$USERNAME"
+
+if [ -n "${FIRST_USER_NAME}" ]; then
+    chown -R "${FIRST_USER_NAME}:${FIRST_USER_NAME}" /usr/local/share/sensos
+fi

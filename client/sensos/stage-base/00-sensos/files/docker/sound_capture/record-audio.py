@@ -31,6 +31,7 @@ AUDIO_FORMAT = np.int16  # 16-bit PCM
 
 # Determine the audio source: "record" for live capture or "random" for test signal.
 AUDIO_SOURCE = os.environ.get("AUDIO_SOURCE", "record").lower()
+AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", None)
 
 # Get the recording duration (in seconds) from environment variables.
 try:
@@ -52,6 +53,21 @@ buffer = np.zeros(SEGMENT_SIZE, dtype=AUDIO_FORMAT)
 
 # Queue for audio segments
 audio_queue = queue.Queue()
+
+
+def get_device_by_name(name):
+    """Finds a device matching the given name or returns the exact ALSA string."""
+    devices = sd.query_devices()
+
+    # If the user provides an exact ALSA device string (e.g., "hw:1,0"), return it
+    if name.startswith("hw:"):
+        return name
+
+    # Otherwise, match name loosely
+    for idx, dev in enumerate(devices):
+        if name.lower() in dev["name"].lower():
+            return idx
+    return None  # Not found
 
 
 def get_frequency_bins(min_freq, max_freq, num_bins):
@@ -338,8 +354,10 @@ def callback(indata, frames, time_info, status):
     if status:
         print(status)
     # Shift buffer left and append new data.
-    buffer = np.roll(buffer, -STEP_SIZE_FRAMES)
-    buffer[-STEP_SIZE_FRAMES:] = indata[:, 0]
+    # buffer = np.roll(buffer, -STEP_SIZE_FRAMES)
+    buffer[: -indata.shape[0]] = buffer[indata.shape[0] :]
+    # buffer[-STEP_SIZE_FRAMES:] = indata[:, 0]
+    buffer[-indata.shape[0] :] = indata[:, 0]
     # Store precise timestamps for this segment.
     start_timestamp = datetime.datetime.utcnow()
     end_timestamp = start_timestamp + datetime.timedelta(seconds=SEGMENT_DURATION)
@@ -352,11 +370,27 @@ def run_recording():
     start_time = time.time()
 
     if AUDIO_SOURCE == "record":
+        # If AUDIO_DEVICE is set as a name (e.g., "USB Audio"), resolve it to an index
+        if AUDIO_DEVICE and not AUDIO_DEVICE.isdigit():
+            resolved_device = get_device_by_name(AUDIO_DEVICE)
+            if resolved_device is not None:
+                AUDIO_DEVICE = resolved_device
+            else:
+                print(
+                    f"Warning: Audio device '{AUDIO_DEVICE}' not found. Using default."
+                )
+                AUDIO_DEVICE = None  # Default to system-selected device
+
+        print(
+            f"Using audio device: {AUDIO_DEVICE if AUDIO_DEVICE is not None else 'Default'}"
+        )
+
         try:
             with sd.InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype=AUDIO_FORMAT,
+                device=AUDIO_DEVICE,
                 callback=callback,
             ):
                 print(

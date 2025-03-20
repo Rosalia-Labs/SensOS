@@ -28,6 +28,7 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       AUDIO_SOURCE: ${AUDIO_SOURCE}
+      AUDIO_DEVICE: ${AUDIO_DEVICE}
       RECORD_DURATION: ${RECORD_DURATION}
     devices:
       - /dev/snd:/dev/snd

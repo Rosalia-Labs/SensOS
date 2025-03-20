@@ -41,8 +41,6 @@ fi
 if [[ -n "$COUNTRY_CODE" && "$COUNTRY_CODE" != "unset" ]]; then
     echo "Setting WiFi country code to $COUNTRY_CODE..." | tee -a "$LOG_FILE"
     sudo raspi-config nonint do_wifi_country "$COUNTRY_CODE"
-else
-    echo "Skipping WiFi country code change (not set in configuration)." | tee -a "$LOG_FILE"
 fi
 
 if rfkill list wifi | grep -q "Soft blocked: yes"; then
@@ -82,14 +80,5 @@ if [[ -z "$HOTSPOT_IP" ]]; then
 fi
 
 echo "Hotspot host IP is $HOTSPOT_IP" | tee -a "$LOG_FILE"
-
-# Configure dnsmasq for device.local resolution
-DNSMASQ_CONF="/etc/dnsmasq.d/hotspot.conf"
-echo "Configuring dnsmasq for local hostname resolution..." | tee -a "$LOG_FILE"
-echo "address=/device.local/$HOTSPOT_IP" | sudo tee "$DNSMASQ_CONF" >/dev/null
-
-# Restart dnsmasq to apply changes
-sudo systemctl restart dnsmasq
-echo "✅ dnsmasq restarted. device.local should now resolve to $HOTSPOT_IP." | tee -a "$LOG_FILE"
 
 echo "✅ WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"

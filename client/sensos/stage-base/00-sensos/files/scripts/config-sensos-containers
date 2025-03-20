@@ -8,6 +8,7 @@ POSTGRES_PASSWORD="sensos"
 DB_HOST="sensos-client-database"
 DB_PORT="5432"
 AUDIO_SOURCE="record"
+AUDIO_DEVICE="" # Default to empty (system default)
 RECORD_DURATION="0"
 
 usage() {
@@ -21,6 +22,7 @@ Options:
   --db-host <value>             Set DB_HOST (default: sensos-client-database)
   --db-port <value>             Set DB_PORT (default: 5432)
   --audio-source <value>        Set AUDIO_SOURCE (default: record)
+  --audio-device <value>        Set AUDIO_DEVICE (default: system default)
   --record-duration <value>     Set RECORD_DURATION (default: 0)
   --help                        Show this help message
 EOF
@@ -53,6 +55,10 @@ while [[ "$#" -gt 0 ]]; do
         AUDIO_SOURCE="$2"
         shift 2
         ;;
+    --audio-device)
+        AUDIO_DEVICE="$2"
+        shift 2
+        ;;
     --record-duration)
         RECORD_DURATION="$2"
         shift 2
@@ -83,6 +89,7 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 DB_HOST=${DB_HOST}
 DB_PORT=${DB_PORT}
 AUDIO_SOURCE=${AUDIO_SOURCE}
+AUDIO_DEVICE=${AUDIO_DEVICE}
 RECORD_DURATION=${RECORD_DURATION}
 EOF
 

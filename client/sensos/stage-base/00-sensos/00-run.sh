@@ -52,4 +52,4 @@ cp -r "$DOCKER_DIR/birdnet" "${SHARE_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-eeprom-once" "${ROOTFS_DIR}/etc/init.d/"
 
 AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
-install -m 777 "$AUTHORIZED_KEYS" "${SHARE_DIR}"
+install -m 600 "$AUTHORIZED_KEYS" "${SHARE_DIR}/sensos_admin_authorized_keys"
