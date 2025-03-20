@@ -34,7 +34,7 @@ if [ -n "${FIRST_USER_NAME}" ]; then
 fi
 
 USERNAME="sensos-admin"
-TARGET_HOME="/home/$USERNAME"
+USER_HOME="/home/$USERNAME"
 
 if ! id "$USERNAME" &>/dev/null; then
     useradd -m -s /bin/bash -G sudo -c "Sensos Admin" "$USERNAME"
@@ -44,16 +44,22 @@ fi
 install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
-KEYS_DIR=/usr/local/share/sensos
-mkdir -p "${TARGET_HOME}/.ssh"
-mv "${KEYS_DIR}/sensos_admin_authorized_keys" "${TARGET_HOME}/.ssh/authorized_keys"
-chmod 600 "${TARGET_HOME}/.ssh/authorized_keys"
-chown -R "${USERNAME}:${USERNAME}" "${TARGET_HOME}/.ssh"
+SHARE_DIR=/usr/local/share/sensos
+
+mkdir -p "${USER_HOME}/.ssh"
+mv "${SHARE_DIR}/sensos_admin_authorized_keys" "${USER_HOME}/.ssh/authorized_keys"
+chmod 600 "${USER_HOME}/.ssh/authorized_keys"
+chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/.ssh"
+
+mv -f ${SHARE_DIR}/docker ${USER_HOME}
+chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/docker"
 
 passwd -l "$USERNAME"
 
 if [ -n "${FIRST_USER_NAME}" ]; then
-    chown -R "${FIRST_USER_NAME}:${FIRST_USER_NAME}" "${KEYS_DIR}"
+    chown -R "${FIRST_USER_NAME}:${FIRST_USER_NAME}" "${SHARE_DIR}"
 fi
 
-apt-get remove --purge dphys-swapfile
+dphys-swapfile swapoff
+systemctl disable dphys-swapfile
+dphys-swapfile uninstall

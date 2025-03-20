@@ -76,7 +76,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # Directory where the docker-compose file resides
-DOCKER_COMPOSE_DIR="/usr/local/share/sensos"
+DOCKER_COMPOSE_DIR="${HOME}/docker"
 
 # Ensure the directory exists
 mkdir -p "$DOCKER_COMPOSE_DIR"

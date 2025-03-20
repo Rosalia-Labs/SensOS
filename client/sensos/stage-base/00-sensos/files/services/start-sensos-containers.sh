@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# Ensure SENSOS_USER is set
+if [[ -z "$SENSOS_USER" ]]; then
+    echo "ERROR: SENSOS_USER is not set. Exiting."
+    exit 1
+fi
+
 # Default flags for docker-compose
 DETACH_FLAG=""
 BUILD_FLAG=""
@@ -40,7 +46,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # Directory where the docker-compose file (and .env file) reside
-DOCKER_COMPOSE_DIR="/usr/local/share/sensos"
+DOCKER_COMPOSE_DIR="/home/${SENSOS_USER}/docker"
 
 echo "Changing working directory to ${DOCKER_COMPOSE_DIR}"
 cd "$DOCKER_COMPOSE_DIR"

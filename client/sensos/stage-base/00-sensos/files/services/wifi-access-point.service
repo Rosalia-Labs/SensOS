@@ -9,7 +9,7 @@ Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-wifi-access-point.sh
-ExecStop=/bin/bash -c 'nmcli connection down accesspoint; sleep 3; nmcli device disconnect $INTERFACE || true'
+ExecStop=/bin/bash -c 'nmcli connection down accesspoint || true'
 Restart=on-failure
 RestartSec=10
 
