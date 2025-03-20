@@ -56,4 +56,4 @@ echo "Changing working directory to ${DOCKER_COMPOSE_DIR}"
 cd "$DOCKER_COMPOSE_DIR"
 
 echo "Running: docker compose up $DETACH_FLAG $BUILD_FLAG"
-docker-compose up $DETACH_FLAG $BUILD_FLAG
+COMPOSE_BAKE=true docker compose up $DETACH_FLAG $BUILD_FLAG
