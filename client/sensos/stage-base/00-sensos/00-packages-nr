@@ -1,6 +1,8 @@
 wireguard
 wireguard-tools
 openresolv
+python3-psutil
+python3-requests
 
 
 

@@ -12,7 +12,7 @@ if [[ -z "$SENSOS_USER" ]]; then
 fi
 
 # Default flags for docker-compose
-DETACH_FLAG=""
+DETACH_FLAG="-d"
 BUILD_FLAG=""
 
 usage() {
@@ -30,7 +30,7 @@ EOF
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
     --no-detach)
-        DETACH_FLAG="-d"
+        DETACH_FLAG=""
         shift
         ;;
     --rebuild-containers)

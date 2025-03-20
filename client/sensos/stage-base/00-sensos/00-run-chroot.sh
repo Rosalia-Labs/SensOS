@@ -26,8 +26,6 @@ apt-get update &&
         containerd.io \
         docker-buildx-plugin \
         docker-compose-plugin \
-        docker-buildx-plugin \
-        docker-compose-plugin \
         qemu-user-static
 
 if [ -n "${FIRST_USER_NAME}" ]; then

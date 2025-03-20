@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
                 create_wireguard_keys_table(cur)
                 create_ssh_keys_table(cur)
                 create_client_status_table(cur)
+                create_hardware_profile_table(cur)
                 network_id = create_initial_network(cur)
                 if network_id:
                     add_peers_to_wireguard()
@@ -687,6 +688,20 @@ def update_version_history_table(cur):
             os.getenv("GIT_TAG", "Unknown"),
             os.getenv("GIT_DIRTY", "false"),
         ),
+    )
+
+
+def create_hardware_profile_table(cur):
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.hardware_profiles (
+            id SERIAL PRIMARY KEY,
+            peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+            profile_json JSONB NOT NULL,
+            uploaded_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(peer_id)
+        );
+    """
     )
 
 
@@ -1331,3 +1346,56 @@ def get_network_info(
         "wg_port": result[3],
         "wg_public_key": result[4],
     }
+
+
+class HardwareProfile(BaseModel):
+    wg_ip: str  # Used internally to link to peer
+    hostname: str
+    model: str
+    kernel_version: str
+    cpu: dict
+    firmware: dict
+    memory: dict
+    disks: dict
+    usb_devices: str
+    network_interfaces: dict
+
+
+@app.post("/upload-hardware-profile")
+def upload_hardware_profile(
+    profile: HardwareProfile,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    profile_data = profile.dict()
+    wg_ip = profile_data.pop("wg_ip")  # Extract wg_ip from profile
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Internally fetch peer_id; do not expose it
+            cur.execute(
+                "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;", (wg_ip,)
+            )
+            peer = cur.fetchone()
+
+            if not peer:
+                raise HTTPException(
+                    status_code=404, detail=f"Peer with IP '{wg_ip}' not found."
+                )
+
+            peer_id = peer[0]
+
+            # Store hardware profile linked internally via peer_id
+            cur.execute(
+                """
+                INSERT INTO sensos.hardware_profiles (peer_id, profile_json)
+                VALUES (%s, %s)
+                ON CONFLICT (peer_id) DO UPDATE
+                SET profile_json = EXCLUDED.profile_json, uploaded_at = NOW();
+                """,
+                (peer_id, json.dumps(profile_data)),
+            )
+            conn.commit()
+
+    logger.info(f"✅ Hardware profile stored for peer IP '{wg_ip}'.")
+
+    return {"status": "success", "wg_ip": wg_ip}

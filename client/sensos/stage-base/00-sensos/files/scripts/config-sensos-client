@@ -9,6 +9,9 @@ import subprocess
 import base64
 import json
 import shutil
+import socket
+import psutil
+
 
 WG_DIR = "/etc/wireguard"
 
@@ -70,6 +73,11 @@ def parse_args():
         "--no-connectivity-checks",
         action="store_true",
         help="Indicate device has no networking; skip connectivity check service",
+    )
+    parser.add_argument(
+        "--note",
+        default="",
+        help="Optional note or description to register with the device (default: empty)",
     )
     return parser.parse_args()
 
@@ -234,7 +242,7 @@ def compute_hostname(network_name, wg_ip):
 
 
 def register_peer(
-    config_server, port, network_name, wg_public_key, api_password, subnet
+    config_server, port, network_name, wg_public_key, api_password, subnet, note=""
 ):
     """Register the device with the WireGuard server and return its assigned IP and connection details."""
     if wg_public_key is None:
@@ -250,12 +258,15 @@ def register_peer(
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
     response = requests.post(
         server_url,
-        json={"network_name": network_name, "subnet_offset": subnet},
+        json={
+            "network_name": network_name,
+            "subnet_offset": subnet,
+            "note": note if note else None,
+        },
         headers=headers,
     )
 
     print(f"Status Code: {response.status_code}")
-    print(f"Response Headers: {response.headers}")
     print(f"Response Text: {response.text}")
 
     if response.status_code != 200:
@@ -685,7 +696,9 @@ def configure_wireguard(args, api_password):
             wg_public_key,
             api_password,
             args.subnet,
+            note=args.note,
         )
+
         if not wg_ip:
             print(
                 "❌ Peer registration failed. Skipping WireGuard configuration.",
@@ -992,6 +1005,63 @@ def setup_logging():
     sys.stderr = sys.stdout  # Redirect stderr to the same Tee object
 
 
+def generate_hardware_profile():
+    def cmd_output(cmd):
+        return subprocess.check_output(cmd, shell=True, text=True).strip()
+
+    profile = {
+        "hostname": socket.gethostname(),
+        "model": cmd_output("cat /proc/device-tree/model"),
+        "kernel_version": cmd_output("uname -a"),
+        "cpu": {
+            "model": cmd_output(
+                "cat /proc/cpuinfo | grep 'Model' | awk -F': ' '{print $2}'"
+            ),
+            "revision": cmd_output(
+                "cat /proc/cpuinfo | grep 'Revision' | awk -F': ' '{print $2}'"
+            ),
+            "serial": cmd_output(
+                "cat /proc/cpuinfo | grep 'Serial' | awk -F': ' '{print $2}'"
+            ),
+        },
+        "firmware": {
+            "bootloader": cmd_output("vcgencmd bootloader_version"),
+            "firmware": cmd_output("vcgencmd version"),
+        },
+        "memory": {
+            "total": psutil.virtual_memory().total,
+            "available": psutil.virtual_memory().available,
+        },
+        "disks": json.loads(cmd_output("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
+        "usb_devices": cmd_output("lsusb"),
+        "network_interfaces": {
+            iface: [addr.address for addr in addrs if addr.family.name == "AF_INET"]
+            for iface, addrs in psutil.net_if_addrs().items()
+        },
+    }
+
+    return profile
+
+
+def upload_hardware_profile(config_server, port, api_password, wg_ip):
+    profile = generate_hardware_profile()
+    profile["wg_ip"] = wg_ip
+
+    headers = {
+        "Authorization": f"Basic {get_basic_auth(api_password)}",
+        "Content-Type": "application/json",
+    }
+
+    url = f"http://{config_server}:{port}/upload-hardware-profile"
+
+    response = requests.post(url, headers=headers, json=profile)
+
+    if response.ok:
+        print(f"Hardware profile uploaded successfully for {wg_ip}.")
+    else:
+        print(f"Upload failed: {response.status_code}, {response.text}")
+
+
 def main():
     setup_logging()
     check_sensos_user()
@@ -1033,6 +1103,8 @@ def main():
         print(
             "ℹ️ No-connectivity-checks mode active. Skipping connectivity check service enablement."
         )
+
+    upload_hardware_profile(args.config_server, args.port, api_password, client_wg_ip)
 
     print("✅ Configuration complete. Reboot now and check connectivity.")
 

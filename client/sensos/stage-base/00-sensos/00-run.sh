@@ -24,7 +24,7 @@ install -m 755 "${SCRIPTS_DIR}/list-registry-images" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/push-registry-images" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-sensos-client" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-sensos-modem" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/config-eeprom" "${BIN_DIR}"
+install -m 755 "${SCRIPTS_DIR}/config-geekworm-ups" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/show-eeprom" "${BIN_DIR}"
 
 # Install service files
