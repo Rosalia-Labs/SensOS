@@ -207,7 +207,7 @@ def main():
 
         if not unprocessed_audio:
             print("No new audio. Sleeping...")
-            time.sleep(10)
+            time.sleep(60)
             continue
 
         for segment_id, audio_bytes in unprocessed_audio:

@@ -61,7 +61,7 @@ def get_device_by_name(name):
     return None  # Not found
 
 
-def connect_with_retry(max_attempts=10, delay=3):
+def connect_with_retry(max_attempts=10, delay=5):
     """Try to connect to the database, retrying if the connection is refused."""
     for attempt in range(max_attempts):
         try:

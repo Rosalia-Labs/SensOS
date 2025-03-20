@@ -164,8 +164,8 @@ def main():
         print("Checking for new raw audio segments to analyze...")
         segments = get_unprocessed_segments(conn)
         if not segments:
-            print("No new segments found. Sleeping for 10 seconds...")
-            time.sleep(10)
+            print("No new segments found. Sleeping for 60 seconds...")
+            time.sleep(60)
             continue
 
         for segment_id, audio_bytes in segments:
