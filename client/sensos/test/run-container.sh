@@ -32,3 +32,4 @@ docker run --rm -it \
     --device /dev/net/tun \
     -v /lib/modules:/lib/modules:ro \
     "$DOCKER_IMAGE"
+

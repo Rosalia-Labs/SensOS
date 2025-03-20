@@ -1,3 +1,4 @@
+import logging
 import sounddevice as sd
 import numpy as np
 import signal
@@ -10,6 +11,9 @@ import json
 import threading
 import datetime
 import os
+
+# Configure logging.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 # Get connection details from environment variables, with defaults for testing.
 db_name = os.environ.get("POSTGRES_DB", "postgres")
@@ -39,42 +43,22 @@ try:
 except ValueError:
     RECORD_DURATION = 0
 
-# Define STFT parameters
-N_FFT = 2048  # FFT window size
-HOP_LENGTH = 512  # Overlap between frames
-N_BINS = int(os.environ.get("N_BINS", "10"))  # Number of logarithmic frequency bins
-
-# Define bin counts for full-spectrum and bioacoustic-spectrum
-FULL_SPECTRUM_BINS = N_BINS  # Example: full range
-BIOACOUSTIC_BINS = N_BINS  # Example: 1-8 kHz range
-
 # Circular buffer for overlapping audio storage
 buffer = np.zeros(SEGMENT_SIZE, dtype=AUDIO_FORMAT)
 
-# Queue for audio segments
-audio_queue = queue.Queue()
+# Queue for audio segments (bounded to prevent memory growth)
+audio_queue = queue.Queue(maxsize=50)
 
 
 def get_device_by_name(name):
     """Finds a device matching the given name or returns the exact ALSA string."""
     devices = sd.query_devices()
-
-    # If the user provides an exact ALSA device string (e.g., "hw:1,0"), return it
     if name.startswith("hw:"):
         return name
-
-    # Otherwise, match name loosely
     for idx, dev in enumerate(devices):
         if name.lower() in dev["name"].lower():
             return idx
     return None  # Not found
-
-
-def get_frequency_bins(min_freq, max_freq, num_bins):
-    """Generate logarithmic frequency bin boundaries."""
-    return np.logspace(
-        np.log2(min_freq), np.log2(max_freq), num_bins + 1, base=2
-    ).tolist()
 
 
 def connect_with_retry(max_attempts=10, delay=3):
@@ -82,10 +66,10 @@ def connect_with_retry(max_attempts=10, delay=3):
     for attempt in range(max_attempts):
         try:
             conn = psycopg.connect(DB_PARAMS)
-            print("Connected to database!")
+            logging.info("Connected to database!")
             return conn
         except psycopg.OperationalError as e:
-            print(f"Attempt {attempt + 1} failed: {e}")
+            logging.warning(f"Attempt {attempt + 1} failed: {e}")
             time.sleep(delay)
     raise Exception("Failed to connect to database after multiple attempts")
 
@@ -96,11 +80,10 @@ cursor = conn.cursor()
 
 
 def initialize_schema():
-    """Initializes the database schema for recording sessions and audio segments."""
+    """Initializes the database schema for recording sessions and raw audio."""
     cursor.execute(
         """
         CREATE EXTENSION IF NOT EXISTS postgis;
-        CREATE EXTENSION IF NOT EXISTS vector;
         CREATE SCHEMA IF NOT EXISTS sensos;
         """
     )
@@ -113,9 +96,7 @@ def initialize_schema():
             sample_rate INT NOT NULL,
             bit_depth INT NOT NULL,
             channel_count INT NOT NULL,
-            device TEXT,
-            full_freq_bins JSONB,
-            bio_freq_bins JSONB
+            device TEXT
         );
         """
     )
@@ -125,11 +106,8 @@ def initialize_schema():
         CREATE TABLE IF NOT EXISTS sensos.recordings (
             id SERIAL PRIMARY KEY,
             session_id INTEGER REFERENCES sensos.recording_sessions(id) ON DELETE CASCADE,
-            timestamp TIMESTAMPTZ NOT NULL,
-            end_timestamp TIMESTAMPTZ NOT NULL,
-            peak_amplitude FLOAT,
-            rms FLOAT,
-            snr FLOAT
+            start TIMESTAMPTZ NOT NULL,
+            end TIMESTAMPTZ NOT NULL
         );
         """
     )
@@ -142,24 +120,8 @@ def initialize_schema():
         );
         """
     )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS sensos.full_spectra (
-            segment_id INTEGER PRIMARY KEY REFERENCES sensos.recordings(id) ON DELETE CASCADE,
-            spectrum vector({FULL_SPECTRUM_BINS}) NOT NULL
-        );
-        """
-    )
-    cursor.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS sensos.bioacoustic_spectra (
-            segment_id INTEGER PRIMARY KEY REFERENCES sensos.recordings(id) ON DELETE CASCADE,
-            spectrum vector({BIOACOUSTIC_BINS}) NOT NULL
-        );
-        """
-    )
     conn.commit()
-    print("Database schema initialized.")
+    logging.info("Database schema initialized.")
 
 
 # Initialize the schema at startup.
@@ -168,10 +130,6 @@ initialize_schema()
 
 def start_new_session():
     """Creates a new recording session in the database and returns session ID."""
-
-    full_bins = get_frequency_bins(50, SAMPLE_RATE // 2, FULL_SPECTRUM_BINS)
-    bio_bins = get_frequency_bins(1000, 8000, BIOACOUSTIC_BINS)
-
     cursor.execute(
         """
         INSERT INTO sensos.recording_sessions (
@@ -179,15 +137,11 @@ def start_new_session():
             sample_rate,
             bit_depth,
             channel_count,
-            device,
-            full_freq_bins,
-            bio_freq_bins
+            device
         )
         VALUES (
             NOW(),
-            %s, %s, %s, %s,
-            %s::jsonb,
-            %s::jsonb
+            %s, %s, %s, %s
         )
         RETURNING id;
         """,
@@ -195,13 +149,7 @@ def start_new_session():
             SAMPLE_RATE,
             BIT_DEPTH,
             CHANNELS,
-            (
-                "Raspberry Pi Built-in Mic"
-                if AUDIO_SOURCE == "record"
-                else "Test Random Signal"
-            ),
-            json.dumps(full_bins),
-            json.dumps(bio_bins),
+            AUDIO_DEVICE,
         ),
     )
     session_id = cursor.fetchone()[0]
@@ -209,76 +157,14 @@ def start_new_session():
     return session_id
 
 
-def compute_binned_spectrum(audio_segment, min_freq=None, max_freq=None, num_bins=10):
-    """Compute integrated sound energy across logarithmic frequency bins within a given range, then convert to decibels."""
-    # Determine frequency range
-    if min_freq is None or min_freq <= 0:
-        min_freq = 50  # Default to 50 Hz
-    if max_freq is None or max_freq <= 0:
-        max_freq = SAMPLE_RATE // 2  # Nyquist frequency
-
-    # Compute power spectrogram
-    S = (
-        np.abs(
-            librosa.stft(
-                audio_segment.astype(float), n_fft=N_FFT, hop_length=HOP_LENGTH
-            )
-        )
-        ** 2
-    )
-    freqs = librosa.fft_frequencies(sr=SAMPLE_RATE, n_fft=N_FFT)
-
-    # Define logarithmic bins within the selected frequency range
-    bins = get_frequency_bins(min_freq, max_freq, num_bins + 1)
-    power = np.zeros(num_bins, dtype=np.float32)
-
-    for i in range(num_bins):
-        mask = (freqs >= bins[i]) & (freqs < bins[i + 1])
-        power[i] = np.sum(S[mask, :])  # Sum energy in bin
-
-    db = librosa.power_to_db(power, ref=1.0)
-
-    return db
-
-
-def compute_audio_features(audio_segment):
-    """Compute peak amplitude, RMS, and SNR safely."""
-    if audio_segment.size == 0:
-        print("Warning: Received an empty audio segment.")
-        return 0.0, 0.0, 0.0
-
-    if not np.all(np.isfinite(audio_segment)):
-        print("Warning: audio_segment contains NaN or Inf values.")
-        return 0.0, 0.0, 0.0
-
-    peak_amplitude = np.max(np.abs(audio_segment))
-
-    # Convert to float before squaring to prevent integer overflow
-    rms = np.sqrt(np.mean(audio_segment.astype(np.float32) ** 2))
-
-    snr = 0.0
-    if rms > 1e-12:  # Avoid divide-by-zero
-        snr = 20 * np.log10(peak_amplitude / rms)
-
-    return peak_amplitude, rms, snr
-
-
-def store_audio(segment, start_timestamp, end_timestamp, session_id):
-    """Stores a 3-second audio segment with metadata, raw data, and both full and bioacoustic spectra."""
-    peak_amplitude, rms, snr = compute_audio_features(segment)
-
-    # Compute both full-spectrum and bioacoustic-spectrum vectors
-    full_spectrum = compute_binned_spectrum(segment, num_bins=FULL_SPECTRUM_BINS)
-    bioacoustic_spectrum = compute_binned_spectrum(
-        segment, min_freq=1000, max_freq=8000, num_bins=BIOACOUSTIC_BINS
-    )
-
+def store_audio(segment, start, end, session_id):
+    """Stores a 3-second raw audio segment with metadata."""
     cursor.execute(
         """
-        INSERT INTO sensos.recordings (session_id, timestamp, end_timestamp, peak_amplitude, rms, snr)
-        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;
+        INSERT INTO sensos.recordings (session_id, start, end)
+        VALUES (%s, %s, %s) RETURNING id;
         """,
-        (session_id, start_timestamp, end_timestamp, peak_amplitude, rms, snr),
+        (session_id, start, end),
     )
     segment_id = cursor.fetchone()[0]
 
@@ -289,32 +175,15 @@ def store_audio(segment, start_timestamp, end_timestamp, session_id):
         """,
         (segment_id, psycopg.Binary(segment.tobytes())),
     )
-
-    cursor.execute(
-        """
-        INSERT INTO sensos.full_spectra (segment_id, spectrum)
-        VALUES (%s, %s);
-        """,
-        (segment_id, full_spectrum.tolist()),
-    )
-
-    cursor.execute(
-        """
-        INSERT INTO sensos.bioacoustic_spectra (segment_id, spectrum)
-        VALUES (%s, %s);
-        """,
-        (segment_id, bioacoustic_spectrum.tolist()),
-    )
-
     conn.commit()
-    print(f"Stored segment {segment_id} from {start_timestamp} to {end_timestamp}.")
+    logging.info(f"Stored segment {segment_id} from {start} to {end}.")
 
 
 # Start a new session at script startup.
 session_id = start_new_session()
-print(f"Started recording session {session_id} using mode: {AUDIO_SOURCE}")
+logging.info(f"Started recording session {session_id} using mode: {AUDIO_SOURCE}")
 
-# Start the background thread.
+# Start the background thread that writes audio segments to the database.
 db_thread = threading.Thread(
     target=lambda: [store_audio(*audio_queue.get(), session_id) for _ in iter(int, 1)],
     daemon=True,
@@ -324,7 +193,7 @@ db_thread.start()
 
 def cleanup():
     """Gracefully shutdown the recording process."""
-    print("\nShutting down... Flushing remaining audio data.")
+    logging.info("Shutting down... Flushing remaining audio data.")
 
     # Stop background thread gracefully
     audio_queue.put(None)
@@ -333,14 +202,13 @@ def cleanup():
     # Close database connections
     cursor.close()
     conn.close()
-    print("Database connection closed. Exiting.")
-
+    logging.info("Database connection closed. Exiting.")
     sys.exit(0)  # Ensure clean exit
 
 
 def wait_for_container_stop():
     """Keep container running until stopped, while handling cleanup signals."""
-    print("Recording complete. Waiting indefinitely for container shutdown.")
+    logging.info("Recording complete. Waiting indefinitely for container shutdown.")
     try:
         while True:
             time.sleep(1)
@@ -349,20 +217,20 @@ def wait_for_container_stop():
 
 
 def callback(indata, frames, time_info, status):
-    """Processes incoming audio in real-time."""
     global buffer
     if status:
-        print(status)
+        logging.warning(status)
     # Shift buffer left and append new data.
-    # buffer = np.roll(buffer, -STEP_SIZE_FRAMES)
     buffer[: -indata.shape[0]] = buffer[indata.shape[0] :]
-    # buffer[-STEP_SIZE_FRAMES:] = indata[:, 0]
     buffer[-indata.shape[0] :] = indata[:, 0]
-    # Store precise timestamps for this segment.
+    # Compute timestamps.
     start_timestamp = datetime.datetime.utcnow()
     end_timestamp = start_timestamp + datetime.timedelta(seconds=SEGMENT_DURATION)
-    # Send segment to the queue (non-blocking).
-    audio_queue.put((buffer.copy(), start_timestamp, end_timestamp))
+    # Attempt to add to the queue.
+    try:
+        audio_queue.put((buffer.copy(), start_timestamp, end_timestamp), block=False)
+    except queue.Full:
+        logging.warning("Queue full: dropping segment")
 
 
 def run_recording():
@@ -370,19 +238,17 @@ def run_recording():
     start_time = time.time()
 
     if AUDIO_SOURCE == "record":
-        # If AUDIO_DEVICE is set as a name (e.g., "USB Audio"), resolve it to an index
-        if AUDIO_DEVICE and not AUDIO_DEVICE.isdigit():
-            resolved_device = get_device_by_name(AUDIO_DEVICE)
+        device = AUDIO_DEVICE
+        if device and not device.isdigit():
+            resolved_device = get_device_by_name(device)
             if resolved_device is not None:
-                AUDIO_DEVICE = resolved_device
+                device = resolved_device
             else:
-                print(
-                    f"Warning: Audio device '{AUDIO_DEVICE}' not found. Using default."
-                )
-                AUDIO_DEVICE = None  # Default to system-selected device
+                logging.warning(f"Audio device '{device}' not found. Using default.")
+                device = None  # Default to system-selected device
 
-        print(
-            f"Using audio device: {AUDIO_DEVICE if AUDIO_DEVICE is not None else 'Default'}"
+        logging.info(
+            f"Using audio device: {device if device is not None else 'Default'}"
         )
 
         try:
@@ -390,10 +256,10 @@ def run_recording():
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype=AUDIO_FORMAT,
-                device=AUDIO_DEVICE,
+                device=device,
                 callback=callback,
             ):
-                print(
+                logging.info(
                     "Recording... Press Ctrl+C to stop (or wait for RECORD_DURATION)."
                 )
                 while True:
@@ -402,16 +268,16 @@ def run_recording():
                         RECORD_DURATION > 0
                         and time.time() - start_time >= RECORD_DURATION
                     ):
-                        print(
+                        logging.info(
                             f"RECORD_DURATION {RECORD_DURATION} reached. Waiting indefinitely."
                         )
                         break
         except Exception as e:
-            print(f"Audio capture failed: {e}")
+            logging.error(f"Audio capture failed: {e}")
             raise
 
     elif AUDIO_SOURCE == "random":
-        print("Generating random test signal. Press Ctrl+C to stop.")
+        logging.info("Generating random test signal. Press Ctrl+C to stop.")
         try:
             while True:
                 random_segment = np.random.randint(
@@ -422,16 +288,14 @@ def run_recording():
                     seconds=SEGMENT_DURATION
                 )
                 audio_queue.put((random_segment, start_timestamp, end_timestamp))
-
                 time.sleep(STEP_SIZE)
-
                 if RECORD_DURATION > 0 and time.time() - start_time >= RECORD_DURATION:
-                    print(
+                    logging.info(
                         f"RECORD_DURATION {RECORD_DURATION} reached. Waiting indefinitely."
                     )
                     break
         except KeyboardInterrupt:
-            print("\nStopping test signal generation...")
+            logging.info("Stopping test signal generation...")
 
     elif AUDIO_SOURCE == "file":
         try:
@@ -439,45 +303,35 @@ def run_recording():
                 "test.wav", sr=SAMPLE_RATE, mono=True, dtype=np.float32
             )
             if sr != SAMPLE_RATE:
-                print(f"Warning: Resampling from {sr} Hz to {SAMPLE_RATE} Hz")
+                logging.warning(f"Resampling from {sr} Hz to {SAMPLE_RATE} Hz")
                 audio_data = librosa.resample(
                     audio_data, orig_sr=sr, target_sr=SAMPLE_RATE
                 )
-
             # Convert float32 to 16-bit PCM
             audio_data = (audio_data * 32767).astype(AUDIO_FORMAT)
-
-            # Read in 3-second segments
             start_idx = 0
             total_frames = len(audio_data)
             start_time = datetime.datetime.utcnow()
-
             while start_idx + SEGMENT_SIZE <= total_frames:
                 segment = audio_data[start_idx : start_idx + SEGMENT_SIZE]
                 end_time = start_time + datetime.timedelta(seconds=SEGMENT_DURATION)
-
                 audio_queue.put((segment, start_time, end_time))
-
                 start_idx += STEP_SIZE_FRAMES
                 start_time = start_time + datetime.timedelta(seconds=STEP_SIZE)
-
                 if RECORD_DURATION > 0 and (start_idx / SAMPLE_RATE) >= RECORD_DURATION:
-                    print(
+                    logging.info(
                         f"RECORD_DURATION {RECORD_DURATION} reached. Stopping file playback."
                     )
                     break
-
-            print("Finished reading file. Waiting indefinitely.")
+            logging.info("Finished reading file. Waiting indefinitely.")
             wait_for_container_stop()
-
         except Exception as e:
-            print(f"Error reading audio file: {e}")
+            logging.error(f"Error reading audio file: {e}")
             raise
 
     else:
         raise ValueError(f"Unknown AUDIO_SOURCE: {AUDIO_SOURCE}")
 
-    # Wait for container to stop
     wait_for_container_stop()
 
 

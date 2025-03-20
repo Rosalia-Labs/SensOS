@@ -45,7 +45,23 @@ services:
     restart: always
     depends_on:
       - sensos-client-database
-      - sensos-client-sound-capture
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+  sensos-sound-analyzer:
+    build: ./sound_analyzer
+    container_name: sensos-client-sound-analyzer
+    restart: always
+    depends_on:
+      - sensos-client-database
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}

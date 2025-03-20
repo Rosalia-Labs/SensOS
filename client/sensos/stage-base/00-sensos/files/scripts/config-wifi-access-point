@@ -104,23 +104,16 @@ if [[ ${#PASSWORD} -lt 8 || ${#PASSWORD} -gt 63 ]]; then
     exit 1
 fi
 
-# Auto-detect WiFi interface if not specified
-if [[ -z "$INTERFACE" ]]; then
-    INTERFACE=$(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="wifi" {print $1; exit}')
-    INTERFACE=${INTERFACE:-wlan0} # Default to wlan0 if no interface found
-    echo "Auto-detected WiFi interface: '$INTERFACE'"
-fi
-
 # Save configuration
 {
     echo "[WiFi]"
     echo "ssid = $SSID"
     echo "password = $PASSWORD"
-    echo "interface = $INTERFACE"
+    if [[ -n "$INTERFACE" ]]; then
+        echo "interface = $INTERFACE"
+    fi
     echo "band = $BAND"
     echo "channel = $CHANNEL"
-
-    # Only write country if explicitly specified
     if [[ -n "$COUNTRY_CODE" ]]; then
         echo "country = $COUNTRY_CODE"
     fi
