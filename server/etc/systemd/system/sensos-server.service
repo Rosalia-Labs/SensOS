@@ -7,8 +7,8 @@ Requires=docker.service
 Type=simple
 WorkingDirectory=/home/sensos/SensOS/server
 EnvironmentFile=/home/sensos/SensOS/server/.env
-ExecStart=/home/sensos/SensOS/server/start-server.sh --no-detach
-ExecStop=/home/sensos/SensOS/server/stop-server.sh
+ExecStart=/home/sensos/SensOS/server/bin/start-server.sh --no-detach
+ExecStop=/home/sensos/SensOS/server/bin/stop-server.sh
 User=sensos
 Restart=always
 

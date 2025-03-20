@@ -8,7 +8,7 @@ DOCKER_IMAGE="debian-sensos"
 SCRIPT_PATH="/home/sensos/config-sensos-client"
 
 # Ensure the script exists locally
-LOCAL_SCRIPT_PATH="stage-base/00-sensos/files/config-sensos-client"
+LOCAL_SCRIPT_PATH="stage-base/00-sensos/files/scripts/config-sensos-client"
 if [ ! -f "$LOCAL_SCRIPT_PATH" ]; then
     echo "Error: Script not found locally: $LOCAL_SCRIPT_PATH"
     exit 1
@@ -46,7 +46,7 @@ docker run --rm -it \
     set -e
 
     echo "Copying script to home directory..."
-    cp /mnt/config/config-sensos-client /home/sensos/config-sensos-client
+    cp /mnt/config/scripts/config-sensos-client /home/sensos/config-sensos-client
     chmod +x /home/sensos/config-sensos-client
 
     /home/sensos/venv/bin/python /home/sensos/config-sensos-client "$@"

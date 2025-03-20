@@ -1,25 +1,29 @@
 #!/bin/bash
 set -e
 
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$WORK_DIR"
+
+echo "Working directory: $(pwd)"
+
 # Default options
 REBUILD=false
 DETACH=true
+RESTART=false
 
 # Load environment variables from .env if available
-if [ -f "$(dirname "$0")/.env" ]; then
-    echo "📄 Loading environment variables from .env..."
+if [ -f ".env" ]; then
     set -a
-    source "$(dirname "$0")/.env"
+    source ".env"
     set +a
 else
-    echo "❌ .env file not found at $(dirname "$0")/.env. Exiting."
+    echo "❌ .env file not found at $WORK_DIR/.env. Exiting."
     exit 1
 fi
 
-# Load versioning information from ../VERSION if available
-VERSION_FILE="$(dirname "$0")/../VERSION"
+# Load versioning information from VERSION if available
+VERSION_FILE="$WORK_DIR/../VERSION"
 if [ -f "$VERSION_FILE" ]; then
-    echo "📄 Loading versioning information from $VERSION_FILE..."
     VERSION_MAJOR=$(awk -F' = ' '/^major/ {print $2}' "$VERSION_FILE")
     VERSION_MINOR=$(awk -F' = ' '/^minor/ {print $2}' "$VERSION_FILE")
     VERSION_PATCH=$(awk -F' = ' '/^patch/ {print $2}' "$VERSION_FILE")
@@ -44,6 +48,9 @@ GIT_BRANCH="${GIT_BRANCH:-unknown}"
 GIT_TAG="${GIT_TAG:-unknown}"
 GIT_DIRTY="${GIT_DIRTY:-false}"
 
+export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
+export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
+
 # Parse command-line arguments
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,8 +60,11 @@ while [ $# -gt 0 ]; do
     --no-detach)
         DETACH=false
         ;;
+    --restart)
+        RESTART=true
+        ;;
     --help)
-        echo "Usage: $0 [--rebuild-containers] [--no-detach]"
+        echo "Usage: $0 [--rebuild-containers] [--no-detach] [--restart]"
         exit 0
         ;;
     *)
@@ -65,16 +75,31 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-export VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_SUFFIX
-export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_DIRTY
+# Check if any required containers are already running
+if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then
+    if [ "$RESTART" = true ]; then
+        echo "ℹ️  Restart option enabled. Stopping running SensOS containers..."
+        "$WORK_DIR/bin/stop-server.sh"
 
-echo "📦 Pre-pulling required images..."
-docker pull debian:bookworm-slim
-docker pull postgres:17-bookworm
-docker pull lscr.io/linuxserver/wireguard:latest
-docker pull registry:2
+        echo "⏳ Waiting for containers to stop..."
+        TIMEOUT=60 # Max wait time in seconds
+        ELAPSED=0
+        while docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; do
+            if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
+                echo "❌ Timeout reached while waiting for containers to stop."
+                exit 1
+            fi
+            sleep 5
+            ((ELAPSED += 5))
+        done
+    else
+        echo "❌ One or more SensOS containers are already running. Exiting script."
+        echo "ℹ️  Use ./stop-server.sh to shut the server down before restarting, or run with --restart."
+        exit 1
+    fi
+fi
 
-# Construct the docker compose command using an array
+# Construct the docker compose command using an array for the final startup.
 if [ "$REBUILD" = true ]; then
     if [ "$DETACH" = true ]; then
         CMD=(docker compose up -d --build)
@@ -90,7 +115,6 @@ else
 fi
 
 echo "🚀 Executing command: ${CMD[*]}"
-
 echo "✅ Done."
 
 # Print version information for verification

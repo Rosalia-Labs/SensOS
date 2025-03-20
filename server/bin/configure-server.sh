@@ -2,6 +2,9 @@
 
 set -e
 
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd $WORK_DIR
+
 # Define default values
 DEFAULT_DB_PORT=5432
 DEFAULT_API_PORT=8000
