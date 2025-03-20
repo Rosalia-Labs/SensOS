@@ -106,8 +106,8 @@ def initialize_schema():
         CREATE TABLE IF NOT EXISTS sensos.recordings (
             id SERIAL PRIMARY KEY,
             session_id INTEGER REFERENCES sensos.recording_sessions(id) ON DELETE CASCADE,
-            start TIMESTAMPTZ NOT NULL,
-            end TIMESTAMPTZ NOT NULL
+            t_begin TIMESTAMPTZ NOT NULL,
+            t_end TIMESTAMPTZ NOT NULL
         );
         """
     )
@@ -161,7 +161,7 @@ def store_audio(segment, start, end, session_id):
     """Stores a 3-second raw audio segment with metadata."""
     cursor.execute(
         """
-        INSERT INTO sensos.recordings (session_id, start, end)
+        INSERT INTO sensos.recordings (session_id, t_begin, t_end)
         VALUES (%s, %s, %s) RETURNING id;
         """,
         (session_id, start, end),
