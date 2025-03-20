@@ -1,0 +1,26 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          firstboot_custom
+# Required-Start:
+# Required-Stop:
+# Default-Start: 3
+# Default-Stop:
+# Short-Description: Run custom first boot tasks
+# Description:       This script runs custom commands on first boot and then removes itself.
+### END INIT INFO
+
+case "$1" in
+start)
+    echo "Running custom first boot tasks..."
+    # Place your custom commands here, for example:
+    /usr/local/bin/config-wifi-access-point --ssid sensosnet --password sensossensos
+
+    # Remove this script from startup
+    update-rc.d enable-wifi-access-point-first remove
+    rm -f /etc/init.d/enable-wifi-access-point-first
+    ;;
+*)
+    echo "Usage: $0 start" >&2
+    exit 3
+    ;;
+esac

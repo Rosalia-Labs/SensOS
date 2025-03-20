@@ -44,7 +44,8 @@ install -m 755 ${SERVICES_DIR}/start-sensos-modem.sh "${BIN_DIR}"
 cp -a "$DOCKER_DIR" "${SHARE_DIR}"
 
 # Install init.d script for EEPROM configuration
-install -m 755 "${SCRIPTS_DIR}/config-eeprom-once" "${ROOTFS_DIR}/etc/init.d/"
+install -m 755 "${SCRIPTS_DIR}/config-geekworm-ups-once" "${ROOTFS_DIR}/etc/init.d/"
+install -m 755 "${SCRIPTS_DIR}/enable-wifi-access-point-first" "${ROOTFS_DIR}/etc/init.d/"
 
 AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
 install -m 600 "$AUTHORIZED_KEYS" "${SHARE_DIR}/sensos_admin_authorized_keys"

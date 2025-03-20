@@ -19,7 +19,7 @@ RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 # Upgrade pip and install required Python packages
-RUN pip install --no-cache-dir psycopg birdnet librosa tflite-runtime 
+RUN pip install psycopg birdnet librosa tflite-runtime 
 
 # Copy analysis script
 COPY birdnet-analyze.py .

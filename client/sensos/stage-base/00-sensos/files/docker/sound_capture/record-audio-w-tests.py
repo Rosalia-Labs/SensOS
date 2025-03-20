@@ -37,8 +37,6 @@ except ValueError:
 buffer = np.zeros(SEGMENT_SIZE, dtype=AUDIO_FORMAT)
 buffer_lock = threading.Lock()
 audio_queue = queue.Queue(maxsize=50)
-latest_input_time = None
-latest_input_frames = 0
 
 
 def get_device_by_name(name):
@@ -148,28 +146,21 @@ db_thread.start()
 
 
 def callback(indata, frames, time_info, status):
-    global buffer, latest_input_time, latest_input_frames
+    global buffer
     if status:
         logging.warning(status)
     with buffer_lock:
         buffer[:-frames] = buffer[frames:]
         buffer[-frames:] = indata[:, 0]
-        latest_input_time = time_info["input_buffer_adc_time"]
-        latest_input_frames = frames
 
 
 def enqueue_segments():
-    global buffer, latest_input_time, latest_input_frames
+    global buffer
     while True:
         time.sleep(STEP_SIZE)
         with buffer_lock:
             segment_copy = buffer.copy()
-            if latest_input_time:
-                end_timestamp = datetime.datetime.utcfromtimestamp(
-                    latest_input_time + latest_input_frames / SAMPLE_RATE
-                )
-            else:
-                end_timestamp = datetime.datetime.utcnow()
+        end_timestamp = datetime.datetime.utcnow()
         start_timestamp = end_timestamp - datetime.timedelta(seconds=SEGMENT_DURATION)
         try:
             audio_queue.put((segment_copy, start_timestamp, end_timestamp), block=False)
@@ -191,24 +182,55 @@ def run_recording():
     enqueue_thread = threading.Thread(target=enqueue_segments, daemon=True)
     enqueue_thread.start()
 
-    device = AUDIO_DEVICE
-    if device and not device.isdigit():
-        device = get_device_by_name(device)
-
-    try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=AUDIO_FORMAT,
-            device=device,
-            callback=callback,
-        ):
-            logging.info("Recording... Press Ctrl+C to stop.")
-            start_time = time.time()
-            while RECORD_DURATION <= 0 or time.time() - start_time < RECORD_DURATION:
-                time.sleep(1)
-    except KeyboardInterrupt:
-        pass
+    if AUDIO_SOURCE == "record":
+        device = AUDIO_DEVICE
+        if device and not device.isdigit():
+            device = get_device_by_name(device)
+        try:
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=AUDIO_FORMAT,
+                device=device,
+                callback=callback,
+            ):
+                logging.info("Recording... Press Ctrl+C to stop.")
+                start_time = time.time()
+                while (
+                    RECORD_DURATION <= 0 or time.time() - start_time < RECORD_DURATION
+                ):
+                    time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+    elif AUDIO_SOURCE == "random":
+        logging.info("Generating random test signal. Press Ctrl+C to stop.")
+        try:
+            while True:
+                random_segment = np.random.randint(
+                    -32768, 32767, SEGMENT_SIZE, dtype=AUDIO_FORMAT
+                )
+                start_timestamp = datetime.datetime.utcnow()
+                end_timestamp = start_timestamp + datetime.timedelta(
+                    seconds=SEGMENT_DURATION
+                )
+                audio_queue.put((random_segment, start_timestamp, end_timestamp))
+                time.sleep(STEP_SIZE)
+        except KeyboardInterrupt:
+            pass
+    elif AUDIO_SOURCE == "file":
+        audio_data, sr = librosa.load(
+            "test.wav", sr=SAMPLE_RATE, mono=True, dtype=np.float32
+        )
+        audio_data = (audio_data * 32767).astype(AUDIO_FORMAT)
+        start_idx = 0
+        total_frames = len(audio_data)
+        start_time = datetime.datetime.utcnow()
+        while start_idx + SEGMENT_SIZE <= total_frames:
+            segment = audio_data[start_idx : start_idx + SEGMENT_SIZE]
+            end_time = start_time + datetime.timedelta(seconds=SEGMENT_DURATION)
+            audio_queue.put((segment, start_time, end_time))
+            start_idx += STEP_SIZE_FRAMES
+            start_time += datetime.timedelta(seconds=STEP_SIZE)
 
     cleanup()
 
