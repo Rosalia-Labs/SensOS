@@ -20,7 +20,7 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  --no-detach                   Run in detached mode (adds -d)
+  --no-detach                   Run do not detach (removes -d)
   --rebuild-containers          Rebuild containers (adds --build)
   --help                        Show this help message
 EOF
