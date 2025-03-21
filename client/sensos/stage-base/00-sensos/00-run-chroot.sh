@@ -3,6 +3,15 @@
 # Enable i2c
 raspi-config nonint do_i2c 0
 
+# Single run scripts
+if [ "$ENABLE_FIRSTBOOT_WIFI_AP" = "1"]; then
+    update-rc.d config-geekworm-ups-once defaults
+fi
+
+if [ "$ENABLE_FIRSTBOOT_EEPROM" = "1"]; then
+    update-rc.d enable-wifi-access-point-first defaults
+fi
+
 apt-get update &&
     apt-get install -y --no-install-recommends \
         ca-certificates \

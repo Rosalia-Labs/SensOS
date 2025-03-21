@@ -152,24 +152,57 @@ def store_sound_statistics(
     print(f"Stored sound statistics for segment {segment_id}.")
 
 
+def wait_for_schema(retries=30, delay=10):
+    """Wait until the 'sensos' schema and required tables exist."""
+    for attempt in range(retries):
+        try:
+            with psycopg.connect(**DB_PARAMS) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.tables 
+                            WHERE table_schema = 'sensos' AND table_name = 'raw_audio'
+                        );
+                    """
+                    )
+                    exists = cur.fetchone()[0]
+                    if exists:
+                        print("✅ Required schema and tables detected.")
+                        return
+                    else:
+                        print(
+                            f"⏳ Schema or tables not yet ready (attempt {attempt+1}/{retries})."
+                        )
+        except Exception as e:
+            print(f"⚠️ Database connection issue (attempt {attempt+1}/{retries}): {e}")
+
+        time.sleep(delay)
+
+    raise RuntimeError("❌ Schema and tables not found after maximum retries.")
+
+
 def main():
+    print("🔄 Waiting for schema and tables to be ready...")
+    wait_for_schema()
+
     # Connect to the database.
     conn = psycopg.connect(**DB_PARAMS)
-    print("Connected to the database for sound analysis.")
+    print("✅ Connected to the database for sound analysis.")
 
     # Ensure the sound statistics table exists.
     create_sound_statistics_table(conn)
 
     while True:
-        print("Checking for new raw audio segments to analyze...")
+        print("🔎 Checking for new raw audio segments to analyze...")
         segments = get_unprocessed_segments(conn)
         if not segments:
-            print("No new segments found. Sleeping for 60 seconds...")
+            print("😴 No new segments found. Sleeping for 60 seconds...")
             time.sleep(60)
             continue
 
         for segment_id, audio_bytes in segments:
-            print(f"Processing segment {segment_id}...")
+            print(f"🎧 Processing segment {segment_id}...")
             audio_np = process_audio_segment(audio_bytes)
             if audio_np is None:
                 continue
@@ -177,7 +210,7 @@ def main():
             # Compute audio features.
             peak_amplitude, rms, snr = compute_audio_features(audio_np)
 
-            # Compute full-spectrum (entire frequency range) and bioacoustic-spectrum (1-8 kHz) representations.
+            # Compute spectral features.
             full_spectrum = compute_binned_spectrum(
                 audio_np, num_bins=FULL_SPECTRUM_BINS
             )
@@ -185,7 +218,7 @@ def main():
                 audio_np, min_freq=1000, max_freq=8000, num_bins=BIOACOUSTIC_BINS
             )
 
-            # Store the computed statistics.
+            # Store computed statistics.
             store_sound_statistics(
                 conn,
                 segment_id,
@@ -196,7 +229,7 @@ def main():
                 bioacoustic_spectrum,
             )
 
-        print("Processing batch complete. Sleeping for 10 seconds...")
+        print("✅ Batch complete. Sleeping for 10 seconds...")
         time.sleep(10)
 
 
