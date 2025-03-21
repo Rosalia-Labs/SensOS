@@ -152,7 +152,7 @@ def store_sound_statistics(
     print(f"Stored sound statistics for segment {segment_id}.")
 
 
-def wait_for_schema(retries=30, delay=10):
+def wait_for_schema(retries=30, delay=5):
     """Wait until the 'sensos' schema and required tables exist."""
     for attempt in range(retries):
         try:
@@ -198,7 +198,7 @@ def main():
         segments = get_unprocessed_segments(conn)
         if not segments:
             print("😴 No new segments found. Sleeping for 60 seconds...")
-            time.sleep(60)
+            time.sleep(5)
             continue
 
         for segment_id, audio_bytes in segments:
@@ -230,7 +230,7 @@ def main():
             )
 
         print("✅ Batch complete. Sleeping for 10 seconds...")
-        time.sleep(10)
+        time.sleep(5)
 
 
 if __name__ == "__main__":

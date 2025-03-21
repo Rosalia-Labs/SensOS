@@ -212,7 +212,7 @@ def main():
 
         if not unprocessed_audio:
             print("No new audio. Sleeping...")
-            time.sleep(60)
+            time.sleep(5)
             continue
 
         for segment_id, audio_bytes in unprocessed_audio:
@@ -237,7 +237,7 @@ def main():
             print(f"Stored embeddings for segment {segment_id}")
 
         print("Processing complete. Sleeping...")
-        time.sleep(10)  # Check again after a short delay
+        time.sleep(5)  # Check again after a short delay
 
 
 if __name__ == "__main__":

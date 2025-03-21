@@ -152,28 +152,21 @@ db_thread.start()
 
 
 def callback(indata, frames, time_info, status):
-    global buffer, latest_input_time, latest_input_frames
+    global buffer
     if status:
         logging.warning(status)
     with buffer_lock:
         buffer[:-frames] = buffer[frames:]
         buffer[-frames:] = indata[:, 0]
-        latest_input_time = time_info["input_buffer_adc_time"]
-        latest_input_frames = frames
 
 
 def enqueue_segments():
-    global buffer, latest_input_time, latest_input_frames
+    global buffer
     while True:
         time.sleep(STEP_SIZE)
         with buffer_lock:
             segment_copy = buffer.copy()
-            if latest_input_time:
-                end_timestamp = datetime.datetime.utcfromtimestamp(
-                    latest_input_time + latest_input_frames / SAMPLE_RATE
-                )
-            else:
-                end_timestamp = datetime.datetime.utcnow()
+        end_timestamp = datetime.datetime.utcnow()
         start_timestamp = end_timestamp - datetime.timedelta(seconds=SEGMENT_DURATION)
         try:
             audio_queue.put((segment_copy, start_timestamp, end_timestamp), block=False)
