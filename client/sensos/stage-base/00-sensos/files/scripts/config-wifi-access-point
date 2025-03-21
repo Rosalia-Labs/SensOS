@@ -135,6 +135,9 @@ if [[ "$ENABLE_SERVICE" == "true" ]]; then
     sudo systemctl enable wifi-access-point.service
     sudo systemctl restart wifi-access-point.service
     echo "WiFi Access Point service enabled and started."
+    sudo systemctl enable ssh
+    sudo systemctl start ssh
+    echo "Secure shell service enabled and started."
 else
     echo "WiFi Access Point service NOT enabled (per user request)."
 fi
