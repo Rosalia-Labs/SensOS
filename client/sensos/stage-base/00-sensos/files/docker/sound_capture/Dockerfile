@@ -16,6 +16,6 @@ ENV PATH="/app/venv/bin:$PATH"
 
 RUN pip install sounddevice numpy psycopg librosa
 
-COPY record-audio.py .
+COPY capture-audio.py .
 
-CMD ["python", "record-audio.py"]
+CMD ["python", "capture-audio.py"]

@@ -49,21 +49,15 @@ def wait_for_schema():
                         print("Waiting for schema 'sensos' to be created...")
         except psycopg.OperationalError as e:
             print(f"Database connection failed: {e}. Retrying in 5 seconds...")
-
-        time.sleep(5)  # Wait before checking again
+        time.sleep(5)
 
 
 def initialize_schema():
     """Ensures the required database schema and tables exist."""
     wait_for_schema()  # Ensure 'sensos' schema exists before proceeding
-
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE EXTENSION IF NOT EXISTS vector;
-                """
-            )
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             # Table for embeddings
             cur.execute(
                 """
@@ -73,47 +67,63 @@ def initialize_schema():
                 );
                 """
             )
-
-            # Table for species scores
+            # Table for species scores: Note "score" replaces "confidence"
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
                     segment_id INTEGER REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
                     species TEXT NOT NULL,
-                    confidence FLOAT NOT NULL,
+                    score FLOAT NOT NULL,
                     PRIMARY KEY (segment_id, species)
                 );
                 """
             )
-
             conn.commit()
-
     print("Database schema verified.")
 
 
 def get_unprocessed_audio():
-    """Fetches unprocessed audio data from the database."""
+    """
+    Fetches unprocessed audio data from the database along with the stored raw audio data type.
+    The query joins the raw_audio table with recording_sessions to retrieve the 'raw_audio_dtype'
+    field.
+    """
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT segment_id, data FROM sensos.raw_audio
-                WHERE segment_id NOT IN (SELECT segment_id FROM sensos.birdnet_embeddings);
-            """
+                SELECT ra.segment_id, ra.data, rs.raw_audio_dtype
+                FROM sensos.raw_audio ra
+                JOIN sensos.audio_segments r ON ra.segment_id = r.id
+                JOIN sensos.recording_sessions rs ON r.session_id = rs.id
+                WHERE ra.segment_id NOT IN (SELECT segment_id FROM sensos.birdnet_embeddings);
+                """
             )
             return cur.fetchall()
 
 
-def process_audio(audio_bytes):
-    """Decodes BYTEA audio, resamples if needed, and normalizes to float32."""
-    # Convert byte data to numpy array
-    audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+def process_audio(audio_bytes, stored_dtype):
+    """
+    Converts raw audio bytes into a float32 numpy array normalized to [-1, 1].
+    If the stored data type is 'int16', it converts and normalizes appropriately.
+    If it's 'float32', it decodes directly.
+    Returns None if the segment length is incorrect.
+    """
+    if stored_dtype == "float32":
+        audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+    elif stored_dtype == "int16":
+        audio_np = (
+            np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        )
+    else:
+        print(f"Unsupported stored data type: {stored_dtype}. Skipping segment.")
+        return None
 
-    # Normalize audio to [-1, 1]
-    audio_np /= 32768.0
-
-    # Resample to 48 kHz if needed
-    # audio_np = librosa.resample(audio_np, orig_sr=SAMPLE_RATE, target_sr=SAMPLE_RATE)
+    if len(audio_np) != SEGMENT_SIZE:
+        print(
+            f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}. Skipping."
+        )
+        return None
 
     return audio_np
 
@@ -121,62 +131,35 @@ def process_audio(audio_bytes):
 def flat_sigmoid(x, sensitivity=-1, bias=1.0):
     """
     Applies a flat sigmoid function to the input array with a bias shift.
-
-    The flat sigmoid function is defined as:
-        f(x) = 1 / (1 + exp(sensitivity * clip(x + transformed_bias, -20, 20)))
-    where transformed_bias = (bias - 1.0) * 10.0
-
-    Args:
-        x (array-like): Input data.
-        sensitivity (float, optional): Sensitivity parameter. Default is -1.
-        bias (float, optional): Bias parameter in the range [0.01, 1.99]. Default is 1.0.
-
-    Returns:
-        numpy.ndarray: Transformed data after applying the flat sigmoid function.
     """
     transformed_bias = (bias - 1.0) * 10.0
     return 1 / (1.0 + np.exp(sensitivity * np.clip(x + transformed_bias, -20, 20)))
 
 
 def invoke_interpreter(audio_segment):
-    """Runs BirdNET model inference on a single 3-second segment and extracts embeddings and species scores."""
-    # Ensure input matches expected shape
+    """
+    Runs BirdNET model inference on a single 3-second segment and extracts embeddings and species scores.
+    """
     input_data = np.expand_dims(audio_segment, axis=0).astype(np.float32)
-
-    # Run inference
     interpreter.set_tensor(input_details[0]["index"], input_data)
     interpreter.invoke()
-
-    # Get the output tensor indices:
-    # Assume that the current output_details[0] holds the species scores (shape (1, 6522))
-    # and that the embeddings are stored in the tensor just before it (index - 1, shape (1, 1024))
     score_output_index = output_details[0]["index"]
     embedding_output_index = score_output_index - 1
-
-    # Retrieve outputs
     scores = interpreter.get_tensor(score_output_index)
     embedding = interpreter.get_tensor(embedding_output_index)
-
     print(f"Species scores shape: {scores.shape}")  # Expected: (1, 6522)
     print(f"Embedding shape: {embedding.shape}")  # Expected: (1, 1024)
-
-    # Flatten the embedding to 1D
     embedding_flat = embedding.flatten()
-
-    # Use sigmoid default for now -- make optional later
     scores_flat = flat_sigmoid(scores.flatten())
-
     species_scores = {LABELS[i]: scores_flat[i] for i in range(len(scores_flat))}
-
     return embedding_flat, species_scores
 
 
 def store_results(segment_id, embeddings, scores, top_n=5):
-    """Stores embeddings (if available) and top-N species scores in the database."""
-
+    """Stores embeddings and top-N species scores in the database, using the column 'score'."""
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
-            # Store embeddings only if they exist
+            # Store embeddings if available
             if embeddings is not None:
                 cur.execute(
                     """
@@ -185,59 +168,43 @@ def store_results(segment_id, embeddings, scores, top_n=5):
                     """,
                     (segment_id, embeddings.tolist()),
                 )
-
-            # Store top-N species
+            # Store top-N species scores, using "score" instead of "confidence"
             top_species = sorted(scores.items(), key=lambda x: x[1], reverse=True)[
                 :top_n
             ]
-            for species, confidence in top_species:
+            for species, score in top_species:
                 cur.execute(
                     """
-                    INSERT INTO sensos.birdnet_scores (segment_id, species, confidence)
+                    INSERT INTO sensos.birdnet_scores (segment_id, species, score)
                     VALUES (%s, %s, %s);
                     """,
-                    (segment_id, species, confidence),
+                    (segment_id, species, score),
                 )
-
             conn.commit()
 
 
 def main():
-    """Main processing loop."""
     initialize_schema()  # Ensure database structure exists at startup
-
     while True:
         print("Checking for new audio segments...")
         unprocessed_audio = get_unprocessed_audio()
-
         if not unprocessed_audio:
             print("No new audio. Sleeping...")
             time.sleep(5)
             continue
 
-        for segment_id, audio_bytes in unprocessed_audio:
-            print(f"Processing segment {segment_id}...")
-
-            # Preprocess audio
-            audio_np = process_audio(audio_bytes)
-
-            # Ensure correct segment length
-            if len(audio_np) != SEGMENT_SIZE:
-                print(
-                    f"Skipping {segment_id}: Incorrect segment length ({len(audio_np)})"
-                )
+        for segment_id, audio_bytes, stored_dtype in unprocessed_audio:
+            print(f"Processing segment {segment_id} (stored type: {stored_dtype})...")
+            audio_np = process_audio(audio_bytes, stored_dtype)
+            if audio_np is None:
                 continue
 
-            # Run BirdNET inference
             embeddings, scores = invoke_interpreter(audio_np)
-
-            # Store results
             store_results(segment_id, embeddings, scores)
-
             print(f"Stored embeddings for segment {segment_id}")
 
         print("Processing complete. Sleeping...")
-        time.sleep(5)  # Check again after a short delay
+        time.sleep(5)
 
 
 if __name__ == "__main__":

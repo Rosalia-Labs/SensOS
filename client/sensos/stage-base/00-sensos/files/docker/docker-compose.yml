@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
-      - sensos-db-data:/var/lib/postgresql/data
+      - ${DB_DATA_PATH}:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -33,7 +33,10 @@ services:
       DB_PORT: ${DB_PORT}
       AUDIO_SOURCE: ${AUDIO_SOURCE}
       AUDIO_DEVICE: ${AUDIO_DEVICE}
-      RECORD_DURATION: ${RECORD_DURATION}
+      AUDIO_FORMAT: ${AUDIO_FORMAT}
+      FILE_STABLE_THRESHOLD: ${FILE_STABLE_THRESHOLD}
+    volumes:
+      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
     devices:
       - /dev/snd:/dev/snd
     group_add:
@@ -57,6 +60,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+      FULL_SPECTRUM_BINS: ${FULL_SPECTRUM_BINS}
+      BIOACOUSTIC_BINS: ${BIOACOUSTIC_BINS}
     deploy:
       restart_policy:
         condition: on-failure
@@ -76,6 +81,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+      FULL_SPECTRUM_BINS: ${FULL_SPECTRUM_BINS}
+      BIOACOUSTIC_BINS: ${BIOACOUSTIC_BINS}
     deploy:
       restart_policy:
         condition: on-failure
