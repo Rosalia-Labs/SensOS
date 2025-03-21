@@ -25,12 +25,14 @@ install -m 755 "${SCRIPTS_DIR}/push-registry-images" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-sensos-client" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-sensos-modem" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/config-geekworm-ups" "${BIN_DIR}"
+install -m 755 "${SCRIPTS_DIR}/config-arecord" "${BIN_DIR}"
 install -m 755 "${SCRIPTS_DIR}/show-eeprom" "${BIN_DIR}"
 
 # Install service files
 install -m 644 "${SERVICES_DIR}/monitor-connectivity.service" "${SYSD_SYS_DIR}"
 install -m 644 "${SERVICES_DIR}/wifi-access-point.service" "${SYSD_SYS_DIR}"
 install -m 644 "${SERVICES_DIR}/set-sensos-user.service" "${SYSD_SYS_DIR}"
+install -m 644 "${SERVICES_DIR}/sensos-arecord.service" "${SYSD_SYS_DIR}"
 install -m 644 "${SERVICES_DIR}/sensos-modem.service" "${SYSD_SYS_DIR}"
 
 # Install service start scripts
@@ -39,6 +41,7 @@ install -m 755 ${SERVICES_DIR}/start-wifi-access-point.sh "${BIN_DIR}"
 install -m 755 ${SERVICES_DIR}/start-sensos-containers.sh "${BIN_DIR}"
 install -m 755 ${SERVICES_DIR}/start-set-sensos-user.sh "${BIN_DIR}"
 install -m 755 ${SERVICES_DIR}/start-sensos-modem.sh "${BIN_DIR}"
+install -m 755 ${SERVICES_DIR}/start-arecord.sh "${BIN_DIR}"
 
 # Install docker image directories
 cp -a "$DOCKER_DIR" "${SHARE_DIR}"

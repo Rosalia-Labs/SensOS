@@ -1,0 +1,13 @@
+[Unit]
+Description=Continuous Audio Recording Service
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/environment
+ExecStart=/bin/su - "$SENSOS_USER" -c '/usr/local/bin/start-arecord.sh'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

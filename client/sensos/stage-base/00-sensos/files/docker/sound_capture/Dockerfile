@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     python3-pip \
     libportaudio2 \
+    portaudio19-dev \
     alsa-utils \
     libpq5 && \
     rm -rf /var/lib/apt/lists/*
