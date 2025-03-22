@@ -40,13 +40,13 @@ source "$CONFIG_FILE"
 
 # Set BASE_DIR default if not provided (use SENSOS_USER's home directory)
 if [ -z "$BASE_DIR" ]; then
-    BASE_DIR="$SENSOS_HOME/sounds"
+    BASE_DIR="$SENSOS_HOME/audio_recordings/unprocessed"
 fi
 
 # Define the output filename pattern.
 # This pattern creates directories: BASE_DIR/YYYY/MM/DD/
 # and filenames like: sensos-YYYY-MM-DD-HH-MM-SS.wav
-OUTPUT_PATTERN="${BASE_DIR}/%Y/%m/%d/sensos-%Y-%m-%d-%H-%M-%S.wav"
+OUTPUT_PATTERN="${BASE_DIR}/%Y/%m/%d/sensos_%Y%m%dT%H%M%S.wav"
 
 # Ensure the base directory exists (arecord won't create intermediate directories)
 mkdir -p "$BASE_DIR"
@@ -60,18 +60,9 @@ echo "  MAX_TIME: $MAX_TIME seconds"
 echo "  OUTPUT:   $OUTPUT_PATTERN"
 echo "Press Ctrl+C to stop."
 
-# Loop continuously launching arecord for each segment
-while true; do
-    echo "Starting new recording segment..."
-    arecord -D "$DEVICE" \
-        -f "$FORMAT" \
-        -c "$CHANNELS" \
-        -r "$RATE" \
-        --max-time="$MAX_TIME" \
-        --use-strftime "$OUTPUT_PATTERN"
-    # If arecord exits with an error, pause briefly before restarting
-    if [ $? -ne 0 ]; then
-        echo "arecord encountered an error; waiting 5 seconds before retrying..."
-        sleep 5
-    fi
-done
+exec arecord -D "$DEVICE" \
+    -f "$FORMAT" \
+    -c "$CHANNELS" \
+    -r "$RATE" \
+    --max-file-time="$MAX_TIME" \
+    --use-strftime "$OUTPUT_PATTERN"

@@ -1,15 +1,17 @@
+import threading
+import datetime
 import logging
-import sounddevice as sd
-import numpy as np
 import psycopg
 import librosa
+import shutil
 import queue
 import time
 import json
-import threading
-import datetime
-import os
 import sys
+import os
+
+import sounddevice as sd
+import numpy as np
 
 # Configure logging.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -326,43 +328,67 @@ def process_directory_mode():
     Continuously scan a directory tree for new sound files that are no longer being written,
     check the processed_files table for persistence, and process new files.
     A new session is initiated for file input mode.
+    After processing, files are moved to a 'processed' directory while preserving the original directory structure.
+    The processed_files record is updated to reflect the final file path.
     """
-    directory = "/mnt/audio_recordings"
+    unprocessed_dir = "/mnt/audio_recordings/unprocessed"
+    processed_dir = "/mnt/audio_recordings/processed"
     file_stable_threshold = int(os.environ.get("FILE_STABLE_THRESHOLD", "10"))
-    logging.info(f"Scanning directory for sound files: {directory}")
+    logging.info(f"Scanning directory for sound files: {unprocessed_dir}")
+
     # Initialize a new session for file processing.
     session_id = start_new_session()
     logging.info(f"Started file processing session {session_id}")
     accepted_extensions = (".wav", ".mp3", ".flac", ".ogg")
 
     while True:
-        for root, dirs, files in os.walk(directory):
+        for root, dirs, files in os.walk(unprocessed_dir):
             for file in files:
                 if not file.lower().endswith(accepted_extensions):
                     continue
                 file_path = os.path.join(root, file)
+
+                # Check if file has been processed already.
                 cursor.execute(
                     "SELECT 1 FROM sensos.processed_files WHERE file_path = %s",
                     (file_path,),
                 )
                 if cursor.fetchone() is not None:
-                    logging.info(f"File already processed, skipping: {file_path}")
+                    logging.warning(
+                        f"Anomaly: File already processed, moving to duplicates: {file_path}"
+                    )
+                    anomaly_dir = "/mnt/audio_recordings/anomalies"
+                    rel_path = os.path.relpath(file_path, unprocessed_dir)
+                    destination = os.path.join(anomaly_dir, rel_path)
+                    os.makedirs(os.path.dirname(destination), exist_ok=True)
+                    try:
+                        shutil.move(file_path, destination)
+                        logging.info(
+                            f"Moved duplicate file {file_path} to {destination}"
+                        )
+                    except Exception as e:
+                        logging.error(
+                            f"Error moving duplicate file {file_path} to {destination}: {e}"
+                        )
                     continue
 
                 try:
                     mod_time = os.path.getmtime(file_path)
                 except Exception as e:
-                    logging.warning(
+                    logging.error(
                         f"Could not get modification time for {file_path}: {e}"
                     )
-                    continue
+                    sys.exit(1)
 
                 now = time.time()
                 if now - mod_time < file_stable_threshold:
                     logging.info(f"Skipping file (recently modified): {file_path}")
                     continue
 
+                # Process the file.
                 process_file(file_path, session_id)
+
+                # Insert a record into processed_files with the original path.
                 try:
                     cursor.execute(
                         "INSERT INTO sensos.processed_files (file_path, file_mod_time) VALUES (%s, to_timestamp(%s))",
@@ -373,6 +399,34 @@ def process_directory_mode():
                 except Exception as e:
                     logging.error(f"Error recording processed file {file_path}: {e}")
                     conn.rollback()
+
+                # Move the processed file to the processed directory, preserving directory structure.
+                rel_path = os.path.relpath(file_path, unprocessed_dir)
+                destination = os.path.join(processed_dir, rel_path)
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                try:
+                    shutil.move(file_path, destination)
+                    logging.info(f"Moved {file_path} to {destination}")
+                except Exception as e:
+                    logging.error(f"Error moving {file_path} to {destination}: {e}")
+                    continue
+
+                # Update the processed_files record to reflect the new (final) file path.
+                try:
+                    cursor.execute(
+                        "UPDATE sensos.processed_files SET file_path = %s WHERE file_path = %s",
+                        (destination, file_path),
+                    )
+                    conn.commit()
+                    logging.info(
+                        f"Updated processed file record from {file_path} to {destination}"
+                    )
+                except Exception as e:
+                    logging.error(
+                        f"Error updating processed file record for {file_path}: {e}"
+                    )
+                    conn.rollback()
+
         time.sleep(5)
 
 

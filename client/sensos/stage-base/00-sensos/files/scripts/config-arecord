@@ -3,29 +3,33 @@
 # Supports overriding all settings via command-line switches.
 #
 # Usage: config-arecord.sh [options]
-# Options:
-#   -d DEVICE       Override device string (e.g., plughw:1,0)
-#   -F FORMAT       Override recording format (e.g., S16_LE)
-#   -c CHANNELS     Override channel count (e.g., 4)
-#   -R RATE         Override sample rate (e.g., 44100)
-#   -T MAX_TIME     Override recording file duration in seconds (e.g., 900 for 15 minutes)
-#   -b BASE_DIR     Set the base directory where sound files will be stored
-#   -h              Display this help message
 
 Usage() {
     cat <<EOF
 Usage: $0 [options]
 
 Options:
-  -d DEVICE       Override device string (e.g., plughw:1,0)
-  -F FORMAT       Override recording format (e.g., S16_LE)
-  -c CHANNELS     Override channel count (e.g., 4)
-  -R RATE         Override sample rate (e.g., 44100)
-  -T MAX_TIME     Override recording file duration in seconds (default is 900 seconds)
-  -b BASE_DIR     Set the base directory where sound files will be stored
-  -h              Display this help message
+  --device DEVICE         Override device string (e.g., plughw:1,0)
+  --format FORMAT         Override recording format (e.g., S16_LE)
+  --channels CHANNELS     Override channel count (e.g., 4)
+  --rate RATE             Override sample rate (e.g., 44100)
+  --max-time SECONDS      Override recording file duration (default is 900)
+  --base-dir DIR          Set the base directory where sound files will be stored
+  --help                  Display this help message
 EOF
 }
+
+# Use getopt for parsing long options
+TEMP=$(getopt -o "" \
+    --long device:,format:,channels:,rate:,max-time:,base-dir:,help \
+    -n 'config-arecord.sh' -- "$@")
+
+if [ $? != 0 ]; then
+    Usage
+    exit 1
+fi
+
+eval set -- "$TEMP"
 
 # Default variables
 device=""
@@ -35,96 +39,97 @@ override_rate=""
 max_time=""
 base_dir=""
 
-# Parse command-line options
-while getopts "d:F:c:R:T:b:h" opt; do
-    case "$opt" in
-    d) device="$OPTARG" ;;
-    F) override_format="$OPTARG" ;;
-    c) override_channels="$OPTARG" ;;
-    R) override_rate="$OPTARG" ;;
-    T) max_time="$OPTARG" ;;
-    b) base_dir="$OPTARG" ;;
-    h)
+# Extract options and arguments
+while true; do
+    case "$1" in
+    --device)
+        device="$2"
+        shift 2
+        ;;
+    --format)
+        override_format="$2"
+        shift 2
+        ;;
+    --channels)
+        override_channels="$2"
+        shift 2
+        ;;
+    --rate)
+        override_rate="$2"
+        shift 2
+        ;;
+    --max-time)
+        max_time="$2"
+        shift 2
+        ;;
+    --base-dir)
+        base_dir="$2"
+        shift 2
+        ;;
+    --help)
         Usage
         exit 0
         ;;
+    --)
+        shift
+        break
+        ;;
     *)
+        echo "Unknown option: $1"
         Usage
         exit 1
         ;;
     esac
 done
 
-# Set default max_time if not provided (900 seconds = 15 minutes)
+# Default max_time
 if [ -z "$max_time" ]; then
     max_time=900
 fi
 
-# Ensure arecord is available
 if ! command -v arecord >/dev/null 2>&1; then
     echo "Error: arecord command not found. Please install alsa-utils." >&2
     exit 1
 fi
 
-# If device not provided, list available devices and prompt the user
 if [ -z "$device" ]; then
     echo "Available recording devices (from arecord -l):"
-    arecord -l
+    arecord -L
     read -p "Enter the device string you want to use (e.g., plughw:1,0): " device
     if [ -z "$device" ]; then
         echo "No device specified. Exiting."
         exit 1
     fi
+
+    echo "Querying hardware parameters for device $device..."
+    params=$(arecord -D "$device" --dump-hw-params 2>&1)
+    status=$?
+
+    if [ $status -ne 0 ]; then
+        echo "Failed to query device parameters. Output was:" >&2
+        echo "$params" >&2
+        exit 1
+    fi
+
+    format="${override_format:-$(echo "$params" | grep -m1 "FORMAT:" | awk '{print $2}')}"
+    channels="${override_channels:-$(echo "$params" | grep -m1 "CHANNELS:" | awk '{print $2}')}"
+    rate="${override_rate:-$(echo "$params" | grep -m1 "RATE:" | awk '{print $2}')}"
+    base_dir="${base_dir:-$HOME/sounds}"
+
+    echo "Detected/Configured settings:"
+    echo "  DEVICE:   $device"
+    echo "  FORMAT:   $format"
+    echo "  CHANNELS: $channels"
+    echo "  RATE:     $rate"
+    echo "  MAX_TIME: $max_time"
+    echo "  BASE_DIR: $base_dir"
+
 fi
 
-echo "Querying hardware parameters for device $device..."
-params=$(arecord -D "$device" --dump-hw-params 2>/dev/null)
-if [ -z "$params" ]; then
-    echo "Failed to query device parameters. Verify the device string and your permissions." >&2
-    exit 1
-fi
-
-# Determine FORMAT, CHANNELS, and RATE – use overrides if provided
-if [ -z "$override_format" ]; then
-    detected_format=$(echo "$params" | grep -m1 "FORMAT:" | awk '{print $2}')
-    format="$detected_format"
-else
-    format="$override_format"
-fi
-
-if [ -z "$override_channels" ]; then
-    detected_channels=$(echo "$params" | grep -m1 "CHANNELS:" | awk '{print $2}')
-    channels="$detected_channels"
-else
-    channels="$override_channels"
-fi
-
-if [ -z "$override_rate" ]; then
-    detected_rate=$(echo "$params" | grep -m1 "RATE:" | awk '{print $2}')
-    rate="$detected_rate"
-else
-    rate="$override_rate"
-fi
-
-# Use provided base_dir or set default ($HOME/sounds)
-if [ -z "$base_dir" ]; then
-    base_dir="$HOME/sounds"
-fi
-
-echo "Detected/Configured settings:"
-echo "  DEVICE:   $device"
-echo "  FORMAT:   $format"
-echo "  CHANNELS: $channels"
-echo "  RATE:     $rate"
-echo "  MAX_TIME: $max_time"
-echo "  BASE_DIR: $base_dir"
-
-# Ensure the configuration directory exists
 config_dir="$HOME/etc"
 mkdir -p "$config_dir"
 config_file="$config_dir/arecord.conf"
 
-# Build configuration file content
 config_content="# Auto-generated arecord configuration
 # You can override these settings by editing this file manually.
 
@@ -136,7 +141,6 @@ MAX_TIME=$max_time
 BASE_DIR=\"$base_dir\"
 "
 
-# Write the configuration file
 echo "$config_content" >"$config_file"
 
 echo "Configuration written to $config_file"

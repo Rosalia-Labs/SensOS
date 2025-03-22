@@ -8,13 +8,13 @@ POSTGRES_PASSWORD="sensos"
 DB_HOST="sensos-client-database"
 DB_PORT="5432"
 AUDIO_SOURCE="record"
-AUDIO_DEVICE=""               # Default to empty (system default)
-AUDIO_FORMAT="float32"        # New: native audio format ("float32" or "int16")
-FULL_SPECTRUM_BINS="20"       # New: number of full spectrum bins
-BIOACOUSTIC_BINS="20"         # New: number of bioacoustic bins
-FILE_STABLE_THRESHOLD="10"    # New: seconds to wait before considering a file stable
-DB_DATA_PATH="sensos-db-data" # New: default volume or host path for PostgreSQL files
-AUDIO_DIRECTORY="."           # New: path to the directory tree containing sound files
+AUDIO_DEVICE=""                                   # Default to empty (system default)
+AUDIO_FORMAT="float32"                            # New: native audio format ("float32" or "int16")
+FULL_SPECTRUM_BINS="20"                           # New: number of full spectrum bins
+BIOACOUSTIC_BINS="20"                             # New: number of bioacoustic bins
+FILE_STABLE_THRESHOLD="10"                        # New: seconds to wait before considering a file stable
+DB_DATA_PATH="sensos-db-data"                     # New: default volume or host path for PostgreSQL files
+AUDIO_DIRECTORY="${SENSOS_USER}/audio_recordings" # New: path to the directory tree containing sound files
 
 usage() {
     cat <<EOF
