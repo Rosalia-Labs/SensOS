@@ -1,25 +1,41 @@
 #!/bin/bash
-# config-arecord.sh: Auto-detect arecord settings and write configuration to $HOME/etc/arecord.conf
-# Supports overriding all settings via command-line switches.
-#
-# Usage: config-arecord.sh [options]
+# config-arecord.sh: Write arecord configuration to $SENSOS_USER's etc directory
 
 Usage() {
     cat <<EOF
 Usage: $0 [options]
 
-Options:
-  --device DEVICE         Override device string (e.g., plughw:1,0)
-  --format FORMAT         Override recording format (e.g., S16_LE)
-  --channels CHANNELS     Override channel count (e.g., 4)
-  --rate RATE             Override sample rate (e.g., 44100)
-  --max-time SECONDS      Override recording file duration (default is 900)
-  --base-dir DIR          Set the base directory where sound files will be stored
-  --help                  Display this help message
+Required:
+  --device DEVICE         Recording device string (e.g., plughw:1,0)
+  --format FORMAT         Recording format (e.g., S16_LE)
+  --channels CHANNELS     Channel count (e.g., 2)
+
+Optional:
+  --rate RATE             Sample rate in Hz (default: 48000)
+  --max-time SECONDS      Max duration per file (default: 900)
+  --base-dir DIR          Base directory for sound files (default: ~SENSOS_USER/audio_recordings/unprocessed)
+  --help                  Show this help message
 EOF
 }
 
-# Use getopt for parsing long options
+# Require SENSOS_USER to be set
+if [[ -z "$SENSOS_USER" ]]; then
+    echo "ERROR: SENSOS_USER is not set in the environment."
+    exit 1
+fi
+
+# Determine home directory
+SENSOS_HOME=$(eval echo "~$SENSOS_USER")
+
+# Defaults
+device=""
+format=""
+channels=""
+rate="48000"
+max_time="900"
+base_dir="$SENSOS_HOME/audio_recordings/unprocessed"
+
+# Parse arguments
 TEMP=$(getopt -o "" \
     --long device:,format:,channels:,rate:,max-time:,base-dir:,help \
     -n 'config-arecord.sh' -- "$@")
@@ -31,15 +47,7 @@ fi
 
 eval set -- "$TEMP"
 
-# Default variables
-device=""
-override_format=""
-override_channels=""
-override_rate=""
-max_time=""
-base_dir=""
-
-# Extract options and arguments
+# Process options
 while true; do
     case "$1" in
     --device)
@@ -47,15 +55,15 @@ while true; do
         shift 2
         ;;
     --format)
-        override_format="$2"
+        format="$2"
         shift 2
         ;;
     --channels)
-        override_channels="$2"
+        channels="$2"
         shift 2
         ;;
     --rate)
-        override_rate="$2"
+        rate="$2"
         shift 2
         ;;
     --max-time)
@@ -82,70 +90,36 @@ while true; do
     esac
 done
 
-# Default max_time
-if [ -z "$max_time" ]; then
-    max_time=900
-fi
+# Validate required options
+missing=()
+[ -z "$device" ] && missing+=("--device")
+[ -z "$format" ] && missing+=("--format")
+[ -z "$channels" ] && missing+=("--channels")
 
-if ! command -v arecord >/dev/null 2>&1; then
-    echo "Error: arecord command not found. Please install alsa-utils." >&2
+if [ ${#missing[@]} -gt 0 ]; then
+    echo "ERROR: Missing required options: ${missing[*]}" >&2
+    Usage
     exit 1
 fi
 
-if [ -z "$device" ]; then
-    echo "Available recording devices (from arecord -l):"
-    arecord -L
-    read -p "Enter the device string you want to use (e.g., plughw:1,0): " device
-    if [ -z "$device" ]; then
-        echo "No device specified. Exiting."
-        exit 1
-    fi
-
-    echo "Querying hardware parameters for device $device..."
-    params=$(arecord -D "$device" --dump-hw-params 2>&1)
-    status=$?
-
-    if [ $status -ne 0 ]; then
-        echo "Failed to query device parameters. Output was:" >&2
-        echo "$params" >&2
-        exit 1
-    fi
-
-    format="${override_format:-$(echo "$params" | grep -m1 "FORMAT:" | awk '{print $2}')}"
-    channels="${override_channels:-$(echo "$params" | grep -m1 "CHANNELS:" | awk '{print $2}')}"
-    rate="${override_rate:-$(echo "$params" | grep -m1 "RATE:" | awk '{print $2}')}"
-    base_dir="${base_dir:-$HOME/sounds}"
-
-    echo "Detected/Configured settings:"
-    echo "  DEVICE:   $device"
-    echo "  FORMAT:   $format"
-    echo "  CHANNELS: $channels"
-    echo "  RATE:     $rate"
-    echo "  MAX_TIME: $max_time"
-    echo "  BASE_DIR: $base_dir"
-
-fi
-
-config_dir="$HOME/etc"
+# Write config
+config_dir="$SENSOS_HOME/etc"
 mkdir -p "$config_dir"
 config_file="$config_dir/arecord.conf"
 
-config_content="# Auto-generated arecord configuration
-# You can override these settings by editing this file manually.
-
-DEVICE=\"$device\"
-FORMAT=\"$format\"
+cat >"$config_file" <<EOF
+# Auto-generated arecord configuration
+DEVICE="$device"
+FORMAT="$format"
 CHANNELS=$channels
 RATE=$rate
 MAX_TIME=$max_time
-BASE_DIR=\"$base_dir\"
-"
-
-echo "$config_content" >"$config_file"
+BASE_DIR="$base_dir"
+EOF
 
 echo "Configuration written to $config_file"
 
-echo "Enabling and starting sensos-arecord.service."
+echo "Enabling and starting sensos-arecord.service..."
 sudo systemctl daemon-reload
 sudo systemctl enable sensos-arecord.service
 sudo systemctl start sensos-arecord.service

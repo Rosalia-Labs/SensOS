@@ -1,20 +1,29 @@
 #!/bin/bash
 set -e
 
+# Require SENSOS_USER to be set
+if [[ -z "$SENSOS_USER" ]]; then
+    echo "ERROR: SENSOS_USER is not set in the environment."
+    exit 1
+fi
+
+# Resolve home directory of the SENSOS_USER
+SENSOS_HOME=$(eval echo "~$SENSOS_USER")
+
 # Default values
 POSTGRES_DB="postgres"
 POSTGRES_USER="postgres"
 POSTGRES_PASSWORD="sensos"
 DB_HOST="sensos-client-database"
 DB_PORT="5432"
-AUDIO_SOURCE="record"
-AUDIO_DEVICE=""                                   # Default to empty (system default)
-AUDIO_FORMAT="float32"                            # New: native audio format ("float32" or "int16")
-FULL_SPECTRUM_BINS="20"                           # New: number of full spectrum bins
-BIOACOUSTIC_BINS="20"                             # New: number of bioacoustic bins
-FILE_STABLE_THRESHOLD="10"                        # New: seconds to wait before considering a file stable
-DB_DATA_PATH="sensos-db-data"                     # New: default volume or host path for PostgreSQL files
-AUDIO_DIRECTORY="${SENSOS_USER}/audio_recordings" # New: path to the directory tree containing sound files
+AUDIO_SOURCE="files"
+AUDIO_DEVICE=""
+AUDIO_FORMAT="float32"
+FULL_SPECTRUM_BINS="20"
+BIOACOUSTIC_BINS="20"
+FILE_STABLE_THRESHOLD="10"
+DB_DATA_PATH="sensos-db-data"
+AUDIO_DIRECTORY="${SENSOS_HOME}/audio_recordings"
 
 usage() {
     cat <<EOF
@@ -26,15 +35,15 @@ Options:
   --postgres-password <value>       Set POSTGRES_PASSWORD (default: sensos)
   --db-host <value>                 Set DB_HOST (default: sensos-client-database)
   --db-port <value>                 Set DB_PORT (default: 5432)
-  --audio-source <value>            Set AUDIO_SOURCE (default: record)
+  --audio-source <value>            Set AUDIO_SOURCE (default: files)
   --audio-device <value>            Set AUDIO_DEVICE (default: system default)
   --audio-format <value>            Set AUDIO_FORMAT (default: float32)
   --full-spectrum-bins <value>      Set FULL_SPECTRUM_BINS (default: 20)
   --bioacoustic-bins <value>        Set BIOACOUSTIC_BINS (default: 20)
   --file-stable-threshold <value>   Set FILE_STABLE_THRESHOLD (default: 10)
   --db-data-path <value>            Set DB_DATA_PATH (default: sensos-db-data)
-  --audio-directory <value>         Set AUDIO_DIRECTORY (default: .)
-  --help                          Show this help message
+  --audio-directory <value>         Set AUDIO_DIRECTORY (default: SENSOS_USER's home/audio_recordings)
+  --help                            Show this help message
 EOF
 }
 
@@ -106,10 +115,14 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # Directory where the docker-compose file resides
-DOCKER_COMPOSE_DIR="${HOME}/docker"
+DOCKER_COMPOSE_DIR="${SENSOS_HOME}/docker"
 
-# Ensure the directory exists
+# Ensure the directory exists and is writable
 mkdir -p "$DOCKER_COMPOSE_DIR"
+if [[ ! -w "$DOCKER_COMPOSE_DIR" ]]; then
+    echo "ERROR: Cannot write to $DOCKER_COMPOSE_DIR"
+    exit 1
+fi
 
 # Write the .env file
 cat >"$DOCKER_COMPOSE_DIR/.env" <<EOF
@@ -130,3 +143,10 @@ EOF
 
 echo ".env file written to ${DOCKER_COMPOSE_DIR}/.env with the following content:"
 cat "$DOCKER_COMPOSE_DIR/.env"
+
+# Enable and start the service
+echo "Enabling and starting sensos-docker.service..."
+sudo systemctl daemon-reload
+sudo systemctl enable sensos-docker.service
+sudo systemctl start sensos-docker.service
+echo "Service started. Use 'sudo systemctl status sensos-docker.service' to check status."
