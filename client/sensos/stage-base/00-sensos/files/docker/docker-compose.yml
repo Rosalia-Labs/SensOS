@@ -31,16 +31,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
-      AUDIO_SOURCE: ${AUDIO_SOURCE}
-      AUDIO_DEVICE: ${AUDIO_DEVICE}
-      AUDIO_FORMAT: ${AUDIO_FORMAT}
-      FILE_STABLE_THRESHOLD: ${FILE_STABLE_THRESHOLD}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
-    devices:
-      - /dev/snd:/dev/snd
-    group_add:
-      - "audio"
     deploy:
       restart_policy:
         condition: on-failure
@@ -60,8 +52,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
-      FULL_SPECTRUM_BINS: ${FULL_SPECTRUM_BINS}
-      BIOACOUSTIC_BINS: ${BIOACOUSTIC_BINS}
     deploy:
       restart_policy:
         condition: on-failure
@@ -81,8 +71,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
-      FULL_SPECTRUM_BINS: ${FULL_SPECTRUM_BINS}
-      BIOACOUSTIC_BINS: ${BIOACOUSTIC_BINS}
     deploy:
       restart_policy:
         condition: on-failure

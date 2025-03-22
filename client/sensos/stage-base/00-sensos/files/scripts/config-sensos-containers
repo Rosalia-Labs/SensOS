@@ -16,12 +16,6 @@ POSTGRES_USER="postgres"
 POSTGRES_PASSWORD="sensos"
 DB_HOST="sensos-client-database"
 DB_PORT="5432"
-AUDIO_SOURCE="files"
-AUDIO_DEVICE=""
-AUDIO_FORMAT="float32"
-FULL_SPECTRUM_BINS="20"
-BIOACOUSTIC_BINS="20"
-FILE_STABLE_THRESHOLD="10"
 DB_DATA_PATH="sensos-db-data"
 AUDIO_DIRECTORY="${SENSOS_HOME}/audio_recordings"
 
@@ -30,20 +24,14 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  --postgres-db <value>             Set POSTGRES_DB (default: postgres)
-  --postgres-user <value>           Set POSTGRES_USER (default: postgres)
-  --postgres-password <value>       Set POSTGRES_PASSWORD (default: sensos)
-  --db-host <value>                 Set DB_HOST (default: sensos-client-database)
-  --db-port <value>                 Set DB_PORT (default: 5432)
-  --audio-source <value>            Set AUDIO_SOURCE (default: files)
-  --audio-device <value>            Set AUDIO_DEVICE (default: system default)
-  --audio-format <value>            Set AUDIO_FORMAT (default: float32)
-  --full-spectrum-bins <value>      Set FULL_SPECTRUM_BINS (default: 20)
-  --bioacoustic-bins <value>        Set BIOACOUSTIC_BINS (default: 20)
-  --file-stable-threshold <value>   Set FILE_STABLE_THRESHOLD (default: 10)
-  --db-data-path <value>            Set DB_DATA_PATH (default: sensos-db-data)
-  --audio-directory <value>         Set AUDIO_DIRECTORY (default: SENSOS_USER's home/audio_recordings)
-  --help                            Show this help message
+  --postgres-db <value>       Set POSTGRES_DB (default: postgres)
+  --postgres-user <value>     Set POSTGRES_USER (default: postgres)
+  --postgres-password <value> Set POSTGRES_PASSWORD (default: sensos)
+  --db-host <value>           Set DB_HOST (default: sensos-client-database)
+  --db-port <value>           Set DB_PORT (default: 5432)
+  --db-data-path <value>      Set DB_DATA_PATH (default: sensos-db-data)
+  --audio-directory <value>   Set AUDIO_DIRECTORY (default: SENSOS_USER's home/audio_recordings)
+  --help                    Show this help message
 EOF
 }
 
@@ -68,30 +56,6 @@ while [[ "$#" -gt 0 ]]; do
         ;;
     --db-port)
         DB_PORT="$2"
-        shift 2
-        ;;
-    --audio-source)
-        AUDIO_SOURCE="$2"
-        shift 2
-        ;;
-    --audio-device)
-        AUDIO_DEVICE="$2"
-        shift 2
-        ;;
-    --audio-format)
-        AUDIO_FORMAT="$2"
-        shift 2
-        ;;
-    --full-spectrum-bins)
-        FULL_SPECTRUM_BINS="$2"
-        shift 2
-        ;;
-    --bioacoustic-bins)
-        BIOACOUSTIC_BINS="$2"
-        shift 2
-        ;;
-    --file-stable-threshold)
-        FILE_STABLE_THRESHOLD="$2"
         shift 2
         ;;
     --db-data-path)
@@ -131,12 +95,6 @@ POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 DB_HOST=${DB_HOST}
 DB_PORT=${DB_PORT}
-AUDIO_SOURCE=${AUDIO_SOURCE}
-AUDIO_DEVICE=${AUDIO_DEVICE}
-AUDIO_FORMAT=${AUDIO_FORMAT}
-FULL_SPECTRUM_BINS=${FULL_SPECTRUM_BINS}
-BIOACOUSTIC_BINS=${BIOACOUSTIC_BINS}
-FILE_STABLE_THRESHOLD=${FILE_STABLE_THRESHOLD}
 DB_DATA_PATH=${DB_DATA_PATH}
 AUDIO_DIRECTORY=${AUDIO_DIRECTORY}
 EOF

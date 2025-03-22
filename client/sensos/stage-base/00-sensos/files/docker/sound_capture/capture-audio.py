@@ -1,70 +1,58 @@
-import threading
 import datetime
 import logging
 import psycopg
-import librosa
 import shutil
-import queue
 import time
-import json
 import sys
 import os
-
-import sounddevice as sd
+import soundfile as sf
 import numpy as np
 
 # Configure logging.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 # Database connection parameters.
+# These are defined in the compose file.
 DB_PARAMS = (
-    f"dbname={os.environ.get('POSTGRES_DB', 'postgres')} "
-    f"user={os.environ.get('POSTGRES_USER', 'postgres')} "
-    f"password={os.environ.get('POSTGRES_PASSWORD', 'sensos')} "
-    f"host={os.environ.get('DB_HOST', 'sensos-client-database')} "
-    f"port={os.environ.get('DB_PORT', '5432')}"
+    f"dbname={os.environ['POSTGRES_DB']} "
+    f"user={os.environ['POSTGRES_USER']} "
+    f"password={os.environ['POSTGRES_PASSWORD']} "
+    f"host={os.environ['DB_HOST']} "
+    f"port={os.environ['DB_PORT']}"
 )
 
 # Audio settings.
-SAMPLE_RATE = 48000
-try:
-    CHANNELS = int(os.environ.get("CHANNELS", "1"))
-except ValueError:
-    CHANNELS = 1
-
-# Determine the native audio format from the environment.
-# Set AUDIO_FORMAT to "float32" or "int16" (default is "float32").
-env_audio_format = os.environ.get("AUDIO_FORMAT", "float32").lower()
-if env_audio_format == "int16":
-    AUDIO_FORMAT = np.int16
-elif env_audio_format == "float32":
-    AUDIO_FORMAT = np.float32
-else:
-    logging.error(
-        f"Unrecognized AUDIO_FORMAT '{env_audio_format}'. Must be 'float32' or 'int16'. Exiting."
-    )
-    sys.exit(1)
-
-# BIT_DEPTH is set based on the chosen format.
-BIT_DEPTH = 32 if AUDIO_FORMAT == np.float32 else 16
+# Hard-coded defaults (file metadata will be determined per file).
+SAMPLE_RATE = 48000  # expected sample rate (used for segmentation)
+env_audio_format = "float32"  # default native audio format
+AUDIO_FORMAT = np.float32  # default data type
 
 SEGMENT_DURATION = 3  # seconds
-STEP_SIZE = 1  # seconds; a smaller value creates overlapping segments
+STEP_SIZE = 1  # seconds; smaller value creates overlapping segments
 SEGMENT_SIZE = SAMPLE_RATE * SEGMENT_DURATION
 STEP_SIZE_FRAMES = SAMPLE_RATE * STEP_SIZE
 
-# Audio source mode ("record" for live capture, "files" for scanning sound files).
-AUDIO_SOURCE = os.environ.get("AUDIO_SOURCE", "record").lower()
-AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", None)
 
-# Allocate a live-recording buffer using the configured type.
-# This buffer is allocated once (for live mode).
-buffer = np.zeros((SEGMENT_SIZE, CHANNELS), dtype=AUDIO_FORMAT)
-buffer_lock = threading.Lock()
-audio_queue = queue.Queue(maxsize=50)
+def extract_timestamp_from_filename(file_path):
+    """
+    Attempt to extract a timestamp from the filename.
+    Expected pattern: sensos_YYYYMMDDTHHMMSS.wav
+    Returns the Unix timestamp (float) if successful, or None otherwise.
+    """
+    base = os.path.basename(file_path)
+    if base.startswith("sensos_"):
+        timestamp_str = base[len("sensos_") :].split(".")[0]  # e.g., "20250315T123045"
+        try:
+            dt = datetime.datetime.strptime(timestamp_str, "%Y%m%dT%H%M%S")
+            return dt.timestamp()
+        except Exception as e:
+            logging.error(f"Error parsing timestamp from filename {base}: {e}")
+    return None
 
 
-# Database connection.
+# --- Database functions ---
+
+
 def connect_with_retry(max_attempts=10, delay=5):
     for attempt in range(max_attempts):
         try:
@@ -85,38 +73,41 @@ def initialize_schema():
     cursor.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
     cursor.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
     cursor.execute(
-        f"ALTER DATABASE {os.environ.get('POSTGRES_DB', 'postgres')} SET search_path TO sensos, public;"
+        f"ALTER DATABASE {os.environ['POSTGRES_DB']} SET search_path TO sensos, public;"
     )
+    # The audio_files table now stores the native format as a string.
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS sensos.recording_sessions (
+        CREATE TABLE IF NOT EXISTS sensos.audio_files (
             id SERIAL PRIMARY KEY,
-            start_time TIMESTAMPTZ NOT NULL,
+            file_path TEXT NOT NULL,
+            file_mod_time TIMESTAMPTZ,
             sample_rate INT NOT NULL,
-            bit_depth INT NOT NULL,
+            native_format TEXT NOT NULL,
             channel_count INT NOT NULL,
-            device TEXT,
-            raw_audio_dtype TEXT NOT NULL
+            processed_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        """
+    )
+    # Audio segments now reference audio_files.
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS sensos.audio_segments (
             id SERIAL PRIMARY KEY,
-            session_id INTEGER REFERENCES sensos.recording_sessions(id) ON DELETE CASCADE,
+            file_id INTEGER REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
             t_begin TIMESTAMPTZ NOT NULL,
             t_end TIMESTAMPTZ NOT NULL,
             channel INT NOT NULL
         );
+        """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS sensos.raw_audio (
             segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
             data BYTEA NOT NULL
         );
-        -- Table for tracking processed files (for file mode)
-        CREATE TABLE IF NOT EXISTS sensos.processed_files (
-            id SERIAL PRIMARY KEY,
-            file_path TEXT UNIQUE NOT NULL,
-            file_mod_time TIMESTAMPTZ,
-            processed_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-    """
+        """
     )
     conn.commit()
     logging.info("Database schema initialized.")
@@ -125,44 +116,36 @@ def initialize_schema():
 initialize_schema()
 
 
-def start_new_session():
+def create_file_recording(
+    file_path, srate, native_format, channel_count, file_mod_time
+):
     """
-    Start a new recording session and store the raw audio data type.
-    This function stores a single column (raw_audio_dtype) that indicates the NumPy data type
-    (e.g. "float32" or "int16") of the raw bytes in the database.
+    Create a new audio_files record for the processed file and return its id.
     """
     cursor.execute(
         """
-        INSERT INTO sensos.recording_sessions 
-            (start_time, sample_rate, bit_depth, channel_count, device, raw_audio_dtype)
-        VALUES 
-            (NOW(), %s, %s, %s, %s, %s)
+        INSERT INTO sensos.audio_files 
+            (file_path, file_mod_time, sample_rate, native_format, channel_count)
+        VALUES (%s, to_timestamp(%s), %s, %s, %s)
         RETURNING id;
         """,
-        (SAMPLE_RATE, BIT_DEPTH, CHANNELS, AUDIO_DEVICE, env_audio_format),
+        (file_path, file_mod_time, srate, native_format, channel_count),
     )
-    session_id = cursor.fetchone()[0]
+    file_id = cursor.fetchone()[0]
     conn.commit()
-    return session_id
+    return file_id
 
 
-def store_audio(segment, start, end, session_id, channel):
+def store_audio(segment, start, end, file_id, channel):
     """
-    Store an audio segment in the database.
-    If the segment's dtype does not match the configured AUDIO_FORMAT, convert it.
-    For example, if AUDIO_FORMAT is float32 and the segment is int16, perform normalization.
+    Store an audio segment in the database, preserving the original sample values.
     """
-    if segment.dtype != AUDIO_FORMAT:
-        if AUDIO_FORMAT == np.float32 and segment.dtype == np.int16:
-            segment = segment.astype(np.float32) / 32768.0
-        else:
-            segment = segment.astype(AUDIO_FORMAT)
     cursor.execute(
         """
-        INSERT INTO sensos.audio_segments (session_id, t_begin, t_end, channel)
+        INSERT INTO sensos.audio_segments (file_id, t_begin, t_end, channel)
         VALUES (%s, %s, %s, %s) RETURNING id;
         """,
-        (session_id, start, end, channel),
+        (file_id, start, end, channel),
     )
     segment_id = cursor.fetchone()[0]
     cursor.execute(
@@ -175,129 +158,32 @@ def store_audio(segment, start, end, session_id, channel):
     )
 
 
-# === Live recording functions (record mode) ===
+# --- File scanning functions ---
 
 
-def get_device_by_name(name):
-    devices = sd.query_devices()
-    if name.startswith("hw:"):
-        return name
-    for idx, dev in enumerate(devices):
-        if name.lower() in dev["name"].lower():
-            return idx
-    return None
-
-
-def audio_consumer():
-    while True:
-        item = audio_queue.get()
-        if item is None:
-            break
-        # item is now (segment, start, end, channel)
-        store_audio(*item, session_id)
-
-
-def callback(indata, frames, time_info, status):
-    if status:
-        logging.warning(status)
-    with buffer_lock:
-        # Shift the buffer and append new samples.
-        buffer[:-frames, :] = buffer[frames:, :]
-        buffer[-frames:, :] = indata
-
-
-def enqueue_segments():
-    while True:
-        time.sleep(STEP_SIZE)
-        with buffer_lock:
-            segment_copy = buffer.copy()
-        end_timestamp = datetime.datetime.utcnow()
-        start_timestamp = end_timestamp - datetime.timedelta(seconds=SEGMENT_DURATION)
-        # Enqueue a segment for each channel.
-        for ch in range(CHANNELS):
-            try:
-                audio_queue.put(
-                    (segment_copy[:, ch], start_timestamp, end_timestamp, ch),
-                    block=False,
-                )
-            except queue.Full:
-                logging.warning(f"Queue full: dropping segment for channel {ch}")
-
-
-def run_recording():
-    global session_id
-    # Initialize a new session for live recording.
-    session_id = start_new_session()
-    db_thread = threading.Thread(target=audio_consumer, daemon=True)
-    db_thread.start()
-    enqueue_thread = threading.Thread(target=enqueue_segments, daemon=True)
-    enqueue_thread.start()
-
-    device = AUDIO_DEVICE
-    if device and not device.isdigit():
-        device = get_device_by_name(device)
-
-    try:
-        with sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=AUDIO_FORMAT,
-            device=device,
-            callback=callback,
-        ):
-            logging.info(
-                "Recording... Running indefinitely until container is stopped."
-            )
-            while True:
-                time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-
-    cleanup(db_thread)
-
-
-# === File scanning functions (files mode) ===
-
-
-def process_file(file_path, session_id):
+def process_file(file_path, file_id, metadata):
     """
-    Load an audio file, ensuring that it is represented as float32 in the range [-1, 1],
-    split it into overlapping 3-second segments, and store each channel as a separate segment.
-    This function will convert, check, and normalize the audio data if it is not in the expected format.
+    Load an audio file and split it into overlapping segments using metadata
+    that was already extracted.
     """
     logging.info(f"Processing file: {file_path}")
     try:
-        # Librosa loads audio with mono=False returns multi-channel data.
-        audio, sr = librosa.load(file_path, sr=SAMPLE_RATE, mono=False)
+        # Use the native format from the metadata
+        dtype = metadata["native_dtype"]
+        audio, srate = sf.read(file_path, dtype=dtype)
     except Exception as e:
         logging.error(f"Error loading {file_path}: {e}")
         return
 
-    # Verify the data type: Librosa should load as float32.
-    if audio.dtype != np.float32:
+    if srate != SAMPLE_RATE:
         logging.warning(
-            f"Audio from {file_path} is {audio.dtype} instead of float32; converting to float32."
+            f"File sample rate ({srate} Hz) does not match expected {SAMPLE_RATE} Hz."
         )
-        # If the data appears to be int16, normalize appropriately.
-        if audio.dtype == np.int16:
-            audio = audio.astype(np.float32) / 32768.0
-        else:
-            audio = audio.astype(np.float32)
 
-    # Rescale audio to the range [-1, 1] regardless of its original range.
-    min_val = np.min(audio)
-    max_val = np.max(audio)
-    if max_val != min_val:
-        if min_val < -1 or max_val > 1:
-            logging.warning(
-                f"Audio from {file_path} has range [{min_val}, {max_val}] which is out of [-1, 1]; rescaling."
-            )
-            audio = 2 * (audio - min_val) / (max_val - min_val) - 1
-    else:
-        logging.warning(f"Audio from {file_path} has zero range; cannot rescale.")
-
-    # Ensure audio is 2D: shape (channels, samples)
-    if audio.ndim == 1:
+    # Rearrange the audio data to shape (channels, samples)
+    if audio.ndim == 2:
+        audio = audio.T
+    elif audio.ndim == 1:
         audio = np.expand_dims(audio, axis=0)
 
     total_samples = audio.shape[1]
@@ -307,38 +193,34 @@ def process_file(file_path, session_id):
         )
         return
 
-    num_channels_in_file = audio.shape[0]
-    file_mod_time = datetime.datetime.utcfromtimestamp(os.path.getmtime(file_path))
     step_samples = int(SAMPLE_RATE * STEP_SIZE)
     for start_index in range(0, total_samples - SEGMENT_SIZE + 1, step_samples):
         end_index = start_index + SEGMENT_SIZE
-        for ch in range(num_channels_in_file):
+        for ch in range(audio.shape[0]):
             segment = audio[ch, start_index:end_index]
-            segment_start = file_mod_time + datetime.timedelta(
-                seconds=start_index / SAMPLE_RATE
-            )
-            segment_end = file_mod_time + datetime.timedelta(
-                seconds=end_index / SAMPLE_RATE
-            )
-            store_audio(segment, segment_start, segment_end, session_id, ch)
+            # Use the file's modification time to compute segment times.
+            mod_time = os.path.getmtime(file_path)
+            segment_start = datetime.datetime.utcfromtimestamp(
+                mod_time
+            ) + datetime.timedelta(seconds=start_index / SAMPLE_RATE)
+            segment_end = datetime.datetime.utcfromtimestamp(
+                mod_time
+            ) + datetime.timedelta(seconds=end_index / SAMPLE_RATE)
+            store_audio(segment, segment_start, segment_end, file_id, ch)
 
 
-def process_directory_mode():
+def process_directory():
     """
-    Continuously scan a directory tree for new sound files that are no longer being written,
-    check the processed_files table for persistence, and process new files.
-    A new session is initiated for file input mode.
-    After processing, files are moved to a 'processed' directory while preserving the original directory structure.
-    The processed_files record is updated to reflect the final file path.
+    Continuously scan the unprocessed directory for new sound files,
+    record file-level metadata (using the timestamp from the filename if available),
+    process each file into segments (using pre-extracted metadata),
+    update its processing status, and move it to a processed directory while preserving its structure.
     """
-    unprocessed_dir = "/mnt/audio_recordings/unprocessed"
+    file_stable_threshold = 30
     processed_dir = "/mnt/audio_recordings/processed"
-    file_stable_threshold = int(os.environ.get("FILE_STABLE_THRESHOLD", "10"))
+    unprocessed_dir = "/mnt/audio_recordings/unprocessed"
     logging.info(f"Scanning directory for sound files: {unprocessed_dir}")
 
-    # Initialize a new session for file processing.
-    session_id = start_new_session()
-    logging.info(f"Started file processing session {session_id}")
     accepted_extensions = (".wav", ".mp3", ".flac", ".ogg")
 
     while True:
@@ -348,28 +230,13 @@ def process_directory_mode():
                     continue
                 file_path = os.path.join(root, file)
 
-                # Check if file has been processed already.
+                # Check if this file has already been processed.
                 cursor.execute(
-                    "SELECT 1 FROM sensos.processed_files WHERE file_path = %s",
+                    "SELECT id FROM sensos.audio_files WHERE file_path = %s",
                     (file_path,),
                 )
                 if cursor.fetchone() is not None:
-                    logging.warning(
-                        f"Anomaly: File already processed, moving to duplicates: {file_path}"
-                    )
-                    anomaly_dir = "/mnt/audio_recordings/anomalies"
-                    rel_path = os.path.relpath(file_path, unprocessed_dir)
-                    destination = os.path.join(anomaly_dir, rel_path)
-                    os.makedirs(os.path.dirname(destination), exist_ok=True)
-                    try:
-                        shutil.move(file_path, destination)
-                        logging.info(
-                            f"Moved duplicate file {file_path} to {destination}"
-                        )
-                    except Exception as e:
-                        logging.error(
-                            f"Error moving duplicate file {file_path} to {destination}: {e}"
-                        )
+                    logging.warning(f"File already processed: {file_path}")
                     continue
 
                 try:
@@ -383,24 +250,48 @@ def process_directory_mode():
                 now = time.time()
                 if now - mod_time < file_stable_threshold:
                     logging.info(f"Skipping file (recently modified): {file_path}")
+                    time.sleep(5)
                     continue
 
-                # Process the file.
-                process_file(file_path, session_id)
+                # Extract recording timestamp from filename if possible.
+                recording_timestamp = extract_timestamp_from_filename(file_path)
+                if recording_timestamp is None:
+                    recording_timestamp = mod_time
 
-                # Insert a record into processed_files with the original path.
+                # Read metadata only once here.
                 try:
-                    cursor.execute(
-                        "INSERT INTO sensos.processed_files (file_path, file_mod_time) VALUES (%s, to_timestamp(%s))",
-                        (file_path, mod_time),
-                    )
-                    conn.commit()
-                    logging.info(f"Recorded processed file: {file_path}")
+                    info = sf.info(file_path)
                 except Exception as e:
-                    logging.error(f"Error recording processed file {file_path}: {e}")
-                    conn.rollback()
+                    logging.error(f"Error reading file info for {file_path}: {e}")
+                    continue
+                srate = info.samplerate
+                channel_count = info.channels
+                if info.subtype in ["PCM_16", "PCM_S16LE", "PCM_S16BE"]:
+                    native_dtype = "int16"
+                elif info.subtype in ["PCM_24"]:
+                    native_dtype = "int32"
+                elif info.subtype in ["PCM_32"]:
+                    native_dtype = "int32"
+                elif info.subtype in ["FLOAT", "FLOAT32"]:
+                    native_dtype = "float32"
+                else:
+                    native_dtype = "float32"
 
-                # Move the processed file to the processed directory, preserving directory structure.
+                metadata = {"native_dtype": native_dtype, "samplerate": srate}
+
+                # Record file-level metadata using the extracted timestamp.
+                file_id = create_file_recording(
+                    file_path,
+                    srate,
+                    native_dtype,
+                    channel_count,
+                    recording_timestamp,
+                )
+                logging.info(f"Created file recording record {file_id} for {file_path}")
+
+                # Process the file into segments using the metadata.
+                process_file(file_path, file_id, metadata)
+
                 rel_path = os.path.relpath(file_path, unprocessed_dir)
                 destination = os.path.join(processed_dir, rel_path)
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
@@ -411,48 +302,36 @@ def process_directory_mode():
                     logging.error(f"Error moving {file_path} to {destination}: {e}")
                     continue
 
-                # Update the processed_files record to reflect the new (final) file path.
+                # Update the audio_files table with the new file path.
                 try:
                     cursor.execute(
-                        "UPDATE sensos.processed_files SET file_path = %s WHERE file_path = %s",
-                        (destination, file_path),
+                        "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
+                        (destination, file_id),
                     )
                     conn.commit()
                     logging.info(
-                        f"Updated processed file record from {file_path} to {destination}"
+                        f"Updated file recording record {file_id} with new path: {destination}"
                     )
                 except Exception as e:
                     logging.error(
-                        f"Error updating processed file record for {file_path}: {e}"
+                        f"Error updating file recording record for {file_path}: {e}"
                     )
                     conn.rollback()
 
         time.sleep(5)
 
 
-# === Cleanup function ===
-
-
-def cleanup(db_thread=None):
-    logging.info("Shutting down... Flushing remaining audio data.")
-    audio_queue.put(None)
-    if db_thread is not None:
-        db_thread.join()
+def cleanup():
+    logging.info("Shutting down... Closing database connection.")
     cursor.close()
     conn.close()
     logging.info("Database connection closed. Exiting.")
     sys.exit(0)
 
 
-# === Main execution block ===
-
 if __name__ == "__main__":
-    if AUDIO_SOURCE == "record":
-        logging.info("Starting live recording mode.")
-        run_recording()
-    elif AUDIO_SOURCE == "files":
-        logging.info("Starting file scanning mode.")
-        process_directory_mode()
-    else:
-        logging.error(f"Unknown AUDIO_SOURCE mode: {AUDIO_SOURCE}")
-        sys.exit(1)
+    logging.info("Starting file scanning mode.")
+    try:
+        process_directory()
+    except KeyboardInterrupt:
+        cleanup()

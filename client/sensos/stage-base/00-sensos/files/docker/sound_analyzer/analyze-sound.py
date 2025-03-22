@@ -24,8 +24,8 @@ N_FFT = 2048
 HOP_LENGTH = 512
 
 # Number of bins for the spectra
-FULL_SPECTRUM_BINS = int(os.getenv("FULL_SPECTRUM_BINS", "20"))
-BIOACOUSTIC_BINS = int(os.getenv("BIOACOUSTIC_BINS", "20"))
+FULL_SPECTRUM_BINS = 20
+BIOACOUSTIC_BINS = 20
 
 
 def create_sound_statistics_table(conn):
