@@ -1,9 +1,15 @@
 import os
 import time
+import json
 import numpy as np
 import psycopg
 import tflite_runtime.interpreter as tflite
 import librosa
+import datetime
+import logging
+
+# Configure logging.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 # Database connection details
 DB_PARAMS = {
@@ -105,22 +111,44 @@ def get_unprocessed_audio():
 def process_audio(audio_bytes, stored_dtype):
     """
     Converts raw audio bytes into a float32 numpy array normalized to [-1, 1].
-    If the stored data type is 'int16', it converts and normalizes appropriately.
-    If it's 'float32', it decodes directly.
+    Supports:
+      - "float32": If values are outside [-1, 1], they are rescaled using min/max normalization.
+      - "int16": Converts by dividing by 32768.0.
+      - "int32": Converts by dividing by 8388608.0 (for PCM_24 stored as int32).
     Returns None if the segment length is incorrect.
     """
     if stored_dtype == "float32":
         audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
+        min_val = np.min(audio_np)
+        max_val = np.max(audio_np)
+        if min_val < -1 or max_val > 1:
+            logging.info(
+                f"Normalizing float32 audio data with min={min_val}, max={max_val} to [-1, 1]."
+            )
+            # Avoid division by zero in case of zero dynamic range.
+            if max_val == min_val:
+                logging.warning(
+                    "Audio segment has zero dynamic range. Skipping normalization."
+                )
+            else:
+                # Linearly rescale to [-1, 1]
+                audio_np = 2 * (audio_np - min_val) / (max_val - min_val) - 1
     elif stored_dtype == "int16":
         audio_np = (
             np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         )
+    elif stored_dtype == "int32":
+        audio_np = (
+            np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32) / 8388608.0
+        )
     else:
-        print(f"Unsupported stored data type: {stored_dtype}. Skipping segment.")
+        logging.error(
+            f"Unsupported stored data type: {stored_dtype}. Skipping segment."
+        )
         return None
 
     if len(audio_np) != SEGMENT_SIZE:
-        print(
+        logging.error(
             f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}. Skipping."
         )
         return None
@@ -159,7 +187,6 @@ def store_results(segment_id, embeddings, scores, top_n=5):
     """Stores embeddings and top-N species scores in the database, using the column 'score'."""
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
-            # Store embeddings if available
             if embeddings is not None:
                 cur.execute(
                     """
@@ -168,7 +195,6 @@ def store_results(segment_id, embeddings, scores, top_n=5):
                     """,
                     (segment_id, embeddings.tolist()),
                 )
-            # Store top-N species scores, using "score" instead of "confidence"
             top_species = sorted(scores.items(), key=lambda x: x[1], reverse=True)[
                 :top_n
             ]

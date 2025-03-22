@@ -75,3 +75,4 @@ if [ -n "${FIRST_USER_NAME}" ]; then
 else
     echo "No first user. Docker setup is in ${SHARE_DIR}."
 fi
+

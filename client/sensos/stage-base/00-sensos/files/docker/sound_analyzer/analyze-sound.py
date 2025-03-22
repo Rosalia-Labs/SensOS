@@ -4,6 +4,7 @@ import json
 import numpy as np
 import psycopg
 import librosa
+import datetime
 
 # Database connection details from environment variables.
 DB_PARAMS = {
@@ -100,17 +101,19 @@ def compute_binned_spectrum(audio_segment, min_freq=None, max_freq=None, num_bin
 
 def process_audio_segment(audio_bytes, stored_dtype):
     """
-    Convert raw audio bytes into a numpy array normalized to float32 in [-1, 1].
-    The 'stored_dtype' parameter is a string indicating the NumPy data type of the stored bytes.
+    Convert raw audio bytes into a numpy array of float32,
+    preserving the original sample values (no normalization is applied).
+    The 'stored_dtype' parameter is a string indicating the stored data type.
     Returns None if the segment size is incorrect.
     """
     if stored_dtype == "float32":
         audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
     elif stored_dtype == "int16":
-        # Convert from int16 to float32 and normalize.
-        audio_np = (
-            np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        )
+        # Convert from int16 to float32 without normalizing.
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+    elif stored_dtype == "int32":
+        # Convert from int32 to float32 without normalizing.
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
     else:
         print(f"Unsupported stored data type: {stored_dtype}. Skipping segment.")
         return None
@@ -126,15 +129,15 @@ def process_audio_segment(audio_bytes, stored_dtype):
 def get_unprocessed_segments(conn):
     """
     Retrieve raw audio segments that have not yet been analyzed,
-    along with the stored data type from the recording session.
+    along with the native format stored in the audio_files table.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT ra.segment_id, ra.data, rs.raw_audio_dtype
+            SELECT ra.segment_id, ra.data, af.native_format
             FROM sensos.raw_audio ra
             JOIN sensos.audio_segments r ON ra.segment_id = r.id
-            JOIN sensos.recording_sessions rs ON r.session_id = rs.id
+            JOIN sensos.audio_files af ON r.file_id = af.id
             LEFT JOIN sensos.sound_statistics ss ON ra.segment_id = ss.segment_id
             WHERE ss.segment_id IS NULL;
         """
@@ -217,7 +220,7 @@ def main():
 
         for segment_id, audio_bytes, stored_dtype in segments:
             print(
-                f"🎧 Processing segment {segment_id} (stored type: {stored_dtype})..."
+                f"🎧 Processing segment {segment_id} (native format: {stored_dtype})..."
             )
             audio_np = process_audio_segment(audio_bytes, stored_dtype)
             if audio_np is None:
