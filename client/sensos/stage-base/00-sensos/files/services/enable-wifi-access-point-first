@@ -1,0 +1,44 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          firstboot_custom
+# Required-Start:
+# Required-Stop:
+# Default-Start: 3
+# Default-Stop:
+# Short-Description: Run custom first boot tasks
+# Description:       This script runs custom commands on first boot and then removes itself.
+### END INIT INFO
+
+case "$1" in
+start)
+    echo "Running custom first boot tasks..."
+
+    # Try to get SENSOS_USER from environment
+    if [ -f /etc/environment ]; then
+        . /etc/environment
+    fi
+
+    # Fallback: use first non-root, non-nobody user
+    if [ -z "$SENSOS_USER" ]; then
+        SENSOS_USER=$(awk -F: '$3 >= 1000 && $1 != "nobody" { print $1; exit }' /etc/passwd)
+        echo "SENSOS_USER not set; using first non-root user: $SENSOS_USER"
+    fi
+
+    # Fail if still not found
+    if [ -z "$SENSOS_USER" ]; then
+        echo "ERROR: Could not determine SENSOS_USER. Exiting." >&2
+        exit 1
+    fi
+
+    # Run the command as the user
+    su - "$SENSOS_USER" -c "SENSOS_USER=$SENSOS_USER /usr/local/bin/config-wifi-access-point --ssid sensosnet --password sensossensos --power-save"
+
+    # Remove this script from startup
+    update-rc.d enable-wifi-access-point-first remove
+    rm -f /etc/init.d/enable-wifi-access-point-first
+    ;;
+*)
+    echo "Usage: $0 start" >&2
+    exit 3
+    ;;
+esac

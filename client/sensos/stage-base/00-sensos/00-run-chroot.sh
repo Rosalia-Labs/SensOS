@@ -8,7 +8,7 @@ if [ "$ENABLE_FIRSTBOOT_WIFI_AP" = "1"]; then
     update-rc.d config-geekworm-ups-once defaults
 fi
 
-if [ "$ENABLE_FIRSTBOOT_EEPROM" = "1"]; then
+if [ "$ENABLE_FIRSTBOOT_GEEKWORM_EEPROM" = "1"]; then
     update-rc.d enable-wifi-access-point-first defaults
 fi
 

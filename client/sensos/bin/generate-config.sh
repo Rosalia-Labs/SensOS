@@ -85,7 +85,7 @@ while [[ $# -gt 0 ]]; do
         shift 1
         ;;
     --enable-firstboot-geekworm-ups)
-        ENABLE_FIRSTBOOT_EEPROM="1"
+        ENABLE_FIRSTBOOT_GEEKWORM_EEPROM="1"
         shift 1
         ;;
     --help)
@@ -139,7 +139,7 @@ DISABLE_FIRST_BOOT_USER_RENAME="$DISABLE_FIRST_BOOT_USER_RENAME"
 WPA_COUNTRY="$WPA_COUNTRY"
 DEPLOY_COMPRESSION="$DEPLOY_COMPRESSION"
 ENABLE_FIRSTBOOT_WIFI_AP="$ENABLE_FIRSTBOOT_WIFI_AP"
-ENABLE_FIRSTBOOT_EEPROM="$ENABLE_FIRSTBOOT_EEPROM"
+ENABLE_FIRSTBOOT_GEEKWORM_EEPROM="$ENABLE_FIRSTBOOT_GEEKWORM_EEPROM"
 EOF
 
 echo -e "\nConfig file written. Now go to the pi-gen directory and run ./build-docker.sh\n"

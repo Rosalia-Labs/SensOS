@@ -1,14 +1,23 @@
 #!/bin/bash
 
-CONFIG_DIR="$HOME/etc"
+# Require SENSOS_USER to be set
+if [[ -z "$SENSOS_USER" ]]; then
+    echo "ERROR: SENSOS_USER is not set in the environment."
+    exit 1
+fi
+
+# Compute the home directory of SENSOS_USER
+SENSOS_HOME=$(eval echo "~$SENSOS_USER")
+
+CONFIG_DIR="$SENSOS_HOME/etc"
 CONFIG_FILE="$CONFIG_DIR/wifi_access_point.conf"
-LOG_DIR="$HOME/log"
+LOG_DIR="$SENSOS_HOME/log"
 ENABLE_SERVICE="true" # Default: Enable & start service
 INTERFACE=""
 
-# Check if SENSOS_USER is set and warn if it differs from the current user
-if [[ -n "$SENSOS_USER" && "$USER" != "$SENSOS_USER" ]]; then
-    echo "WARNING: Current user ($USER) does not match SENSOS_USER ($SENSOS_USER). Configuration may not work."
+# Warn if the current user differs from SENSOS_USER
+if [[ "$USER" != "$SENSOS_USER" ]]; then
+    echo "WARNING: Current user ($USER) does not match SENSOS_USER ($SENSOS_USER). Configuration may not work as expected."
 fi
 
 # Ensure necessary directories exist

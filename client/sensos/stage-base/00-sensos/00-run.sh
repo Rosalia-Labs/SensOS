@@ -36,19 +36,19 @@ install -m 644 "${SERVICES_DIR}/sensos-arecord.service" "${SYSD_SYS_DIR}"
 install -m 644 "${SERVICES_DIR}/sensos-modem.service" "${SYSD_SYS_DIR}"
 
 # Install service start scripts
-install -m 755 ${SERVICES_DIR}/start-monitor-connectivity.sh "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-wifi-access-point.sh "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-sensos-containers.sh "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-set-sensos-user.sh "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-sensos-modem.sh "${BIN_DIR}"
-install -m 755 ${SERVICES_DIR}/start-arecord.sh "${BIN_DIR}"
+install -m 755 "${SERVICES_DIR}/start-monitor-connectivity.sh" "${BIN_DIR}"
+install -m 755 "${SERVICES_DIR}/start-wifi-access-point.sh" "${BIN_DIR}"
+install -m 755 "${SERVICES_DIR}/start-sensos-containers.sh" "${BIN_DIR}"
+install -m 755 "${SERVICES_DIR}/start-set-sensos-user.sh" "${BIN_DIR}"
+install -m 755 "${SERVICES_DIR}/start-sensos-modem.sh" "${BIN_DIR}"
+install -m 755 "${SERVICES_DIR}/start-arecord.sh" "${BIN_DIR}"
 
 # Install docker image directories
 cp -a "$DOCKER_DIR" "${SHARE_DIR}"
 
 # Install init.d script for EEPROM configuration
-install -m 755 "${SCRIPTS_DIR}/config-geekworm-ups-once" "${ROOTFS_DIR}/etc/init.d/"
-install -m 755 "${SCRIPTS_DIR}/enable-wifi-access-point-first" "${ROOTFS_DIR}/etc/init.d/"
+install -m 755 "${SERVICES_DIR}/config-geekworm-ups-once" "${ROOTFS_DIR}/etc/init.d/"
+install -m 755 "${SERVICES_DIR}/enable-wifi-access-point-first" "${ROOTFS_DIR}/etc/init.d/"
 
 AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
 install -m 600 "$AUTHORIZED_KEYS" "${SHARE_DIR}/sensos_admin_authorized_keys"
