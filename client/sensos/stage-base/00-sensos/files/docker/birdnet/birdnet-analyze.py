@@ -159,7 +159,6 @@ def process_audio(audio_bytes, audio_format):
         audio_np = np.frombuffer(audio_bytes, dtype=np.uint16).astype(np.float32)
         audio_np = (audio_np - 32768) / 32768.0
     elif audio_format in ["S24_LE", "S24_BE", "S24_3LE", "S24_3BE"]:
-        # Assumes stored in a 32-bit container.
         audio_np = (
             np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32) / 8388608.0
         )

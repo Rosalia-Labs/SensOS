@@ -133,7 +133,6 @@ def process_audio_segment(audio_bytes, audio_format):
     elif audio_format in ["U16_LE", "U16_BE"]:
         audio_np = np.frombuffer(audio_bytes, dtype=np.uint16).astype(np.float32)
     elif audio_format in ["S24_LE", "S24_BE", "S24_3LE", "S24_3BE"]:
-        # Assumes stored in a 32-bit container.
         audio_np = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
     elif audio_format in ["U24_LE", "U24_BE", "U24_3LE", "U24_3BE"]:
         audio_np = np.frombuffer(audio_bytes, dtype=np.uint32).astype(np.float32)
