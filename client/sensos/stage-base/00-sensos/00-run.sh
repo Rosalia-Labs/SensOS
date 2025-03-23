@@ -34,14 +34,14 @@ cp -a "$DOCKER_DIR" "${SENSOS_DIR}"
 AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
 install -m 600 "$AUTHORIZED_KEYS" "${SENSOS_DIR}/sensos_admin_authorized_keys"
 
-if [ -n "${ENABLE_FIRSTBOOT_HOTSPOT}" ]; then
+if [ "${ENABLE_FIRSTBOOT_HOTSPOT}" = "1" ]; then
     on_chroot <<'EOF'
 systemctl enable auto-hotspot.service
 systemctl start auto-hotspot.service || true
 EOF
 fi
 
-if [ -n "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" ]; then
+if [ "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" = "1" ]; then
     on_chroot <<'EOF'
 systemctl enable config-geekworm-eeprom.service
 EOF
