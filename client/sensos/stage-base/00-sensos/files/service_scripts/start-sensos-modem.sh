@@ -33,12 +33,12 @@ fi
 # Function to restart the LTE modem if disconnected
 restart_lte() {
     echo "Reconnecting LTE modem..." | tee -a "$LOG_FILE"
-    nmcli c up "lte" || {
+    sudo nmcli c up "lte" || {
         echo "Failed to bring up LTE connection. Deleting and recreating..." | tee -a "$LOG_FILE"
-        nmcli connection delete "lte" 2>/dev/null
-        nmcli c add type gsm ifname "$MODEM_IFACE" con-name "lte" \
+        sudo nmcli connection delete "lte" 2>/dev/null
+        sudo nmcli c add type gsm ifname "$MODEM_IFACE" con-name "lte" \
             connection.interface-name "$MODEM_INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
-        nmcli c up "lte"
+        sudo nmcli c up "lte"
     }
 }
 
@@ -49,7 +49,7 @@ while true; do
     if [[ "$STATUS" == "connected" ]]; then
         echo "LTE connection is up." | tee -a "$LOG_FILE"
     else
-        restart_lte
+        sudo restart_lte
     fi
 
     # Sleep for 30 seconds before checking again

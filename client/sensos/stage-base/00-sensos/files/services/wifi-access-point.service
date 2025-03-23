@@ -7,9 +7,8 @@ Requires=NetworkManager.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-wifi-access-point.sh
-ExecStop=/bin/bash -c 'nmcli connection down accesspoint || true'
+ExecStop=/bin/bash -c 'sudo nmcli connection down accesspoint || true'
 User=sensos-runner
 Restart=on-failure
 RestartSec=10

@@ -52,11 +52,11 @@ while true; do
 
         if [[ "$downtime" -ge "$REBOOT_THRESHOLD" ]]; then
             log "🚨 No successful ping for $downtime seconds (>= $REBOOT_THRESHOLD). Rebooting system..."
-            /sbin/reboot
+            sudo /sbin/reboot
             exit 0 # In case reboot command fails
         elif [[ "$downtime" -ge "$RESTART_NETWORK_THRESHOLD" ]]; then
             log "⚠️ No successful ping for $downtime seconds (>= $RESTART_NETWORK_THRESHOLD). Restarting networking..."
-            systemctl restart networking
+            sudo systemctl restart networking
         fi
     fi
 

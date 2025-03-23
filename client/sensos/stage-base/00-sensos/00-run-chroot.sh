@@ -62,21 +62,21 @@ fi
 install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
-adduser "${USERNAME}" sensos-admin || true
-adduser "${USERNAME}" audio || true
+adduser "${USERNAME}" sensos-admin
+adduser "${USERNAME}" audio
 
 passwd -l "$USERNAME"
 
 # Let first user run docker
 if [ -n "${FIRST_USER_NAME}" ]; then
-    adduser "${FIRST_USER_NAME}" docker || true
-    adduser "${FIRST_USER_NAME}" sensos-admin || true
+    adduser "${FIRST_USER_NAME}" docker
+    adduser "${FIRST_USER_NAME}" sensos-admin
 fi
 
-if [ -n "${ENABLE_FIRSTBOOT_WIFI_AP}" ]; then
-    systemctl enable auto-hotspot.service
+if [ -n "${ENABLE_FIRSTBOOT_HOTSPOT}" ]; then
+    ln -sf /etc/systemd/system/auto-hotspot.service /etc/systemd/system/multi-user.target.wants/auto-hotspot.service
 fi
 
 if [ -n "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" ]; then
-    systemctl enable config-geekworm-eeprom.service
+    ln -sf /etc/systemd/system/config-geekworm-eeprom.service /etc/systemd/system/multi-user.target.wants/auto-hotspot.service
 fi

@@ -43,11 +43,11 @@ if rfkill list wifi | grep -q "Soft blocked: yes"; then
 fi
 
 # Remove any existing hotspot connection named "sensosap"
-nmcli connection delete sensosap 2>/dev/null || echo "No existing access point to delete." | tee -a "$LOG_FILE"
+sudo nmcli connection delete sensosap 2>/dev/null || echo "No existing access point to delete." | tee -a "$LOG_FILE"
 
 # Build and execute the hotspot command
 echo "Creating WiFi Access Point..." | tee -a "$LOG_FILE"
-nmcli device wifi hotspot \
+sudo nmcli device wifi hotspot \
     ${INTERFACE:+ifname "$INTERFACE"} \
     con-name sensosap \
     ssid "$SSID" \
@@ -59,6 +59,8 @@ nmcli device wifi hotspot \
 }
 
 # The AP only makes sense with ssh running
-systemctl start ssh
+sudo systemctl daemon-reload
+sudo systemctl enable ssh
+sudo systemctl start ssh
 
 echo "✅ WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"

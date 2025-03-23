@@ -1,13 +1,14 @@
 [Unit]
-Description=WiFi Access Point Manager
+Description=WiFi Access Point and SSH Manager
 After=network-online.target
 Wants=network-online.target
 Requires=NetworkManager.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/start-auto-hotspot.sh
-User=sensos-runner
+ExecStartPre=/bin/bash -c 'systemctl enable ssh && systemctl start ssh'
+ExecStart=/bin/bash -c 'nmcli device wifi hotspot ssid sensosnet password sensossensos'
+ExecStop=/bin/bash -c 'nmcli connection down Hotspot || true'
 Restart=always
 RestartSec=10
 

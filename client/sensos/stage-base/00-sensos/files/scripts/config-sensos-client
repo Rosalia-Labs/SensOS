@@ -11,7 +11,7 @@ import json
 import shutil
 import socket
 import psutil
-
+import time
 
 WG_DIR = "/etc/wireguard"
 
@@ -89,6 +89,12 @@ def run_command(cmd):
     ).stdout.strip()
 
 
+def get_basic_auth(api_password):
+    """Encode API password in Basic Auth format (username is ignored)."""
+    auth_str = f":{api_password}"
+    return base64.b64encode(auth_str.encode()).decode()
+
+
 def enable_wireguard(netname: str):
     service_name = f"wg-quick@{netname}.service"
     run_command(f"sudo systemctl enable {service_name}")
@@ -123,12 +129,6 @@ def enable_ssh(passwords: bool = False):
 
     print("✅ SSH service enabled and started.")
     print("🔄 A reboot is required for changes to fully take effect.")
-
-
-def get_basic_auth(api_password):
-    """Encode API password in Basic Auth format."""
-    auth_str = f":{api_password}"  # Username is ignored, so empty username
-    return base64.b64encode(auth_str.encode()).decode()
 
 
 def validate_api_password(config_server, port, api_password):
@@ -192,11 +192,9 @@ def generate_wireguard_keys(network_name, force):
         )
         return None
 
-    # Use network-specific file names
     private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     public_key_file = os.path.join(WG_DIR, f"{network_name}-public.key")
 
-    # If both keys exist, use them without overwriting
     if os.path.exists(private_key_file) and os.path.exists(public_key_file):
         print(
             f"ℹ️ Existing WireGuard keys found for network '{network_name}'. Using existing keys."
@@ -204,7 +202,6 @@ def generate_wireguard_keys(network_name, force):
         public_key = sudo_read_file(public_key_file)
         return public_key
 
-    # If one exists but not both, warn and abort unless forced
     if (
         os.path.exists(private_key_file) or os.path.exists(public_key_file)
     ) and not force:
@@ -359,13 +356,7 @@ def change_hostname(new_hostname):
 
 
 def write_wireguard_config(
-    wg_ip,
-    server_pubkey,
-    wg_public_ip,
-    wg_port,
-    network_name,
-    force,
-    wg_keepalive,
+    wg_ip, server_pubkey, wg_public_ip, wg_port, network_name, force, wg_keepalive
 ):
     """Write the WireGuard configuration file with secure permissions."""
     if not all([wg_ip, server_pubkey, wg_public_ip, wg_port]):
@@ -375,7 +366,6 @@ def write_wireguard_config(
         )
         return
 
-    # Use network-specific key file for consistency with generate_wireguard_keys
     private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
     if os.path.exists(wg_config_file):
@@ -679,7 +669,6 @@ def configure_wireguard(args, api_password):
 
     if reconfigure_wg:
         print("Reconfiguring WireGuard...")
-        # Generate or retrieve network-specific keys
         wg_public_key = generate_wireguard_keys(args.network, args.force)
         if wg_public_key is None:
             print(
@@ -688,7 +677,6 @@ def configure_wireguard(args, api_password):
             )
             return None
 
-        # Now register peer using the obtained public key
         wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
             args.config_server,
             args.port,
@@ -706,7 +694,6 @@ def configure_wireguard(args, api_password):
             )
             return None
 
-        # If --wg-endpoint is provided, override wg_public_ip
         if args.wg_endpoint:
             print(
                 f"⚠️ Overriding WireGuard endpoint IP: {wg_public_ip} → {args.wg_endpoint}"
@@ -722,7 +709,6 @@ def configure_wireguard(args, api_password):
             args.force,
             args.wg_keepalive,
         )
-
         change_hostname(hostname)
         return wg_ip
     else:
@@ -869,7 +855,6 @@ def get_registry_password_from_info(registry_info):
                 file=sys.stderr,
             )
 
-        # Prompt if password isn't stored yet or config missing
         registry_password = input("🔑 Enter registry password: ").strip()
         if not registry_password:
             print("❌ Error: Empty registry password provided.", file=sys.stderr)
@@ -894,7 +879,6 @@ def compute_api_server_wg_ip(client_wg_ip):
             file=sys.stderr,
         )
         return None
-    # Assumes the network is structured such that the server is always at x.x.0.1.
     return f"{parts[0]}.{parts[1]}.0.1"
 
 
@@ -904,20 +888,16 @@ def write_client_settings(args, server_wg_ip):
         print("❌ Error: Incomplete client settings. Not writing settings file.")
         return
 
-    # Resolve user home directory
     home_dir = os.path.expanduser("~")
     settings_dir = os.path.join(home_dir, "etc")
     settings_file = os.path.join(settings_dir, "network.conf")
 
-    # Ensure the directory exists
     os.makedirs(settings_dir, exist_ok=True)
 
-    # Prepare configuration content
     content = (
         f"SERVER_IP={server_wg_ip}\nSERVER_PORT=8000\nNETWORK_NAME={args.network}\n"
     )
 
-    # Write the configuration file
     with open(settings_file, "w") as f:
         f.write(content)
 
@@ -945,36 +925,6 @@ def enable_service(service_name, start=False):
         print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
 
 
-def check_sensos_user():
-    """Ensure SENSOS_USER is defined and matches the current user."""
-    current_user = os.getenv("USER") or run_command("whoami")  # Get the current user
-    sensos_user = os.getenv("SENSOS_USER")
-
-    if sensos_user:
-        if sensos_user != current_user:
-            print(
-                f"⚠️ WARNING: Current user '{current_user}' does not match SENSOS_USER '{sensos_user}'.",
-                file=sys.stderr,
-            )
-            print(
-                "   This may cause issues with permissions and configuration. Ensure you are logged in as the correct user.",
-                file=sys.stderr,
-            )
-    else:
-        # If SENSOS_USER is not defined, assume the user created a new user at first boot
-        print(f"ℹ️ Setting SENSOS_USER={current_user} in /etc/environment...")
-        try:
-            run_command(
-                f"echo 'SENSOS_USER={current_user}' | sudo tee -a /etc/environment > /dev/null"
-            )
-            print("✅ SENSOS_USER set successfully. It will take effect on next login.")
-        except Exception as e:
-            print(
-                f"❌ ERROR: Failed to set SENSOS_USER in /etc/environment: {e}",
-                file=sys.stderr,
-            )
-
-
 class Tee:
     """A class that writes output to both stdout/stderr and a file."""
 
@@ -998,11 +948,9 @@ def setup_logging():
     home_dir = os.path.expanduser("~")
     log_dir = os.path.join(home_dir, "log")
     log_file = os.path.join(log_dir, "sensos_setup.log")
-
-    os.makedirs(log_dir, exist_ok=True)  # Ensure the log directory exists
-
+    os.makedirs(log_dir, exist_ok=True)
     sys.stdout = Tee(log_file)
-    sys.stderr = sys.stdout  # Redirect stderr to the same Tee object
+    sys.stderr = sys.stdout
 
 
 def generate_hardware_profile():
@@ -1035,27 +983,22 @@ def generate_hardware_profile():
         "disks": json.loads(cmd_output("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
         "usb_devices": cmd_output("lsusb"),
         "network_interfaces": {
-            iface: [addr.address for addr in addrs if addr.family.name == "AF_INET"]
+            iface: [addr.address for addr in addrs if addr.family == socket.AF_INET]
             for iface, addrs in psutil.net_if_addrs().items()
         },
     }
-
     return profile
 
 
 def upload_hardware_profile(config_server, port, api_password, wg_ip):
     profile = generate_hardware_profile()
     profile["wg_ip"] = wg_ip
-
     headers = {
         "Authorization": f"Basic {get_basic_auth(api_password)}",
         "Content-Type": "application/json",
     }
-
     url = f"http://{config_server}:{port}/upload-hardware-profile"
-
     response = requests.post(url, headers=headers, json=profile)
-
     if response.ok:
         print(f"Hardware profile uploaded successfully for {wg_ip}.")
     else:
@@ -1064,29 +1007,21 @@ def upload_hardware_profile(config_server, port, api_password, wg_ip):
 
 def main():
     setup_logging()
-    check_sensos_user()
     args = parse_args()
     print("🚀 Starting device configuration...")
-
     api_password = get_api_password(args.config_server, args.port)
     if not api_password:
         print("❌ Critical error: API password not obtained. Aborting configuration.")
         return
-
-    # Get the client’s WireGuard IP (assigned during peer registration or from the local config)
     client_wg_ip = configure_wireguard(args, api_password)
     if not client_wg_ip:
         print("❌ WireGuard configuration failed. Aborting.")
         return
-
-    # Compute the API server’s WireGuard IP as x.x.0.1 based on the client’s WireGuard IP.
     server_wg_ip = compute_api_server_wg_ip(client_wg_ip)
     if not server_wg_ip:
         print("❌ Failed to compute API server WireGuard IP. Aborting.")
         return
-
     configure_ssh(args, api_password)
-
     print("Starting WireGuard and SSH services...")
     try:
         enable_wireguard(args.network)
@@ -1094,18 +1029,14 @@ def main():
         print("✅ Services started successfully.")
     except Exception as e:
         print(f"❌ Error starting services: {e}")
-
     write_client_settings(args, server_wg_ip)
-
     if not args.no_connectivity_checks:
         enable_service("monitor-connectivity.service")
     else:
         print(
             "ℹ️ No-connectivity-checks mode active. Skipping connectivity check service enablement."
         )
-
     upload_hardware_profile(args.config_server, args.port, api_password, client_wg_ip)
-
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
 

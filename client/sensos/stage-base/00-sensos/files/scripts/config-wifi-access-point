@@ -125,6 +125,9 @@ echo "WiFi Access Point configuration saved to $CONFIG_FILE."
 
 # Enable and start the access point service unless --no-enable was used
 if [[ "$ENABLE_SERVICE" == "true" ]]; then
+    echo "Disabling and stoping auto WiFi Access Point service..."
+    sudo systemctl stop auto-hotspot.service
+    sudo systemctl disable auto-hotspot.service
     echo "Enabling and starting WiFi Access Point service..."
     sudo systemctl daemon-reload
     sudo systemctl enable wifi-access-point.service

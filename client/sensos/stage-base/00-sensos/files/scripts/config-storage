@@ -1,0 +1,94 @@
+#!/bin/bash -e
+#
+# setup-sensos-data.sh
+#
+# This script sets up /sensos/data as a mount point.
+# It searches for a partition labeled "SENSOS_DATA".
+# If found, it checks for a filesystem. If none exists and --make-fs is provided,
+# it creates a filesystem using the type specified by --fs-type (default "ext4").
+# If no candidate is found, /sensos/data is assumed to be local storage.
+#
+
+# Parse command-line options.
+MAKE_FS=false
+FS_TYPE_ARG="ext4"
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+    --make-fs)
+        MAKE_FS=true
+        shift # past flag
+        ;;
+    --fs-type)
+        FS_TYPE_ARG="$2"
+        shift
+        shift
+        ;;
+    *) # unknown option
+        echo "Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+done
+
+DATA_MOUNT="/sensos/data"
+LABEL="SENSOS_DATA"
+
+# Ensure /sensos/data exists
+mkdir -p "$DATA_MOUNT"
+
+# Check if /sensos/data is already mounted.
+if mountpoint -q "$DATA_MOUNT"; then
+    echo "$DATA_MOUNT is already mounted."
+    exit 0
+fi
+
+echo "Searching for a partition labeled '$LABEL'..."
+# Search for candidate partition (source paths are relative to current directory).
+CANDIDATE=$(lsblk -o NAME,LABEL -nr | awk -v label="$LABEL" '$2==label {print $1; exit}')
+
+if [ -n "$CANDIDATE" ]; then
+    DEVICE="/dev/$CANDIDATE"
+    echo "Found candidate device: $DEVICE"
+
+    # Determine filesystem type using blkid.
+    FS_TYPE=$(blkid -o value -s TYPE "$DEVICE" || true)
+    if [ -z "$FS_TYPE" ]; then
+        echo "No filesystem detected on $DEVICE."
+        if [ "$MAKE_FS" = true ]; then
+            echo "--make-fs is set. Creating filesystem of type '$FS_TYPE_ARG' on $DEVICE..."
+            # Create filesystem non-interactively.
+            mkfs -t "$FS_TYPE_ARG" "$DEVICE"
+            # Verify that the filesystem is now present.
+            FS_TYPE=$(blkid -o value -s TYPE "$DEVICE" || true)
+            if [ -z "$FS_TYPE" ]; then
+                echo "❌ Failed to create filesystem on $DEVICE. Exiting." >&2
+                exit 1
+            fi
+            echo "Filesystem of type '$FS_TYPE' created on $DEVICE."
+        else
+            echo "❌ No filesystem exists on $DEVICE. Use --make-fs to create one." >&2
+            exit 1
+        fi
+    else
+        echo "Filesystem detected on $DEVICE: $FS_TYPE"
+    fi
+
+    # Decide how to mount based on FS type.
+    if [ "$FS_TYPE" = "ext4" ]; then
+        echo "Mounting ext4 (NVMe) device $DEVICE to $DATA_MOUNT..."
+        mount "$DEVICE" "$DATA_MOUNT"
+    elif [ "$FS_TYPE" = "vfat" ] || [ "$FS_TYPE" = "exfat" ]; then
+        echo "Mounting $FS_TYPE (USB drive) device $DEVICE to $DATA_MOUNT..."
+        mount "$DEVICE" "$DATA_MOUNT"
+    else
+        echo "❌ Unsupported filesystem type '$FS_TYPE' on $DEVICE. Exiting." >&2
+        exit 1
+    fi
+else
+    echo "No partition labeled '$LABEL' found."
+    echo "Using local /sensos/data (SD card storage) without mounting an external drive."
+fi
+
+echo "Mount setup complete."

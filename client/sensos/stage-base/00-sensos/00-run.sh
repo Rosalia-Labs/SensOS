@@ -4,6 +4,7 @@ BIN_DIR="${ROOTFS_DIR}/usr/local/bin"
 SYSD_SYS_DIR="${ROOTFS_DIR}/etc/systemd/system"
 SENSOS_DIR="${ROOTFS_DIR}/sensos"
 
+SERVICE_SCRIPTS_DIR=files/service_scripts
 SERVICES_DIR=files/services
 SCRIPTS_DIR=files/scripts
 DOCKER_DIR=files/docker
@@ -13,39 +14,22 @@ KEYS_DIR=files/keys
 mkdir -p "$SENSOS_DIR"
 
 # Install scripts to /usr/local/bin
-install -m 755 "${SCRIPTS_DIR}/config-wifi-access-point" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/config-sensos-containers" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/list-registry-images" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/push-registry-images" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/config-sensos-client" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/config-sensos-modem" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/config-geekworm-ups" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/config-arecord" "${BIN_DIR}"
-install -m 755 "${SCRIPTS_DIR}/show-eeprom" "${BIN_DIR}"
+for script in ${SCRIPTS_DIR}/*; do
+    install -m 755 "${script}" "${BIN_DIR}"
+done
 
 # Install service files
-install -m 644 "${SERVICES_DIR}/config-geekworm-eeprom.service" "${SYSD_SYS_DIR}"
-install -m 644 "${SERVICES_DIR}/monitor-connectivity.service" "${SYSD_SYS_DIR}"
-install -m 644 "${SERVICES_DIR}/wifi-access-point.service" "${SYSD_SYS_DIR}"
-install -m 644 "${SERVICES_DIR}/sensos-arecord.service" "${SYSD_SYS_DIR}"
-install -m 644 "${SERVICES_DIR}/sensos-modem.service" "${SYSD_SYS_DIR}"
-install -m 644 "${SERVICES_DIR}/sensos-docker.service" "${SYSD_SYS_DIR}"
-install -m 644 "${SERVICES_DIR}/auto-hotspot.service" "${SYSD_SYS_DIR}"
+for service in ${SERVICES_DIR}/*; do
+    install -m 644 "${service}" "${SYSD_SYS_DIR}"
+done
 
 # Install service start scripts
-install -m 755 "${SERVICES_DIR}/start-monitor-connectivity.sh" "${BIN_DIR}"
-install -m 755 "${SERVICES_DIR}/start-wifi-access-point.sh" "${BIN_DIR}"
-install -m 755 "${SERVICES_DIR}/start-sensos-containers.sh" "${BIN_DIR}"
-install -m 755 "${SERVICES_DIR}/start-sensos-modem.sh" "${BIN_DIR}"
-install -m 755 "${SERVICES_DIR}/start-arecord.sh" "${BIN_DIR}"
-install -m 755 "${SERVICES_DIR}/auto-hotspot.sh" "${BIN_DIR}"
+for script in ${SERVICE_SCRIPTS_DIR}/*; do
+    install -m 755 "${script}" "${BIN_DIR}"
+done
 
 # Install docker image directories
 cp -a "$DOCKER_DIR" "${SENSOS_DIR}"
-
-# Install init.d script for EEPROM configuration
-install -m 755 "${SERVICES_DIR}/config-geekworm-ups-once" "${ROOTFS_DIR}/etc/init.d/"
-install -m 755 "${SERVICES_DIR}/enable-wifi-access-point-first" "${ROOTFS_DIR}/etc/init.d/"
 
 AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
 install -m 600 "$AUTHORIZED_KEYS" "${SENSOS_DIR}/sensos_admin_authorized_keys"
