@@ -63,13 +63,13 @@ install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
 adduser "${USERNAME}" sensos-admin
-adduser "${USERNAME}" dialout
-adduser "${USERNAME}" plugdev
+adduser "${USERNAME}" dialout || true
+adduser "${USERNAME}" plugdev || true
 adduser "${USERNAME}" netdev || true
-adduser "${USERNAME}" audio
-adduser "${USERNAME}" gpio
-adduser "${USERNAME}" i2c
-adduser "${USERNAME}" spi
+adduser "${USERNAME}" audio || true
+adduser "${USERNAME}" gpio || true
+adduser "${USERNAME}" i2c || true
+adduser "${USERNAME}" spi || true
 
 passwd -l "$USERNAME"
 
