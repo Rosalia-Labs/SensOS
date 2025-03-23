@@ -21,8 +21,8 @@ DEFAULT_PORT = "8000"
 DEFAULT_NETWORK_NAME = "sensos"
 DEFAULT_KEEPALIVE = "0"
 
-API_PASSWORD_FILE = os.path.expanduser("~/.sensos_api_password")
-REGISTRY_CONFIG_FILE = os.path.expanduser("~/.sensos_registry_config.json")
+API_PASSWORD_FILE = "/sensos/.sensos_api_password"
+REGISTRY_CONFIG_FILE = "/sensos/.sensos_registry_config.json"
 
 
 def parse_args():

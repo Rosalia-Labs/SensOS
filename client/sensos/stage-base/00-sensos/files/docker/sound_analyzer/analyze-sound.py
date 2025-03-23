@@ -5,6 +5,7 @@ import numpy as np
 import psycopg
 import librosa
 import datetime
+import sys
 
 # Database connection details from environment variables.
 DB_PARAMS = {
@@ -42,7 +43,7 @@ def create_sound_statistics_table(conn):
                 full_spectrum JSONB,
                 bioacoustic_spectrum JSONB
             );
-        """
+            """
         )
         conn.commit()
     print("Sound statistics table is ready.")
@@ -99,30 +100,56 @@ def compute_binned_spectrum(audio_segment, min_freq=None, max_freq=None, num_bin
     return db.tolist()
 
 
-def process_audio_segment(audio_bytes, stored_dtype):
+def process_audio_segment(audio_bytes, audio_format):
     """
     Convert raw audio bytes into a numpy array of float32,
-    preserving the original sample values (no normalization is applied).
-    The 'stored_dtype' parameter is a string indicating the stored data type.
-    Returns None if the segment size is incorrect.
+    preserving the original sample numbers (no normalization is applied).
+
+    The conversion is based on the supplied native format code. Supported formats include:
+      - FLOAT_LE, FLOAT_BE: use np.float32.
+      - FLOAT64_LE, FLOAT64_BE: use np.float64 then cast to np.float32.
+      - S8:  8-bit signed integer.
+      - U8:  8-bit unsigned integer.
+      - S16_LE, S16_BE: 16-bit signed integer.
+      - U16_LE, U16_BE: 16-bit unsigned integer.
+      - S24_LE, S24_BE, S24_3LE, S24_3BE: stored in a 32-bit container.
+      - U24_LE, U24_BE, U24_3LE, U24_3BE: stored in a 32-bit container.
+      - S32_LE, S32_BE: 32-bit signed integer.
+      - U32_LE, U32_BE: 32-bit unsigned integer.
+
+    If an unsupported format is encountered or the segment length does not equal SEGMENT_SIZE,
+    the process exits.
     """
-    if stored_dtype == "float32":
+    if audio_format in ["FLOAT_LE", "FLOAT_BE"]:
         audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
-    elif stored_dtype == "int16":
-        # Convert from int16 to float32 without normalizing.
+    elif audio_format in ["FLOAT64_LE", "FLOAT64_BE"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.float64).astype(np.float32)
+    elif audio_format in ["S8"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int8).astype(np.float32)
+    elif audio_format in ["U8"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.uint8).astype(np.float32)
+    elif audio_format in ["S16_LE", "S16_BE"]:
         audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
-    elif stored_dtype == "int32":
-        # Convert from int32 to float32 without normalizing.
+    elif audio_format in ["U16_LE", "U16_BE"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.uint16).astype(np.float32)
+    elif audio_format in ["S24_LE", "S24_BE", "S24_3LE", "S24_3BE"]:
+        # Assumes stored in a 32-bit container.
         audio_np = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
+    elif audio_format in ["U24_LE", "U24_BE", "U24_3LE", "U24_3BE"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.uint32).astype(np.float32)
+    elif audio_format in ["S32_LE", "S32_BE"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
+    elif audio_format in ["U32_LE", "U32_BE"]:
+        audio_np = np.frombuffer(audio_bytes, dtype=np.uint32).astype(np.float32)
     else:
-        print(f"Unsupported stored data type: {stored_dtype}. Skipping segment.")
-        return None
+        print(f"Unsupported stored data type: {audio_format}. Exiting.")
+        sys.exit(1)
 
     if len(audio_np) != SEGMENT_SIZE:
         print(
-            f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}. Skipping."
+            f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}. Exiting."
         )
-        return None
+        sys.exit(1)
     return audio_np
 
 
@@ -140,7 +167,7 @@ def get_unprocessed_segments(conn):
             JOIN sensos.audio_files af ON r.file_id = af.id
             LEFT JOIN sensos.sound_statistics ss ON ra.segment_id = ss.segment_id
             WHERE ss.segment_id IS NULL;
-        """
+            """
         )
         results = cur.fetchall()
     return results
@@ -157,7 +184,7 @@ def store_sound_statistics(
                 (segment_id, peak_amplitude, rms, snr, full_spectrum, bioacoustic_spectrum)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (segment_id) DO NOTHING;
-        """,
+            """,
             (
                 segment_id,
                 peak_amplitude,
@@ -183,7 +210,7 @@ def wait_for_schema(retries=30, delay=5):
                             SELECT 1 FROM information_schema.tables 
                             WHERE table_schema = 'sensos' AND table_name = 'raw_audio'
                         );
-                    """
+                        """
                     )
                     exists = cur.fetchone()[0]
                     if exists:
@@ -223,12 +250,8 @@ def main():
                 f"🎧 Processing segment {segment_id} (native format: {stored_dtype})..."
             )
             audio_np = process_audio_segment(audio_bytes, stored_dtype)
-            if audio_np is None:
-                continue
-
             # Compute audio features.
             peak_amplitude, rms, snr = compute_audio_features(audio_np)
-
             # Compute spectral features.
             full_spectrum = compute_binned_spectrum(
                 audio_np, num_bins=FULL_SPECTRUM_BINS
@@ -236,7 +259,6 @@ def main():
             bioacoustic_spectrum = compute_binned_spectrum(
                 audio_np, min_freq=1000, max_freq=8000, num_bins=BIOACOUSTIC_BINS
             )
-
             # Store computed statistics.
             store_sound_statistics(
                 conn,

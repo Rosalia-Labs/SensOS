@@ -3,15 +3,7 @@
 # Enable i2c
 raspi-config nonint do_i2c 0
 
-# Single run scripts
-if [ "$ENABLE_FIRSTBOOT_WIFI_AP" = "1"]; then
-    update-rc.d config-geekworm-ups-once defaults
-fi
-
-if [ "$ENABLE_FIRSTBOOT_GEEKWORM_EEPROM" = "1"]; then
-    update-rc.d enable-wifi-access-point-first defaults
-fi
-
+# Install latest docker
 apt-get update &&
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -37,42 +29,54 @@ apt-get update &&
         docker-compose-plugin \
         qemu-user-static
 
-if [ -n "${FIRST_USER_NAME}" ]; then
-    if ! groups "${FIRST_USER_NAME}" | grep -q "\bdocker\b"; then
-        adduser "${FIRST_USER_NAME}" docker
-    fi
-fi
-
+# Create sensos-admin account for ssh login
 USERNAME="sensos-admin"
 USER_HOME="/home/$USERNAME"
 
 if ! id "$USERNAME" &>/dev/null; then
-    useradd -m -s /bin/bash -G sudo -c "Sensos Admin" "$USERNAME"
+    useradd -m -s /bin/bash -c "Sensos Admin" "$USERNAME"
     echo "Created user ${USERNAME}."
 fi
 
 install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
 echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 
-SHARE_DIR=/usr/local/share/sensos
-
 mkdir -p "${USER_HOME}/.ssh"
-mv "${SHARE_DIR}/sensos_admin_authorized_keys" "${USER_HOME}/.ssh/authorized_keys"
+mv "/sensos/sensos_admin_authorized_keys" "${USER_HOME}/.ssh/authorized_keys"
 chmod 600 "${USER_HOME}/.ssh/authorized_keys"
 chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/.ssh"
 
 passwd -l "$USERNAME"
 
-if [ -n "${FIRST_USER_NAME}" ]; then
+mkdir -p /sensos
+chown -R "${USERNAME}:${USERNAME}" /sensos
+chmod -R g+rwX /sensos
 
-    USERNAME="${FIRST_USER_NAME}"
-    USER_HOME="/home/$USERNAME"
+USERNAME="sensos-runner"
 
-    mv -f ${SHARE_DIR}/docker ${USER_HOME}
-    chown -R "${USERNAME}:${USERNAME}" "${USER_HOME}/docker"
-
-    chown -R "${FIRST_USER_NAME}:${FIRST_USER_NAME}" "${SHARE_DIR}"
-else
-    echo "No first user. Docker setup is in ${SHARE_DIR}."
+if ! id "$USERNAME" &>/dev/null; then
+    useradd --system -c "Sensos Runner" "$USERNAME"
+    echo "Created user ${USERNAME}."
 fi
 
+install -m 440 /dev/null "/etc/sudoers.d/$USERNAME"
+echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
+
+adduser "${USERNAME}" sensos-admin || true
+adduser "${USERNAME}" audio || true
+
+passwd -l "$USERNAME"
+
+# Let first user run docker
+if [ -n "${FIRST_USER_NAME}" ]; then
+    adduser "${FIRST_USER_NAME}" docker || true
+    adduser "${FIRST_USER_NAME}" sensos-admin || true
+fi
+
+if [ -n "${ENABLE_FIRSTBOOT_WIFI_AP}" ]; then
+    systemctl enable auto-hotspot.service
+fi
+
+if [ -n "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" ]; then
+    systemctl enable config-geekworm-eeprom.service
+fi

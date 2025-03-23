@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CONFIG_DIR="${HOME}/etc"
+CONFIG_DIR="/sensos/etc"
 CONFIG_FILE="$CONFIG_DIR/sensos_modem.conf"
 
 # Ensure necessary directories exist

@@ -18,22 +18,13 @@ Optional:
 EOF
 }
 
-# Require SENSOS_USER to be set
-if [[ -z "$SENSOS_USER" ]]; then
-    echo "ERROR: SENSOS_USER is not set in the environment."
-    exit 1
-fi
-
-# Determine home directory
-SENSOS_HOME=$(eval echo "~$SENSOS_USER")
-
 # Defaults
 device=""
 format=""
 channels=""
 rate="48000"
 max_time="900"
-base_dir="$SENSOS_HOME/audio_recordings/unprocessed"
+base_dir="/sensos/data/audio_recordings/"
 
 # Parse arguments
 TEMP=$(getopt -o "" \
@@ -103,7 +94,7 @@ if [ ${#missing[@]} -gt 0 ]; then
 fi
 
 # Write config
-config_dir="$SENSOS_HOME/etc"
+config_dir="/sensos/etc"
 mkdir -p "$config_dir"
 config_file="$config_dir/arecord.conf"
 

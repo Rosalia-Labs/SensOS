@@ -1,14 +1,7 @@
 #!/bin/bash
 
-# Use systemd environment variable
-if [[ -z "$SENSOS_USER" ]]; then
-    echo "ERROR: SENSOS_USER is not set. Exiting."
-    exit 1
-fi
-
-USER_HOME=$(eval echo ~$SENSOS_USER)
-CONFIG_FILE="$USER_HOME/etc/wifi_access_point.conf"
-LOG_FILE="$USER_HOME/log/wifi_access_point.log"
+CONFIG_FILE="/sensos/etc/wifi_access_point.conf"
+LOG_FILE="/sensos/log/wifi_access_point.log"
 
 # Ensure log directory exists
 mkdir -p "$(dirname "$LOG_FILE")"

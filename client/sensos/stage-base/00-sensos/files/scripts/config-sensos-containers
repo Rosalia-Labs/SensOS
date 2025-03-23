@@ -1,15 +1,6 @@
 #!/bin/bash
 set -e
 
-# Require SENSOS_USER to be set
-if [[ -z "$SENSOS_USER" ]]; then
-    echo "ERROR: SENSOS_USER is not set in the environment."
-    exit 1
-fi
-
-# Resolve home directory of the SENSOS_USER
-SENSOS_HOME=$(eval echo "~$SENSOS_USER")
-
 # Default values
 POSTGRES_DB="postgres"
 POSTGRES_USER="postgres"
@@ -17,7 +8,12 @@ POSTGRES_PASSWORD="sensos"
 DB_HOST="sensos-client-database"
 DB_PORT="5432"
 DB_DATA_PATH="sensos-db-data"
-AUDIO_DIRECTORY="${SENSOS_HOME}/audio_recordings"
+AUDIO_DIRECTORY="/sensos/data/audio_recordings"
+# Default audio format code. Adjust as needed.
+AUDIO_FORMAT_CODE="S32_LE"
+
+# Directory where the docker-compose file resides
+DOCKER_COMPOSE_DIR="/sensos/docker"
 
 usage() {
     cat <<EOF
@@ -30,7 +26,8 @@ Options:
   --db-host <value>           Set DB_HOST (default: sensos-client-database)
   --db-port <value>           Set DB_PORT (default: 5432)
   --db-data-path <value>      Set DB_DATA_PATH (default: sensos-db-data)
-  --audio-directory <value>   Set AUDIO_DIRECTORY (default: SENSOS_USER's home/audio_recordings)
+  --audio-directory <value>   Set AUDIO_DIRECTORY (default: /sensos/data/audio_recordings)
+  --audio-format <value>      Set AUDIO_FORMAT_CODE (default: S32_LE)
   --help                    Show this help message
 EOF
 }
@@ -66,6 +63,10 @@ while [[ "$#" -gt 0 ]]; do
         AUDIO_DIRECTORY="$2"
         shift 2
         ;;
+    --audio-format)
+        AUDIO_FORMAT_CODE="$2"
+        shift 2
+        ;;
     --help)
         usage
         exit 0
@@ -77,9 +78,6 @@ while [[ "$#" -gt 0 ]]; do
         ;;
     esac
 done
-
-# Directory where the docker-compose file resides
-DOCKER_COMPOSE_DIR="${SENSOS_HOME}/docker"
 
 # Ensure the directory exists and is writable
 mkdir -p "$DOCKER_COMPOSE_DIR"
@@ -97,6 +95,7 @@ DB_HOST=${DB_HOST}
 DB_PORT=${DB_PORT}
 DB_DATA_PATH=${DB_DATA_PATH}
 AUDIO_DIRECTORY=${AUDIO_DIRECTORY}
+AUDIO_FORMAT_CODE=${AUDIO_FORMAT_CODE}
 EOF
 
 echo ".env file written to ${DOCKER_COMPOSE_DIR}/.env with the following content:"

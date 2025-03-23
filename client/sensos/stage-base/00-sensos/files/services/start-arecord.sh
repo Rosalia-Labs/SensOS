@@ -11,17 +11,8 @@
 # The output files will be stored in a directory structure:
 #   BASE_DIR/YYYY/MM/DD/sensos-YYYY-MM-DD-HH-MM-SS.wav
 
-# Check if SENSOS_USER is set
-if [ -z "$SENSOS_USER" ]; then
-    echo "Error: SENSOS_USER is not set. Please set the SENSOS_USER environment variable."
-    exit 1
-fi
-
-# Compute the home directory of SENSOS_USER
-SENSOS_HOME=$(eval echo "~$SENSOS_USER")
-
 # Define the config file path based on SENSOS_HOME
-CONFIG_FILE="$SENSOS_HOME/etc/arecord.conf"
+CONFIG_FILE="/sensos/etc/arecord.conf"
 
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "Error: Configuration file not found at $CONFIG_FILE"
@@ -40,13 +31,13 @@ source "$CONFIG_FILE"
 
 # Set BASE_DIR default if not provided (use SENSOS_USER's home directory)
 if [ -z "$BASE_DIR" ]; then
-    BASE_DIR="$SENSOS_HOME/audio_recordings/unprocessed"
+    BASE_DIR="/sensos/data/audio_recordings"
 fi
 
 # Define the output filename pattern.
 # This pattern creates directories: BASE_DIR/YYYY/MM/DD/
 # and filenames like: sensos-YYYY-MM-DD-HH-MM-SS.wav
-OUTPUT_PATTERN="${BASE_DIR}/%Y/%m/%d/sensos_%Y%m%dT%H%M%S.wav"
+OUTPUT_PATTERN="${BASE_DIR}/unprocessed/%Y/%m/%d/sensos_%Y%m%dT%H%M%S.wav"
 
 # Ensure the base directory exists (arecord won't create intermediate directories)
 mkdir -p "$BASE_DIR"

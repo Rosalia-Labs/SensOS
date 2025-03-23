@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/environment
-ExecStart=/bin/bash -c '[ -n "$SENSOS_USER" ] && su - "$SENSOS_USER" -c "/usr/local/bin/start-arecord.sh"'
+ExecStart=/usr/local/bin/start-arecord.sh
+User=sensos-runner
 Restart=always
 RestartSec=5
 

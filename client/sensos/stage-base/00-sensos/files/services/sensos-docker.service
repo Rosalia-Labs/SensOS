@@ -5,17 +5,8 @@ Requires=docker.service
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/environment
-
-# Ensure we have a valid SENSOS_USER, then run the containers
-ExecStart=/bin/bash -c '\
-  if [ -n "$SENSOS_USER" ]; then \
-    exec su - "$SENSOS_USER" -c "/usr/local/bin/start-sensos-containers.sh --no-detach"; \
-  else \
-    echo "SENSOS_USER is not set; skipping container startup." >&2; \
-    exit 0; \
-  fi'
-
+ExecStart=/usr/local/bin/start-sensos-containers.sh --no-detach"
+User=sensos-runner
 Restart=on-failure
 RestartSec=5
 

@@ -8,8 +8,8 @@ Requires=NetworkManager.service
 Type=simple
 Restart=always
 RestartSec=10
-EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-sensos-modem.sh
+User=sensos-runner
 
 [Install]
 WantedBy=multi-user.target

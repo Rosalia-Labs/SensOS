@@ -1,0 +1,15 @@
+[Unit]
+Description=WiFi Access Point Manager
+After=network-online.target
+Wants=network-online.target
+Requires=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/start-auto-hotspot.sh
+User=sensos-runner
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

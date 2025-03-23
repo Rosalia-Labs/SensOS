@@ -7,17 +7,9 @@
 # If unreachable for 7 days, the system is rebooted.
 #
 
-# Ensure SENSOS_USER is set
-if [[ -z "$SENSOS_USER" ]]; then
-    echo "ERROR: SENSOS_USER is not set in /etc/environment. Exiting."
-    exit 1
-fi
-
-# Set home directory and paths
-USER_HOME=$(eval echo ~$SENSOS_USER)
-LOG_DIR="$USER_HOME/log"
+LOG_DIR="/sensos/log"
 LOGFILE="$LOG_DIR/connectivity_check.log"
-SETTINGS_FILE="$USER_HOME/etc/network.conf"
+SETTINGS_FILE="/sensos/etc/network.conf"
 
 # Ensure necessary directories exist
 mkdir -p "$LOG_DIR"

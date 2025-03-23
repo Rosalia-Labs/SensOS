@@ -1,15 +1,7 @@
 #!/bin/bash
 
-# Ensure SENSOS_USER is set
-if [[ -z "$SENSOS_USER" ]]; then
-    echo "ERROR: SENSOS_USER is not set. Exiting."
-    exit 1
-fi
-
-USER_HOME=$(eval echo ~$SENSOS_USER)
-
-CONFIG_FILE="${USER_HOME}/etc/sensos_modem.conf"
-LOG_DIR="$USER_HOME/log"
+CONFIG_FILE="/sensos/etc/sensos_modem.conf"
+LOG_DIR="/sensos/log"
 LOG_FILE="$LOG_DIR/modem.log"
 
 # Ensure log directory exists

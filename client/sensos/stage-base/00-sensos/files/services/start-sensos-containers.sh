@@ -2,18 +2,12 @@
 
 set -e
 
-if [[ -z "$SENSOS_USER" ]]; then
-    . /etc/environment
-fi
-
-if [[ -z "$SENSOS_USER" ]]; then
-    echo "ERROR: SENSOS_USER is not set. Exiting."
-    exit 1
-fi
-
 # Default flags for docker-compose
 DETACH_FLAG="-d"
 BUILD_FLAG=""
+
+# Directory where the docker-compose file (and .env file) reside
+DOCKER_COMPOSE_DIR="/sensos/docker"
 
 usage() {
     cat <<EOF
@@ -48,9 +42,6 @@ while [[ "$#" -gt 0 ]]; do
         ;;
     esac
 done
-
-# Directory where the docker-compose file (and .env file) reside
-DOCKER_COMPOSE_DIR="/home/${SENSOS_USER}/docker"
 
 echo "Changing working directory to ${DOCKER_COMPOSE_DIR}"
 cd "$DOCKER_COMPOSE_DIR"

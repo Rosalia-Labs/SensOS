@@ -24,8 +24,8 @@ DB_PARAMS = (
 # Audio settings.
 # Hard-coded defaults (file metadata will be determined per file).
 SAMPLE_RATE = 48000  # expected sample rate (used for segmentation)
-env_audio_format = "float32"  # default native audio format
-AUDIO_FORMAT = np.float32  # default data type
+# Default values if not overridden:
+DEFAULT_AUDIO_FORMAT = "FLOAT_LE"  # fallback native audio format
 
 SEGMENT_DURATION = 3  # seconds
 STEP_SIZE = 1  # seconds; smaller value creates overlapping segments
@@ -169,7 +169,7 @@ def process_file(file_path, file_id, metadata):
     logging.info(f"Processing file: {file_path}")
     try:
         # Use the native format from the metadata
-        dtype = metadata["native_dtype"]
+        dtype = metadata["native_format"]
         audio, srate = sf.read(file_path, dtype=dtype)
     except Exception as e:
         logging.error(f"Error loading {file_path}: {e}")
@@ -266,24 +266,30 @@ def process_directory():
                     continue
                 srate = info.samplerate
                 channel_count = info.channels
-                if info.subtype in ["PCM_16", "PCM_S16LE", "PCM_S16BE"]:
-                    native_dtype = "int16"
-                elif info.subtype in ["PCM_24"]:
-                    native_dtype = "int32"
-                elif info.subtype in ["PCM_32"]:
-                    native_dtype = "int32"
-                elif info.subtype in ["FLOAT", "FLOAT32"]:
-                    native_dtype = "float32"
-                else:
-                    native_dtype = "float32"
 
-                metadata = {"native_dtype": native_dtype, "samplerate": srate}
+                # Determine native audio format:
+                # If the environment variable AUDIO_FORMAT_CODE is set, use it;
+                # otherwise, derive from info.subtype.
+                native_format = os.environ.get("AUDIO_FORMAT_CODE")
+                if not native_format:
+                    if info.subtype in ["PCM_16", "PCM_S16LE", "PCM_S16BE"]:
+                        native_format = "S16_LE"
+                    elif info.subtype in ["PCM_24"]:
+                        native_format = "S24_LE"
+                    elif info.subtype in ["PCM_32"]:
+                        native_format = "S32_LE"
+                    elif info.subtype in ["FLOAT", "FLOAT32"]:
+                        native_format = "FLOAT_LE"
+                    else:
+                        native_format = DEFAULT_AUDIO_FORMAT
+
+                metadata = {"native_format": native_format, "samplerate": srate}
 
                 # Record file-level metadata using the extracted timestamp.
                 file_id = create_file_recording(
                     file_path,
                     srate,
-                    native_dtype,
+                    native_format,
                     channel_count,
                     recording_timestamp,
                 )

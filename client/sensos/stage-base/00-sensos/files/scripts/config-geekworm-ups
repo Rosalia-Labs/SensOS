@@ -1,8 +1,27 @@
 #!/bin/bash
+# Query current EEPROM configuration.
+CURRENT_CONF=$(sudo rpi-eeprom-config)
+
+# Define the expected settings.
+EXPECTED_BOOT_UART="BOOT_UART=1"
+EXPECTED_POWER_OFF="POWER_OFF_ON_HALT=1"
+EXPECTED_PSU="PSU_MAX_CURRENT=5000"
+
+# Check if all expected settings are present.
+if echo "$CURRENT_CONF" | grep -q "$EXPECTED_BOOT_UART" &&
+    echo "$CURRENT_CONF" | grep -q "$EXPECTED_POWER_OFF" &&
+    echo "$CURRENT_CONF" | grep -q "$EXPECTED_PSU"; then
+    echo "EEPROM already configured as expected. Exiting."
+    exit 0
+fi
+
+# Create boot configuration file.
 BOOTCONF="/tmp/bootconf.txt"
-# Create boot configuration file
 echo '[all]' >"$BOOTCONF"
-echo "BOOT_UART=1" >>"$BOOTCONF"
-echo "POWER_OFF_ON_HALT=1" >>"$BOOTCONF"
-echo "PSU_MAX_CURRENT=5000" >>"$BOOTCONF"
+echo "$EXPECTED_BOOT_UART" >>"$BOOTCONF"
+echo "$EXPECTED_POWER_OFF" >>"$BOOTCONF"
+echo "$EXPECTED_PSU" >>"$BOOTCONF"
+
+# Apply the new EEPROM configuration.
 sudo rpi-eeprom-config --apply "$BOOTCONF"
+echo "EEPROM configuration applied."

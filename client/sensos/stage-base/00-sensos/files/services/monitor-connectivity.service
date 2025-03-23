@@ -4,8 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/environment
 ExecStart=/usr/local/bin/start-monitor-connectivity.sh
+User=sensos-runner
 Restart=always
 RestartSec=60
 
