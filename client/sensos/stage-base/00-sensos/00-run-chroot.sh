@@ -65,7 +65,7 @@ echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" >"/etc/sudoers.d/$USERNAME"
 adduser "${USERNAME}" sensos-admin
 adduser "${USERNAME}" dialout
 adduser "${USERNAME}" plugdev
-adduser "${USERNAME}" netdev
+adduser "${USERNAME}" netdev || true
 adduser "${USERNAME}" audio
 adduser "${USERNAME}" gpio
 adduser "${USERNAME}" i2c
