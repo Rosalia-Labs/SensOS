@@ -953,6 +953,18 @@ def setup_logging():
     sys.stderr = sys.stdout
 
 
+def remove_nulls(data):
+    """Recursively remove null characters from strings in data."""
+    if isinstance(data, dict):
+        return {k: remove_nulls(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [remove_nulls(item) for item in data]
+    elif isinstance(data, str):
+        return data.replace("\x00", "")
+    else:
+        return data
+
+
 def generate_hardware_profile():
     def cmd_output(cmd):
         return subprocess.check_output(cmd, shell=True, text=True).strip()
@@ -987,7 +999,7 @@ def generate_hardware_profile():
             for iface, addrs in psutil.net_if_addrs().items()
         },
     }
-    return profile
+    return remove_nulls(profile)
 
 
 def upload_hardware_profile(config_server, port, api_password, wg_ip):

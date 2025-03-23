@@ -50,7 +50,7 @@ passwd -l "$USERNAME"
 
 mkdir -p /sensos
 chown -R "${USERNAME}:${USERNAME}" /sensos
-chmod -R g+rwX /sensos
+chmod -R 2775 /sensos
 
 USERNAME="sensos-runner"
 
@@ -73,10 +73,6 @@ if [ -n "${FIRST_USER_NAME}" ]; then
     adduser "${FIRST_USER_NAME}" sensos-admin
 fi
 
-if [ -n "${ENABLE_FIRSTBOOT_HOTSPOT}" ]; then
-    ln -sf /etc/systemd/system/auto-hotspot.service /etc/systemd/system/multi-user.target.wants/auto-hotspot.service
-fi
-
-if [ -n "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" ]; then
-    ln -sf /etc/systemd/system/config-geekworm-eeprom.service /etc/systemd/system/multi-user.target.wants/auto-hotspot.service
-fi
+install -d -m 2775 -o sensos-admin -g sensos-admin /sensos/etc
+install -d -m 2775 -o sensos-admin -g sensos-admin /sensos/log
+install -d -m 2775 -o sensos-admin -g sensos-admin /sensos/data
