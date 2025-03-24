@@ -264,21 +264,21 @@ def process_directory():
                 srate = info.samplerate
                 channel_count = info.channels
 
-                # Determine native audio format:
-                # If the environment variable AUDIO_FORMAT_CODE is set, use it;
-                # otherwise, derive from info.subtype.
                 native_format = os.environ.get("AUDIO_FORMAT_CODE")
-                if info.subtype in ["PCM_16", "PCM_S16LE", "PCM_S16BE"]:
-                    native_format = "int16"
-                elif info.subtype in ["PCM_24"]:
-                    native_format = "int32"
-                elif info.subtype in ["PCM_32", "S32_LE", "S32_BE"]:
-                    native_format = "int32"
-                elif info.subtype in ["FLOAT", "FLOAT32"]:
-                    native_format = "float32"
-                else:
-                    logging.error(f"Unknown audio subtype: {info.subtype}")
-                    raise ValueError(f"Unsupported audio byte layout: {info.subtype}")
+                if not native_format:
+                    if info.subtype in ["PCM_16", "PCM_S16LE", "PCM_S16BE"]:
+                        native_format = "S16_LE"
+                    elif info.subtype in ["PCM_24"]:
+                        native_format = "S24_LE"
+                    elif info.subtype in ["PCM_32", "S32_LE", "S32_BE"]:
+                        native_format = "S32_LE"
+                    elif info.subtype in ["FLOAT", "FLOAT32"]:
+                        native_format = "FLOAT_LE"
+                    else:
+                        logging.error(f"Unknown audio subtype: {info.subtype}")
+                        raise ValueError(
+                            f"Unsupported audio byte layout: {info.subtype}"
+                        )
 
                 metadata = {"native_format": native_format, "samplerate": srate}
 

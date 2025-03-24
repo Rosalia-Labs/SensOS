@@ -93,11 +93,17 @@ if [ -z "$device" ]; then
     echo "Selected device: $device"
 fi
 
-# Query params
-params=$(arecord --dump-hw-params -D "$device" 2>/dev/null || true)
+# Extract numeric hw device string for parameter query
+card_index=$(arecord -l | grep -A1 "$device" | grep '^  Subdevices:' | awk -F: '{print $1}' | sed 's/^.*card //' | cut -d':' -f1)
+dev_index=$(echo "$device" | sed -n 's/.*DEV=\([0-9]\+\)/\1/p')
+
+if [[ -n "$card_index" && -n "$dev_index" ]]; then
+    hw_numeric="hw:$card_index,$dev_index"
+    params=$(arecord --dump-hw-params -D "$hw_numeric" 2>/dev/null || true)
+fi
+
 if [ -z "$params" ]; then
-    echo "ERROR: Unable to query device '$device'. Make sure it's correct and available." >&2
-    exit 1
+    echo "WARNING: Unable to query hardware params for '$device'. Proceeding without param introspection."
 fi
 
 # Prompt for format
