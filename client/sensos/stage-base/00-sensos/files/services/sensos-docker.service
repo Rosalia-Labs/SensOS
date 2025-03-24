@@ -1,14 +1,15 @@
 [Unit]
-Description=Start Docker Containers for Sound Analysis
+Description=Run Docker Compose as sensos-runner
 After=network.target docker.service
 Requires=docker.service
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/start-sensos-containers.sh --no-detach
 User=sensos-runner
-Restart=on-failure
-RestartSec=5
+Environment=HOME=/tmp
+WorkingDirectory=/sensos/docker
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=always
 
 [Install]
 WantedBy=multi-user.target

@@ -963,15 +963,6 @@ def remove_nulls(data):
         return data
 
 
-def remove_nulls(d):
-    if isinstance(d, dict):
-        return {k: remove_nulls(v) for k, v in d.items() if v is not None}
-    elif isinstance(d, list):
-        return [remove_nulls(v) for v in d if v is not None]
-    else:
-        return d
-
-
 def safe_cmd_output(cmd, try_sudo=False):
     try:
         return subprocess.check_output(cmd, shell=True, text=True).strip()
