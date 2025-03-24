@@ -39,11 +39,6 @@ else
     echo "Skipping removal of deploy directory."
 fi
 
-# Read and export variables in config file
-set -a
-source "$CONFIG_FILE"
-set +a
-
 ./build-docker.sh
 
 # Some weird security shit happening
