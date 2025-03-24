@@ -72,15 +72,14 @@ def compute_binned_spectrum(audio_segment, min_freq=None, max_freq=None, num_bin
     Compute the integrated power within logarithmic frequency bins for the given audio segment.
     Returns the spectrum in decibels.
     """
-    # Compute power spectrogram.
-    S = (
-        np.abs(
-            librosa.stft(
-                audio_segment.astype(float), n_fft=N_FFT, hop_length=HOP_LENGTH
-            )
+    if audio_segment.dtype != np.float32:
+        print(
+            f"⚠️ compute_binned_spectrum: converting from {audio_segment.dtype} to float32"
         )
-        ** 2
-    )
+    audio_segment = audio_segment.astype(np.float32)
+    if np.any(np.isnan(audio_segment)) or np.any(np.isinf(audio_segment)):
+        print("❌ NaNs or Infs detected in audio segment")
+    S = np.abs(librosa.stft(audio_segment, n_fft=N_FFT, hop_length=HOP_LENGTH)) ** 2
     freqs = librosa.fft_frequencies(sr=SAMPLE_RATE, n_fft=N_FFT)
 
     if min_freq is None or min_freq <= 0:
@@ -149,6 +148,20 @@ def process_audio_segment(audio_bytes, audio_format):
             f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}. Exiting."
         )
         sys.exit(1)
+
+    if audio_np.dtype != np.float32:
+        print(f"⚠️ Converting audio from {audio_np.dtype} to float32.")
+    audio_np = audio_np.astype(np.float32)
+
+    if np.any(np.isnan(audio_np)) or np.any(np.isinf(audio_np)):
+        print("❌ NaNs or Infs detected after conversion.")
+
+    if len(audio_np) != SEGMENT_SIZE:
+        print(
+            f"❌ Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}"
+        )
+        sys.exit(1)
+
     return audio_np
 
 

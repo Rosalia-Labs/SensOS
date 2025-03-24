@@ -1400,3 +1400,98 @@ def upload_hardware_profile(
     logger.info(f"✅ Hardware profile stored for peer IP '{wg_ip}'.")
 
     return {"status": "success", "wg_ip": wg_ip}
+
+
+@app.get("/wireguard-status", response_class=HTMLResponse)
+def wireguard_status_dashboard(
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    """
+    Displays an HTML dashboard showing WireGuard peer status from the sensos-wireguard container.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "sensos-wireguard", "wg"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        return HTMLResponse(
+            "<h3 style='color:red;'>❌ Docker not found on this system.</h3>",
+            status_code=500,
+        )
+    except subprocess.CalledProcessError as e:
+        return HTMLResponse(
+            f"<h3 style='color:red;'>❌ Failed to run wg: {e.stderr.strip()}</h3>",
+            status_code=500,
+        )
+
+    output = result.stdout
+    lines = output.strip().splitlines()
+    peers = []
+    current_peer = {}
+
+    def parse_handshake(text):
+        match = re.match(r"(\d+)\s+(\w+)\s+ago", text)
+        if not match:
+            return text
+        num, unit = match.groups()
+        try:
+            delta = timedelta(**{unit: int(num)})
+            ts = datetime.utcnow() - delta
+            return ts.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            return text
+
+    for line in lines:
+        line = line.strip()
+        if line.startswith("peer:"):
+            if current_peer:
+                peers.append(current_peer)
+            current_peer = {"public_key": line.split(":", 1)[1].strip()}
+        elif ":" in line:
+            key, val = map(str.strip, line.split(":", 1))
+            current_peer[key] = val
+    if current_peer:
+        peers.append(current_peer)
+
+    # Build HTML table
+    html = """
+    <html>
+    <head>
+        <title>WireGuard Status</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; }
+            h2 { color: #005a9c; }
+            table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; }
+            th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
+            th { background: #005a9c; color: white; }
+            tr:nth-child(even) { background: #f2f2f2; }
+        </style>
+    </head>
+    <body>
+        <h2>🔐 WireGuard Peer Status</h2>
+        <table>
+            <tr>
+                <th>Public Key</th>
+                <th>Allowed IPs</th>
+                <th>Endpoint</th>
+                <th>Last Contact</th>
+                <th>Transfer</th>
+            </tr>
+    """
+
+    for p in peers:
+        html += f"""
+        <tr>
+            <td style="font-family: monospace;">{p.get("public_key")}</td>
+            <td>{p.get("allowed ips", "—")}</td>
+            <td>{p.get("endpoint", "—")}</td>
+            <td>{parse_handshake(p.get("latest handshake", "—"))}</td>
+            <td>{p.get("transfer", "—").replace("received", "⬇").replace("sent", "⬆")}</td>
+        </tr>
+        """
+
+    html += "</table></body></html>"
+    return HTMLResponse(content=html)

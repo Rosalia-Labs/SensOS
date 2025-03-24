@@ -182,6 +182,16 @@ def process_audio(audio_bytes, audio_format):
         )
         sys.exit(1)
 
+    if audio_np.dtype != np.float32:
+        logging.warning(f"Converting audio from {audio_np.dtype} to float32.")
+    audio_np = audio_np.astype(np.float32)
+
+    if len(audio_np) != SEGMENT_SIZE:
+        logging.error(
+            f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}. Exiting."
+        )
+        sys.exit(1)
+
     return audio_np
 
 
@@ -199,6 +209,14 @@ def invoke_interpreter(audio_segment):
     """
     input_data = np.expand_dims(audio_segment, axis=0).astype(np.float32)
     interpreter.set_tensor(input_details[0]["index"], input_data)
+
+    # Debug
+    print(
+        f"Audio dtype: {audio_segment.dtype}, max={np.max(audio_segment):.3f}, min={np.min(audio_segment):.3f}"
+    )
+    print(f"Any NaNs? {np.isnan(audio_segment).any()}")
+    print(f"Shape: {audio_segment.shape}, Expected: ({SEGMENT_SIZE},)")
+
     interpreter.invoke()
     score_output_index = output_details[0]["index"]
     embedding_output_index = score_output_index - 1
