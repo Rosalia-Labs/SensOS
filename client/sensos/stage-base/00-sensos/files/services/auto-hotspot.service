@@ -5,12 +5,11 @@ Wants=network-online.target
 Requires=NetworkManager.service
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
 ExecStartPre=/bin/bash -c 'systemctl enable ssh && systemctl start ssh'
 ExecStart=/bin/bash -c 'nmcli device wifi hotspot ssid sensosnet password sensossensos'
 ExecStop=/bin/bash -c 'nmcli connection down Hotspot || true'
-Restart=always
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

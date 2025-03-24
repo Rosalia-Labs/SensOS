@@ -6,8 +6,7 @@ CONFIG_FILE="${SCRIPT_DIR}/../pi-gen/config"
 # Default settings
 PI_GEN_RELEASE="SensOS reference"
 PIGEN_DOCKER_OPTS="-v $SCRIPT_DIR:/sensos"
-SENSOS_STAGES=$(echo "stage-base" | awk '{for(i=1;i<=NF;i++) $i="/sensos/"$i}1')
-STAGE_LIST="stage0 stage1 $SENSOS_STAGES stage2"
+STAGE_LIST="stage0 stage1 stage2"
 IMG_NAME="sensos"
 TIMEZONE_DEFAULT="UTC"
 KEYBOARD_KEYMAP="us"
@@ -18,8 +17,8 @@ FIRST_USER_PASS="sensos"
 DISABLE_FIRST_BOOT_USER_RENAME="1"
 WPA_COUNTRY="US"
 DEPLOY_COMPRESSION="none"
-ENABLE_FIRSTBOOT_HOTSPOT="0"
-ENABLE_FIRSTBOOT_EEPROM="0"
+ENABLE_HOTSPOT="0"
+ENABLE_GEEKWORK_EEPROM="0"
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -30,10 +29,6 @@ while [[ $# -gt 0 ]]; do
         ;;
     --pigen-docker-opts)
         PIGEN_DOCKER_OPTS="$2"
-        shift 2
-        ;;
-    --sensos-stages)
-        SENSOS_STAGES="$2"
         shift 2
         ;;
     --stage-list)
@@ -80,12 +75,12 @@ while [[ $# -gt 0 ]]; do
         DEPLOY_COMPRESSION="$2"
         shift 2
         ;;
-    --enable-firstboot-wifi-ap)
-        ENABLE_FIRSTBOOT_HOTSPOT="1"
+    --enable-wifi-ap)
+        ENABLE_HOTSPOT="1"
         shift 1
         ;;
-    --enable-firstboot-geekworm-ups)
-        ENABLE_FIRSTBOOT_GEEKWORM_EEPROM="1"
+    --enable-geekworm-eeprom)
+        ENABLE_GEEKWORM_EEPROM="1"
         shift 1
         ;;
     --help)
@@ -94,7 +89,6 @@ while [[ $# -gt 0 ]]; do
         echo "Options:"
         echo "  --pi-gen-release <value>                   (default: $PI_GEN_RELEASE)"
         echo "  --pigen-docker-opts <value>                (default: $PIGEN_DOCKER_OPTS)"
-        echo "  --sensos-stages <value>                    (default: $SENSOS_STAGES)"
         echo "  --stage-list <value>                       (default: $STAGE_LIST)"
         echo "  --img-name <value>                         (default: $IMG_NAME)"
         echo "  --timezone-default <value>                 (default: $TIMEZONE_DEFAULT)"
@@ -106,8 +100,8 @@ while [[ $# -gt 0 ]]; do
         echo "  --disable-first-boot-user-rename <0|1>     (default: $DISABLE_FIRST_BOOT_USER_RENAME)"
         echo "  --wpa-country <value>                      (default: $WPA_COUNTRY)"
         echo "  --deploy-compression <value>               (default: $DEPLOY_COMPRESSION)"
-        echo "  --enable-firstboot-wifi-ap                 Enable first boot WiFi AP (default: disabled)"
-        echo "  --enable-firstboot-geekworm-ups            Enable first boot EEPROM update (default: disabled)"
+        echo "  --enable-wifi-ap                           Enable AP (default: disabled)"
+        echo "  --enable-geekworm-eeprom                   Enable EEPROM update (default: disabled)"
         echo "  --help                                     Display this help message"
         exit 0
         ;;
@@ -126,7 +120,6 @@ mkdir -p "$(dirname "$CONFIG_FILE")"
 cat <<EOF | tee "$CONFIG_FILE"
 PI_GEN_RELEASE="$PI_GEN_RELEASE"
 PIGEN_DOCKER_OPTS="$PIGEN_DOCKER_OPTS"
-SENSOS_STAGES="$SENSOS_STAGES"
 STAGE_LIST="$STAGE_LIST"
 IMG_NAME="$IMG_NAME"
 TIMEZONE_DEFAULT="$TIMEZONE_DEFAULT"
@@ -138,8 +131,8 @@ FIRST_USER_PASS="$FIRST_USER_PASS"
 DISABLE_FIRST_BOOT_USER_RENAME="$DISABLE_FIRST_BOOT_USER_RENAME"
 WPA_COUNTRY="$WPA_COUNTRY"
 DEPLOY_COMPRESSION="$DEPLOY_COMPRESSION"
-ENABLE_FIRSTBOOT_HOTSPOT="$ENABLE_FIRSTBOOT_HOTSPOT"
-ENABLE_FIRSTBOOT_GEEKWORM_EEPROM="$ENABLE_FIRSTBOOT_GEEKWORM_EEPROM"
+ENABLE_HOTSPOT="$ENABLE_HOTSPOT"
+ENABLE_GEEKWORM_EEPROM="$ENABLE_GEEKWORM_EEPROM"
 EOF
 
 echo -e "\nConfig file written. Now go to the pi-gen directory and run ./build-docker.sh\n"

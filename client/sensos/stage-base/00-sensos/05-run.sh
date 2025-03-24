@@ -1,16 +1,13 @@
 #!/bin/bash -e
 
-if [ "${ENABLE_FIRSTBOOT_HOTSPOT}" = "1" ]; then
-    on_chroot <<'EOF'
-systemctl enable auto-hotspot.service
-systemctl start auto-hotspot.service || true
+on_chroot <<EOF
+raspi-config nonint do_i2c 0
 EOF
-    echo "Enabled auto-hotspot service."
-fi
 
-if [ "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" = "1" ]; then
-    on_chroot <<'EOF'
-systemctl enable config-geekworm-eeprom.service
+# Let first user run docker
+if [ -n "${FIRST_USER_NAME}" ]; then
+    on_chroot <<EOF
+adduser "${FIRST_USER_NAME}" docker
+adduser "${FIRST_USER_NAME}" sensos-data
 EOF
-    echo "Enabled config-geekworm-eeprom service."
 fi
