@@ -8,10 +8,12 @@ SERVICE_SCRIPTS_DIR=files/service_scripts
 SERVICES_DIR=files/services
 SCRIPTS_DIR=files/scripts
 DOCKER_DIR=files/docker
-KEYS_DIR=files/keys
 
 # Ensure /usr/local/share/sensos exists
 mkdir -p "$SENSOS_DIR"
+mkdir -p "$SENSOS_DIR/log"
+mkdir -p "$SENSOS_DIR/etc"
+mkdir -p "$SENSOS_DIR/data"
 
 # Install scripts to /usr/local/bin
 for script in ${SCRIPTS_DIR}/*; do
@@ -30,19 +32,3 @@ done
 
 # Install docker image directories
 cp -a "$DOCKER_DIR" "${SENSOS_DIR}"
-
-AUTHORIZED_KEYS="${KEYS_DIR}/sensos_admin_authorized_keys"
-install -m 600 "$AUTHORIZED_KEYS" "${SENSOS_DIR}/sensos_admin_authorized_keys"
-
-if [ "${ENABLE_FIRSTBOOT_HOTSPOT}" = "1" ]; then
-    on_chroot <<'EOF'
-systemctl enable auto-hotspot.service
-systemctl start auto-hotspot.service || true
-EOF
-fi
-
-if [ "${ENABLE_FIRSTBOOT_GEEKWORM_EEPROM}" = "1" ]; then
-    on_chroot <<'EOF'
-systemctl enable config-geekworm-eeprom.service
-EOF
-fi
