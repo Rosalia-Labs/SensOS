@@ -8,11 +8,11 @@ POSTGRES_PASSWORD="sensos"
 DB_HOST="sensos-client-database"
 DB_PORT="5432"
 DB_DATA_PATH="sensos-db-data"
-AUDIO_DIRECTORY="/sensos/data/audio_recordings"
-# Default audio format code. Adjust as needed.
-AUDIO_FORMAT_CODE="S32_LE"
+AUDIO_DIRECTORY=""
+AUDIO_FORMAT_CODE=""
 
-# Directory where the docker-compose file resides
+# Config file path
+ARECORD_CONF="/sensos/etc/arecord.conf"
 DOCKER_COMPOSE_DIR="/sensos/docker"
 
 usage() {
@@ -26,9 +26,9 @@ Options:
   --db-host <value>           Set DB_HOST (default: sensos-client-database)
   --db-port <value>           Set DB_PORT (default: 5432)
   --db-data-path <value>      Set DB_DATA_PATH (default: sensos-db-data)
-  --audio-directory <value>   Set AUDIO_DIRECTORY (default: /sensos/data/audio_recordings)
-  --audio-format <value>      Set AUDIO_FORMAT_CODE (default: S32_LE)
-  --help                    Show this help message
+  --audio-directory <value>   Set AUDIO_DIRECTORY (from arecord.conf or default)
+  --audio-format <value>      Set AUDIO_FORMAT_CODE (from arecord.conf or default)
+  --help                      Show this help message
 EOF
 }
 
@@ -78,6 +78,21 @@ while [[ "$#" -gt 0 ]]; do
         ;;
     esac
 done
+
+# If arecord.conf exists and values not already provided, extract defaults
+if [[ -f "$ARECORD_CONF" ]]; then
+    echo "Reading config from $ARECORD_CONF..."
+    if [[ -z "$AUDIO_DIRECTORY" ]]; then
+        AUDIO_DIRECTORY=$(grep '^BASE_DIR=' "$ARECORD_CONF" | cut -d= -f2- | tr -d '"')
+    fi
+    if [[ -z "$AUDIO_FORMAT_CODE" ]]; then
+        AUDIO_FORMAT_CODE=$(grep '^FORMAT=' "$ARECORD_CONF" | cut -d= -f2- | tr -d '"')
+    fi
+fi
+
+# Fallback defaults if still unset
+AUDIO_DIRECTORY="${AUDIO_DIRECTORY:-/sensos/data/audio_recordings}"
+AUDIO_FORMAT_CODE="${AUDIO_FORMAT_CODE:-S32_LE}"
 
 # Ensure the directory exists and is writable
 mkdir -p "$DOCKER_COMPOSE_DIR"

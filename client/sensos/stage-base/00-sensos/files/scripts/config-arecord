@@ -1,19 +1,19 @@
 #!/bin/bash
-# config-arecord.sh: Write arecord configuration to $SENSOS_USER's etc directory
+# config-arecord.sh: Write arecord configuration to /sensos/etc
+
+set -e
 
 Usage() {
     cat <<EOF
 Usage: $0 [options]
 
-Required:
+Optional (interactive if omitted):
   --device DEVICE         Recording device string (e.g., plughw:1,0)
   --format FORMAT         Recording format (e.g., S16_LE)
   --channels CHANNELS     Channel count (e.g., 2)
-
-Optional:
   --rate RATE             Sample rate in Hz (default: 48000)
   --max-time SECONDS      Max duration per file (default: 900)
-  --base-dir DIR          Base directory for sound files (default: ~SENSOS_USER/audio_recordings/unprocessed)
+  --base-dir DIR          Base directory for sound files (default: /sensos/data/audio_recordings/)
   --help                  Show this help message
 EOF
 }
@@ -38,7 +38,6 @@ fi
 
 eval set -- "$TEMP"
 
-# Process options
 while true; do
     case "$1" in
     --device)
@@ -81,16 +80,79 @@ while true; do
     esac
 done
 
-# Validate required options
-missing=()
-[ -z "$device" ] && missing+=("--device")
-[ -z "$format" ] && missing+=("--format")
-[ -z "$channels" ] && missing+=("--channels")
+# Prompt for device
+if [ -z "$device" ]; then
+    echo "Available recording devices:"
+    mapfile -t device_list < <(arecord -L | grep -v '^ ')
+    for i in "${!device_list[@]}"; do
+        echo "[$i] ${device_list[$i]}"
+    done
+    echo
+    read -p "Select device index: " dev_index
+    device="${device_list[$dev_index]}"
+    echo "Selected device: $device"
+fi
 
-if [ ${#missing[@]} -gt 0 ]; then
-    echo "ERROR: Missing required options: ${missing[*]}" >&2
-    Usage
+# Query params
+params=$(arecord --dump-hw-params -D "$device" 2>/dev/null || true)
+if [ -z "$params" ]; then
+    echo "ERROR: Unable to query device '$device'. Make sure it's correct and available." >&2
     exit 1
+fi
+
+# Prompt for format
+if [ -z "$format" ]; then
+    formats=$(echo "$params" | grep "^  FORMAT" | sed 's/^.*:\s*//' | tr ',' '\n')
+    mapfile -t format_list < <(echo "$formats")
+    echo "Available formats:"
+    for i in "${!format_list[@]}"; do
+        echo "[$i] ${format_list[$i]}"
+    done
+    echo
+    read -p "Select format index: " fmt_index
+    format="${format_list[$fmt_index]}"
+    echo "Selected format: $format"
+fi
+
+# Prompt for channels
+if [ -z "$channels" ]; then
+    ch_range=$(echo "$params" | grep "^  CHANNELS" | awk -F'[][]' '{print $2}')
+    min_ch=$(echo "$ch_range" | cut -d: -f1)
+    max_ch=$(echo "$ch_range" | cut -d: -f2)
+
+    if [ "$min_ch" = "$max_ch" ]; then
+        channels="$min_ch"
+        echo "Only one channel count available: $channels"
+    else
+        echo "Available channel counts:"
+        ch_options=()
+        for ((c = min_ch; c <= max_ch; c++)); do
+            ch_options+=("$c")
+            echo "[$((c - min_ch))] $c"
+        done
+        echo
+        read -p "Select channel count index: " ch_index
+        channels="${ch_options[$ch_index]}"
+        echo "Selected channels: $channels"
+    fi
+fi
+
+# Prompt for sample rate if empty
+if [ -z "$rate" ]; then
+    read -p "Enter sample rate in Hz (default: 48000): " rate
+    rate="${rate:-48000}"
+fi
+
+# Prompt for max time if empty
+if [ -z "$max_time" ]; then
+    read -p "Enter max file duration in seconds (default: 900): " max_time
+    max_time="${max_time:-900}"
+fi
+
+# Prompt for base dir if empty
+if [ -z "$base_dir" ]; then
+    read -p "Enter base directory for recordings (default: /sensos/data/audio_recordings/): " base_dir
+    base_dir="${base_dir:-/sensos/data/audio_recordings/}"
 fi
 
 # Write config

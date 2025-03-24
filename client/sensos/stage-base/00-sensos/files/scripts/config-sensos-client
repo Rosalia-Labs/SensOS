@@ -172,7 +172,7 @@ def get_api_password(config_server, port):
                 continue
             with open(API_PASSWORD_FILE, "w") as f:
                 f.write(api_password)
-            os.chmod(API_PASSWORD_FILE, stat.S_IRUSR | stat.S_IWUSR)
+            os.chmod(API_PASSWORD_FILE, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
             print(f"✅ API password saved securely in {API_PASSWORD_FILE}.")
             return api_password
         else:
@@ -837,7 +837,7 @@ def save_registry_config(registry_info, registry_password):
     }
     with open(REGISTRY_CONFIG_FILE, "w") as f:
         json.dump(config, f)
-    os.chmod(REGISTRY_CONFIG_FILE, 0o600)
+    os.chmod(REGISTRY_CONFIG_FILE, 0o640)
     print(f"✅ Registry configuration saved to {REGISTRY_CONFIG_FILE}.")
 
 
@@ -883,15 +883,13 @@ def compute_api_server_wg_ip(client_wg_ip):
 
 
 def write_client_settings(args, server_wg_ip):
-    """Write client settings to ${HOME}/etc/network.conf after validating the data."""
+    """Write client settings to /sensos/etc/network.conf after validating the data."""
     if not all([server_wg_ip, args.port, args.network]):
         print("❌ Error: Incomplete client settings. Not writing settings file.")
         return
 
-    home_dir = os.path.expanduser("~")
-    settings_dir = os.path.join(home_dir, "etc")
+    settings_dir = "/sensos/etc"
     settings_file = os.path.join(settings_dir, "network.conf")
-
     os.makedirs(settings_dir, exist_ok=True)
 
     content = (
@@ -944,9 +942,9 @@ class Tee:
 
 
 def setup_logging():
-    """Configure logging to write to ${HOME}/log/sensos_setup.log while also displaying output."""
-    home_dir = os.path.expanduser("~")
-    log_dir = os.path.join(home_dir, "log")
+    """Configure logging to write to /sensos/log/sensos_setup.log while also displaying output."""
+    sensos_dir = "/sensos"
+    log_dir = os.path.join(sensos_dir, "log")
     log_file = os.path.join(log_dir, "sensos_setup.log")
     os.makedirs(log_dir, exist_ok=True)
     sys.stdout = Tee(log_file)
@@ -965,35 +963,51 @@ def remove_nulls(data):
         return data
 
 
-def generate_hardware_profile():
-    def cmd_output(cmd):
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
+def remove_nulls(d):
+    if isinstance(d, dict):
+        return {k: remove_nulls(v) for k, v in d.items() if v is not None}
+    elif isinstance(d, list):
+        return [remove_nulls(v) for v in d if v is not None]
+    else:
+        return d
 
+
+def safe_cmd_output(cmd, try_sudo=False):
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True).strip()
+    except subprocess.CalledProcessError as e:
+        if not try_sudo:
+            return safe_cmd_output(f"sudo {cmd}", try_sudo=True)
+        else:
+            return f"ERROR: {e}"
+
+
+def generate_hardware_profile():
     profile = {
         "hostname": socket.gethostname(),
-        "model": cmd_output("cat /proc/device-tree/model"),
-        "kernel_version": cmd_output("uname -a"),
+        "model": safe_cmd_output("cat /proc/device-tree/model"),
+        "kernel_version": safe_cmd_output("uname -a"),
         "cpu": {
-            "model": cmd_output(
+            "model": safe_cmd_output(
                 "cat /proc/cpuinfo | grep 'Model' | awk -F': ' '{print $2}'"
             ),
-            "revision": cmd_output(
+            "revision": safe_cmd_output(
                 "cat /proc/cpuinfo | grep 'Revision' | awk -F': ' '{print $2}'"
             ),
-            "serial": cmd_output(
+            "serial": safe_cmd_output(
                 "cat /proc/cpuinfo | grep 'Serial' | awk -F': ' '{print $2}'"
             ),
         },
         "firmware": {
-            "bootloader": cmd_output("vcgencmd bootloader_version"),
-            "firmware": cmd_output("vcgencmd version"),
+            "bootloader": safe_cmd_output("vcgencmd bootloader_version"),
+            "firmware": safe_cmd_output("vcgencmd version"),
         },
         "memory": {
             "total": psutil.virtual_memory().total,
             "available": psutil.virtual_memory().available,
         },
-        "disks": json.loads(cmd_output("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
-        "usb_devices": cmd_output("lsusb"),
+        "disks": json.loads(safe_cmd_output("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
+        "usb_devices": safe_cmd_output("lsusb"),
         "network_interfaces": {
             iface: [addr.address for addr in addrs if addr.family == socket.AF_INET]
             for iface, addrs in psutil.net_if_addrs().items()
