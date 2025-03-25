@@ -80,10 +80,10 @@ while true; do
     esac
 done
 
-# Prompt for device
+# Prompt for device if not specified
 if [ -z "$device" ]; then
     echo "Available recording devices:"
-    mapfile -t device_list < <(arecord -L | grep -v '^ ')
+    mapfile -t device_list < <(arecord -L | grep -v '^ ' | grep -E '^plughw|^hw')
     for i in "${!device_list[@]}"; do
         echo "[$i] ${device_list[$i]}"
     done
@@ -93,14 +93,24 @@ if [ -z "$device" ]; then
     echo "Selected device: $device"
 fi
 
-# Extract numeric hw device string for parameter query
-card_index=$(arecord -l | grep -A1 "$device" | grep '^  Subdevices:' | awk -F: '{print $1}' | sed 's/^.*card //' | cut -d':' -f1)
-dev_index=$(echo "$device" | sed -n 's/.*DEV=\([0-9]\+\)/\1/p')
-
-if [[ -n "$card_index" && -n "$dev_index" ]]; then
-    hw_numeric="hw:$card_index,$dev_index"
-    params=$(arecord --dump-hw-params -D "$hw_numeric" 2>/dev/null || true)
+# Extract numeric device (e.g., hw:3,0) from card name
+if [[ "$device" =~ ^(plug)?hw:([^,]+),([0-9]+) ]]; then
+    card_name="${BASH_REMATCH[2]}"
+    dev_index="${BASH_REMATCH[3]}"
+else
+    echo "Unable to parse selected device string: $device"
+    exit 1
 fi
+
+card_number=$(arecord -l | grep "^card " | grep "$card_name" | awk '{print $2}' | tr -d ':')
+
+if [ -z "$card_number" ]; then
+    echo "Unable to map card name '$card_name' to a card number."
+    exit 1
+fi
+
+hw_numeric="hw:$card_number,$dev_index"
+params=$(arecord --dump-hw-params -D "$hw_numeric" 2>/dev/null || true)
 
 if [ -z "$params" ]; then
     echo "WARNING: Unable to query hardware params for '$device'. Proceeding without param introspection."
@@ -176,7 +186,7 @@ MAX_TIME=$max_time
 BASE_DIR="$base_dir"
 EOF
 
-chomod -R g+w /sensos/data || sudo chomod -R g+w /sensos/data || true
+chmod -R g+w /sensos/data || sudo chmod -R g+w /sensos/data || true
 
 echo "Configuration written to $config_file"
 

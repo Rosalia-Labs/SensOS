@@ -353,19 +353,21 @@ def generate_wireguard_keys():
     return private_key, public_key
 
 
-def insert_peer(network_id: int, wg_ip: str, note: Optional[str] = None) -> int:
-    """Insert a new peer into the database and return its ID."""
+def insert_peer(
+    network_id: int, wg_ip: str, note: Optional[str] = None
+) -> Tuple[int, str]:
+    """Insert a new peer and return (id, uuid)."""
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO sensos.wireguard_peers (network_id, wg_ip, note)
                 VALUES (%s, %s, %s)
-                RETURNING id;
+                RETURNING id, uuid;
                 """,
                 (network_id, wg_ip, note),
             )
-            return cur.fetchone()[0]
+            return cur.fetchone()
 
 
 def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
@@ -607,12 +609,15 @@ def create_networks_table(cur):
 def create_wireguard_peers_table(cur):
     cur.execute(
         """
+        CREATE EXTENSION IF NOT EXISTS "pgcrypto";
         CREATE TABLE IF NOT EXISTS sensos.wireguard_peers (
             id SERIAL PRIMARY KEY,
+            uuid UUID NOT NULL DEFAULT gen_random_uuid(),
             network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
             wg_ip INET UNIQUE NOT NULL,
             note TEXT DEFAULT NULL,
-            registered_at TIMESTAMP DEFAULT NOW()
+            registered_at TIMESTAMP DEFAULT NOW(),
+            UNIQUE(uuid)
         );
         """
     )
@@ -998,13 +1003,14 @@ def register_peer(
             content={"error": f"No available IPs in subnet {request.subnet_offset}."},
         )
 
-    insert_peer(network_id, wg_ip, note=request.note)
+    peer_id, peer_uuid = insert_peer(network_id, wg_ip, note=request.note)
 
     return {
         "wg_ip": wg_ip,
         "wg_public_key": public_key,
         "wg_public_ip": wg_public_ip,
         "wg_port": wg_port,
+        "peer_uuid": peer_uuid,
     }
 
 
