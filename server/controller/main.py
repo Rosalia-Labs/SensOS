@@ -275,47 +275,51 @@ def restart_container(container_name: str):
         logger.exception(f"Unexpected error while restarting WireGuard container: {e}")
 
 
-def start_wireguard(network_name: str):
-    """Starts WireGuard for the given network if a valid configuration exists."""
-    wg_config = CONTROLLER_CONFIG_DIR / f"{network_name}.conf"
-
-    if not wg_config.exists():
-        logger.warning(f"WireGuard config {wg_config} not found. Skipping start.")
-        return
-
-    try:
-        subprocess.run(["wg-quick", "up", f"{network_name}"], check=True)
-        logger.info(f"WireGuard started successfully for network {network_name}.")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to start WireGuard: {e}")
-
-
 def start_controller_wireguard():
-    """Scans /etc/wireguard for config files and brings them up one by one."""
+    """Ensures all WireGuard configs in /etc/wireguard are loaded or updated."""
     logger.info("🔍 Scanning /etc/wireguard for existing WireGuard configurations...")
 
-    # Get all config files
     config_files = sorted(CONTROLLER_CONFIG_DIR.glob("*.conf"))
-
     if not config_files:
         logger.warning("⚠️ No WireGuard config files found in /etc/wireguard.")
         return
 
     for config_file in config_files:
-        network_name = config_file.stem  # Extract network name from filename
+        network_name = config_file.stem  # e.g., 'wg0' from 'wg0.conf'
 
-        logger.info(f"🚀 Enabling WireGuard interface: {network_name}")
-        try:
-            subprocess.run(["wg-quick", "up", network_name], check=True)
-            logger.info(
-                f"✅ Successfully activated WireGuard interface: {network_name}"
-            )
-        except subprocess.CalledProcessError as e:
-            logger.error(
-                f"❌ Failed to activate WireGuard interface {network_name}: {e}"
-            )
+        result = subprocess.run(
+            ["wg", "show", network_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
-    logger.info("✅ All available WireGuard interfaces have been enabled.")
+        if result.returncode == 0:
+            logger.info(f"🔄 Updating running WireGuard interface: {network_name}")
+            try:
+                strip_result = subprocess.run(
+                    ["wg-quick", "strip", network_name],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                syncconf = subprocess.run(
+                    ["wg", "syncconf", network_name, "/dev/stdin"],
+                    input=strip_result.stdout,
+                    text=True,
+                    check=True,
+                )
+                logger.info(f"✅ Updated WireGuard interface: {network_name}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Failed to update {network_name}: {e}")
+        else:
+            logger.info(f"🚀 Enabling new WireGuard interface: {network_name}")
+            try:
+                subprocess.run(["wg-quick", "up", network_name], check=True)
+                logger.info(f"✅ Activated WireGuard interface: {network_name}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Failed to activate {network_name}: {e}")
+
+    logger.info("✅ WireGuard interfaces setup complete.")
 
 
 def get_db(retries=10, delay=3):
@@ -886,7 +890,7 @@ def create_network(
     with get_db() as conn:
         result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
         logger.info(f"create_network_entry returned: {result}")
-        start_wireguard(name)
+        start_controller_wireguard()
 
     # Schedule the restart of the API proxy container in the background
     background_tasks.add_task(restart_container, "sensos-wireguard")
@@ -1407,27 +1411,32 @@ def wireguard_status_dashboard(
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     """
-    Displays an HTML dashboard showing WireGuard peer status from the sensos-wireguard container.
+    Displays an HTML dashboard showing WireGuard peer status from the sensos-wireguard-new container.
+    Falls back to a warning if the status file is missing.
     """
+    status_path = Path("/config/wireguard_status")
+    if not status_path.exists():
+        return HTMLResponse(
+            """
+            <html>
+            <head><title>WireGuard Status</title></head>
+            <body>
+                <h2 style='color: red;'>⚠️ No wireguard_status file found.</h2>
+                <p>The background service may not be running or has not yet written a status update.</p>
+            </body>
+            </html>
+            """,
+            status_code=200,
+        )
+
     try:
-        result = subprocess.run(
-            ["docker", "exec", "sensos-wireguard", "wg"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except FileNotFoundError:
+        output = status_path.read_text()
+    except Exception as e:
         return HTMLResponse(
-            "<h3 style='color:red;'>❌ Docker not found on this system.</h3>",
-            status_code=500,
-        )
-    except subprocess.CalledProcessError as e:
-        return HTMLResponse(
-            f"<h3 style='color:red;'>❌ Failed to run wg: {e.stderr.strip()}</h3>",
+            f"<h3 style='color:red;'>❌ Failed to read wireguard_status: {e}</h3>",
             status_code=500,
         )
 
-    output = result.stdout
     lines = output.strip().splitlines()
     peers = []
     current_peer = {}
@@ -1456,7 +1465,6 @@ def wireguard_status_dashboard(
     if current_peer:
         peers.append(current_peer)
 
-    # Build HTML table
     html = """
     <html>
     <head>

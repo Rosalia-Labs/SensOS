@@ -1,0 +1,3 @@
+#!/bin/bash -e
+cd /sensos/docker
+docker compose logs -f $@

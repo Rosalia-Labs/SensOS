@@ -176,6 +176,8 @@ MAX_TIME=$max_time
 BASE_DIR="$base_dir"
 EOF
 
+chomod -R g+w /sensos/data || sudo chomod -R g+w /sensos/data || true
+
 echo "Configuration written to $config_file"
 
 echo "Enabling and starting sensos-arecord.service..."
