@@ -134,7 +134,7 @@ def compute_binned_spectrum(audio_segment, min_freq=None, max_freq=None, num_bin
     return db.tolist()
 
 
-def process_audio_segment(audio_bytes, storage_type):
+def format_audio_data(audio_bytes, storage_type):
     """
     Process an audio segment using the stored storage type (e.g., "int16", "int32", "float32").
     Constructs a numpy array from the bytes and converts integer types to float32.
@@ -160,7 +160,7 @@ def process_audio_segment(audio_bytes, storage_type):
 
         return audio_np
     except Exception as e:
-        logger.exception(f"Error in process_audio_segment: {e}")
+        logger.exception(f"Error in format_audio_data: {e}")
         raise
 
 
@@ -284,7 +284,7 @@ def main():
                     np.float32
                 )
             else:
-                audio_np = process_audio_segment(audio_bytes, stored_dtype)
+                audio_np = format_audio_data(audio_bytes, stored_dtype)
 
             peak_amplitude, rms, snr = compute_audio_features(audio_np)
             full_spectrum = compute_binned_spectrum(
