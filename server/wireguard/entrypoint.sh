@@ -24,7 +24,7 @@ while true; do
             echo "🔄 Updating existing interface $vpn"
             tmpfile=$(mktemp)
             if wg-quick strip "$vpn" >"$tmpfile"; then
-                wg syncconf "$vpn" <"$tmpfile" || echo "⚠️ Failed to syncconf $vpn"
+                wg syncconf "$vpn" "$tmpfile" || echo "⚠️ Failed to syncconf $vpn"
             else
                 echo "⚠️ Failed to strip $vpn"
             fi
