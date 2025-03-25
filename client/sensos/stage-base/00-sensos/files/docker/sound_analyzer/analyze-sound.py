@@ -48,23 +48,40 @@ BIOACOUSTIC_BINS = 20
 
 
 def create_sound_statistics_table(conn):
-    logger.debug("Ensuring sound_statistics table exists...")
+    logger.debug("Ensuring sound_statistics and spectrum tables exist...")
     with conn.cursor() as cur:
+        # Create sound_statistics table without spectrum columns.
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS sensos.sound_statistics (
                 segment_id INTEGER PRIMARY KEY REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
                 peak_amplitude FLOAT,
                 rms FLOAT,
-                snr FLOAT,
-                full_spectrum JSONB,
-                bioacoustic_spectrum JSONB
+                snr FLOAT
+            );
+            """
+        )
+        # Create table for full spectrum data.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sensos.full_spectrum (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.sound_statistics(segment_id) ON DELETE CASCADE,
+                spectrum JSONB
+            );
+            """
+        )
+        # Create table for bioacoustic spectrum data.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sensos.bioacoustic_spectrum (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.sound_statistics(segment_id) ON DELETE CASCADE,
+                spectrum JSONB
             );
             """
         )
         conn.commit()
-    print("Sound statistics table is ready.")
-    logger.info("Sound statistics table created or already exists.")
+    print("Sound statistics and spectrum tables are ready.")
+    logger.info("Sound statistics and spectrum tables created or already exist.")
 
 
 def compute_audio_features(audio_segment):
@@ -117,42 +134,26 @@ def compute_binned_spectrum(audio_segment, min_freq=None, max_freq=None, num_bin
     return db.tolist()
 
 
-def process_audio_segment(audio_bytes, audio_format):
+def process_audio_segment(audio_bytes, storage_type):
+    """
+    Process an audio segment using the stored storage type (e.g., "int16", "int32", "float32").
+    Constructs a numpy array from the bytes and converts integer types to float32.
+    """
     logger.debug(
-        f"Processing segment with format {audio_format}, byte length {len(audio_bytes)}"
+        f"Processing segment with storage_type {storage_type}, byte length {len(audio_bytes)}"
     )
     try:
-        if audio_format in ["FLOAT_LE", "FLOAT_BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.float32)
-        elif audio_format in ["FLOAT64_LE", "FLOAT64_BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.float64).astype(np.float32)
-        elif audio_format in ["S8"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int8).astype(np.float32)
-        elif audio_format in ["U8"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.uint8).astype(np.float32)
-        elif audio_format in ["S16_LE", "S16_BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
-        elif audio_format in ["U16_LE", "U16_BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.uint16).astype(np.float32)
-        elif audio_format in ["S24_LE", "S24_BE", "S24_3LE", "S24_3BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
-        elif audio_format in ["U24_LE", "U24_BE", "U24_3LE", "U24_3BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.uint32).astype(np.float32)
-        elif audio_format in ["S32_LE", "S32_BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.int32).astype(np.float32)
-        elif audio_format in ["U32_LE", "U32_BE"]:
-            audio_np = np.frombuffer(audio_bytes, dtype=np.uint32).astype(np.float32)
-        else:
-            logger.error(f"Unsupported format: {audio_format}")
-            sys.exit(1)
+        dtype = np.dtype(storage_type)
+        audio_np = np.frombuffer(audio_bytes, dtype=dtype)
+        # Convert integer types to float32.
+        if np.issubdtype(dtype, np.integer):
+            audio_np = audio_np.astype(np.float32)
 
         if len(audio_np) != SEGMENT_SIZE:
             logger.error(
                 f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}"
             )
             sys.exit(1)
-
-        audio_np = audio_np.astype(np.float32)
 
         if np.any(np.isnan(audio_np)) or np.any(np.isinf(audio_np)):
             logger.warning("NaNs or Infs detected after conversion.")
@@ -164,15 +165,15 @@ def process_audio_segment(audio_bytes, audio_format):
 
 
 def get_unprocessed_segments(conn):
+    logger.debug("Querying unprocessed segments from database...")
     if MOCK_DATA:
         logger.info("MOCK_DATA enabled: generating 3 fake segments.")
-        return [(i, None, None) for i in range(1, 4)]
-
-    logger.debug("Querying unprocessed segments from database...")
+        # Fake segments: segment_id values 1,2,3; audio_bytes is None; storage_type is set to 'int16'
+        return [(i, None, "int16") for i in range(1, 4)]
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT ra.segment_id, ra.data, af.native_format
+            SELECT ra.segment_id, ra.data, af.storage_type
             FROM sensos.raw_audio ra
             JOIN sensos.audio_segments r ON ra.segment_id = r.id
             JOIN sensos.audio_files af ON r.file_id = af.id
@@ -190,21 +191,32 @@ def store_sound_statistics(
 ):
     logger.debug(f"Storing statistics for segment {segment_id}")
     with conn.cursor() as cur:
+        # Insert basic statistics.
         cur.execute(
             """
-            INSERT INTO sensos.sound_statistics 
-                (segment_id, peak_amplitude, rms, snr, full_spectrum, bioacoustic_spectrum)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO sensos.sound_statistics (segment_id, peak_amplitude, rms, snr)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (segment_id) DO NOTHING;
             """,
-            (
-                segment_id,
-                peak_amplitude,
-                rms,
-                snr,
-                json.dumps(full_spectrum),
-                json.dumps(bioacoustic_spectrum),
-            ),
+            (segment_id, peak_amplitude, rms, snr),
+        )
+        # Insert full spectrum data.
+        cur.execute(
+            """
+            INSERT INTO sensos.full_spectrum (segment_id, spectrum)
+            VALUES (%s, %s)
+            ON CONFLICT (segment_id) DO NOTHING;
+            """,
+            (segment_id, json.dumps(full_spectrum)),
+        )
+        # Insert bioacoustic spectrum data.
+        cur.execute(
+            """
+            INSERT INTO sensos.bioacoustic_spectrum (segment_id, spectrum)
+            VALUES (%s, %s)
+            ON CONFLICT (segment_id) DO NOTHING;
+            """,
+            (segment_id, json.dumps(bioacoustic_spectrum)),
         )
         conn.commit()
     print(f"Stored sound statistics for segment {segment_id}.")
@@ -212,10 +224,6 @@ def store_sound_statistics(
 
 
 def wait_for_schema(retries=30, delay=5):
-    if MOCK_DATA:
-        logger.info("MOCK_DATA enabled: skipping schema check.")
-        return
-
     logger.info("Waiting for database schema to be ready...")
     for attempt in range(retries):
         try:
@@ -251,17 +259,15 @@ def main():
     print("🔄 Waiting for schema and tables to be ready...")
     wait_for_schema()
 
-    conn = psycopg.connect(**DB_PARAMS) if not MOCK_DATA else None
-    if conn:
-        print("✅ Connected to the database for sound analysis.")
-        logger.info("Connected to database.")
-        create_sound_statistics_table(conn)
+    # Always create a connection so results are written even if MOCK_DATA is enabled.
+    conn = psycopg.connect(**DB_PARAMS)
+    print("✅ Connected to the database for sound analysis.")
+    logger.info("Connected to database.")
+    create_sound_statistics_table(conn)
 
     while True:
         print("🔎 Checking for new raw audio segments to analyze...")
-        segments = (
-            get_unprocessed_segments(conn) if conn else get_unprocessed_segments(None)
-        )
+        segments = get_unprocessed_segments(conn)
 
         if not segments:
             print("😴 No new segments found. Sleeping for 5 seconds...")
@@ -269,8 +275,11 @@ def main():
             continue
 
         for segment_id, audio_bytes, stored_dtype in segments:
-            logger.info(f"Processing segment {segment_id} ({stored_dtype})")
+            logger.info(
+                f"Processing segment {segment_id} (storage_type: {stored_dtype})"
+            )
             if MOCK_DATA:
+                # Generate fake audio data
                 audio_np = np.random.uniform(-1, 1, size=SEGMENT_SIZE).astype(
                     np.float32
                 )
@@ -285,20 +294,15 @@ def main():
                 audio_np, min_freq=1000, max_freq=8000, num_bins=BIOACOUSTIC_BINS
             )
 
-            if conn:
-                store_sound_statistics(
-                    conn,
-                    segment_id,
-                    peak_amplitude,
-                    rms,
-                    snr,
-                    full_spectrum,
-                    bioacoustic_spectrum,
-                )
-            else:
-                logger.info(
-                    f"[MOCK] Segment {segment_id}: peak={peak_amplitude:.3f}, rms={rms:.3f}, snr={snr:.2f}"
-                )
+            store_sound_statistics(
+                conn,
+                segment_id,
+                peak_amplitude,
+                rms,
+                snr,
+                full_spectrum,
+                bioacoustic_spectrum,
+            )
 
         print("✅ Batch complete. Sleeping for 5 seconds...")
         logger.info("Batch complete. Sleeping...")

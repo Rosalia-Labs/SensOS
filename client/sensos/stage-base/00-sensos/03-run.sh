@@ -2,16 +2,16 @@
 
 on_chroot <<EOF
 adduser --system -c "Sensos Runner" sensos-runner
-adduser sensos-runner sudo || true
-adduser sensos-runner sensos-data || true
-adduser sensos-runner dialout || true
-adduser sensos-runner plugdev || true
-adduser sensos-runner netdev || true
-adduser sensos-runner docker || true
-adduser sensos-runner audio || true
-adduser sensos-runner gpio || true
-adduser sensos-runner i2c || true
-adduser sensos-runner spi || true
+adduser sensos-runner sudo 
+adduser sensos-runner sensos-data 
+adduser sensos-runner dialout
+adduser sensos-runner plugdev 
+adduser sensos-runner netdev 
+adduser sensos-runner docker
+adduser sensos-runner audio 
+adduser sensos-runner gpio
+adduser sensos-runner i2c 
+adduser sensos-runner spi
 echo "sensos-runner ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/sensos-runner
 chmod 0440 /etc/sudoers.d/sensos-runner
 passwd -l sensos-runner

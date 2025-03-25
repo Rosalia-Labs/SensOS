@@ -12,7 +12,6 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 # Database connection parameters.
-# These are defined in the compose file.
 DB_PARAMS = (
     f"dbname={os.environ['POSTGRES_DB']} "
     f"user={os.environ['POSTGRES_USER']} "
@@ -22,12 +21,60 @@ DB_PARAMS = (
 )
 
 # Audio settings.
-# Hard-coded defaults (file metadata will be determined per file).
-SAMPLE_RATE = 48000  # expected sample rate (used for segmentation)
-SEGMENT_DURATION = 3  # seconds
+SAMPLE_RATE = 48000  # expected sample rate
+SEGMENT_DURATION = 3  # seconds per segment
 STEP_SIZE = 1  # seconds; smaller value creates overlapping segments
 SEGMENT_SIZE = SAMPLE_RATE * SEGMENT_DURATION
 STEP_SIZE_FRAMES = SAMPLE_RATE * STEP_SIZE
+
+# Lookup table for storage types.
+dtype_lookup = {
+    "PCM_S8": np.int16,  # 8-bit integer
+    "PCM_16": np.int16,  # 16-bit integer
+    "PCM_24": np.int32,  # 24-bit integer (>16 bits)
+    "PCM_32": np.int32,  # 32-bit integer (>16 bits)
+    "PCM_U8": np.int16,  # 8-bit unsigned integer
+    "FLOAT": np.float32,  # floating point
+    "DOUBLE": np.float32,  # floating point (convert 64-bit to float32)
+    "ULAW": np.int16,  # typically 8-bit encoded
+    "ALAW": np.int16,  # typically 8-bit encoded
+    "IMA_ADPCM": np.int16,  # assume 16-bit or lower after decoding
+    "MS_ADPCM": np.int16,  # assume 16-bit or lower after decoding
+    "GSM610": np.int16,  # usually 8-bit resolution
+    "VOX_ADPCM": np.int16,
+    "NMS_ADPCM_16": np.int16,  # 16-bit
+    "NMS_ADPCM_24": np.int32,  # >16-bit
+    "NMS_ADPCM_32": np.int32,  # >16-bit
+    "G721_32": np.int32,  # 32-bit integer
+    "G723_24": np.int32,  # 24-bit integer (>16 bits)
+    "G723_40": np.int32,  # 40-bit integer, best match with np.int32
+    "DWVW_12": np.int16,  # 12-bit, <=16
+    "DWVW_16": np.int16,  # 16-bit
+    "DWVW_24": np.int32,  # 24-bit
+    "DWVW_N": np.int16,  # assume <=16 bits
+    "DPCM_8": np.int16,  # 8-bit
+    "DPCM_16": np.int16,  # 16-bit
+    "VORBIS": np.float32,  # decoded as float32
+    "OPUS": np.float32,  # decoded as float32
+    "ALAC_16": np.int16,  # 16-bit
+    "ALAC_20": np.int32,  # >16-bit
+    "ALAC_24": np.int32,  # >16-bit
+    "ALAC_32": np.int32,  # >16-bit
+    "MPEG_LAYER_I": np.int32,  # assume integer, >16 bits
+    "MPEG_LAYER_II": np.int32,
+    "MPEG_LAYER_III": np.int32,
+}
+
+
+def get_storage_type(subtype: str):
+    """
+    Given a soundfile subtype string, returns the numpy dtype to use:
+      - np.float32 for floating point subtypes ("FLOAT", "DOUBLE").
+      - np.int32 for integer subtypes with bit depth > 16.
+      - np.int16 for integer subtypes with bit depth <= 16.
+    If the subtype is not found in the lookup, defaults to np.float32.
+    """
+    return dtype_lookup.get(subtype.upper(), np.float32)
 
 
 def extract_timestamp_from_filename(file_path):
@@ -72,7 +119,7 @@ def initialize_schema():
     cursor.execute(
         f"ALTER DATABASE {os.environ['POSTGRES_DB']} SET search_path TO sensos, public;"
     )
-    # The audio_files table now stores the native format as a string.
+    # Updated audio_files table with storage_type column.
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.audio_files (
@@ -80,8 +127,17 @@ def initialize_schema():
             file_path TEXT NOT NULL,
             file_mod_time TIMESTAMPTZ,
             sample_rate INT NOT NULL,
-            native_format TEXT NOT NULL,
             channel_count INT NOT NULL,
+            frames BIGINT,
+            duration DOUBLE PRECISION,
+            file_format TEXT,         
+            subtype TEXT,
+            endian TEXT,
+            format_info TEXT,
+            subtype_info TEXT,
+            storage_type TEXT,
+            sections INT,
+            extra_info TEXT,
             processed_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
@@ -113,23 +169,45 @@ def initialize_schema():
 initialize_schema()
 
 
-def create_file_recording(
-    file_path, srate, native_format, channel_count, file_mod_time
-):
+def record_file_info(info, recording_timestamp):
     """
-    Create a new audio_files record for the processed file and return its id.
+    Inserts a record into the sensos.audio_files table using metadata from
+    the provided info object (returned by sf.info()) and the given recording_timestamp.
+    Also stores the output of get_storage_type.
+    Returns the new file record's id.
     """
+    full_path = os.path.abspath(info.name)
+    # Get the storage type as a string (e.g., "int16", "int32", or "float32").
+    storage_type = get_storage_type(info.subtype).__name__
+
     cursor.execute(
         """
         INSERT INTO sensos.audio_files 
-            (file_path, file_mod_time, sample_rate, native_format, channel_count)
-        VALUES (%s, to_timestamp(%s), %s, %s, %s)
+            (file_path, file_mod_time, sample_rate, channel_count,
+             frames, duration, file_format, subtype, endian, format_info, subtype_info, storage_type, sections, extra_info)
+        VALUES (%s, to_timestamp(%s), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """,
-        (file_path, file_mod_time, srate, native_format, channel_count),
+        (
+            full_path,
+            recording_timestamp,
+            info.samplerate,
+            info.channels,
+            info.frames,
+            info.duration,
+            info.format,
+            info.subtype,
+            info.endian,
+            info.format_info,
+            info.subtype_info,
+            storage_type,
+            info.sections,
+            str(info.extra_info),
+        ),
     )
     file_id = cursor.fetchone()[0]
     conn.commit()
+    logging.info(f"Created file recording record {file_id} for {full_path}")
     return file_id
 
 
@@ -155,63 +233,48 @@ def store_audio(segment, start, end, file_id, channel):
     )
 
 
-# --- File scanning functions ---
-
-
-def process_file(file_path, file_id, metadata):
+def process_file(info, file_id):
     """
-    Load an audio file and split it into overlapping segments using metadata
-    that was already extracted.
+    Load an audio file and split it into overlapping segments using the preallocated buffer.
+    Computes segment start and end times based on the file's modification time.
     """
+    file_path = os.path.abspath(info.name)
     logging.info(f"Processing file: {file_path}")
-    try:
-        # Use the native format from the metadata
-        dtype = metadata["native_format"]
-        audio, srate = sf.read(file_path, dtype=dtype)
-    except Exception as e:
-        logging.error(f"Error loading {file_path}: {e}")
-        return
 
-    if srate != SAMPLE_RATE:
-        logging.warning(
-            f"File sample rate ({srate} Hz) does not match expected {SAMPLE_RATE} Hz."
-        )
+    mod_time = os.path.getmtime(file_path)
+    blksz = SEGMENT_SIZE
+    ovlp = SEGMENT_SIZE - STEP_SIZE_FRAMES
+    read_dtype = get_storage_type(info.subtype)
 
-    # Rearrange the audio data to shape (channels, samples)
-    if audio.ndim == 2:
-        audio = audio.T
-    elif audio.ndim == 1:
-        audio = np.expand_dims(audio, axis=0)
+    buf = np.empty((SEGMENT_SIZE, info.channels), dtype=read_dtype)
 
-    total_samples = audio.shape[1]
-    if total_samples < SEGMENT_SIZE:
-        logging.warning(
-            f"File {file_path} is shorter than {SEGMENT_DURATION} seconds, skipping."
-        )
-        return
+    with sf.SoundFile(file_path) as f:
+        block_index = 0
+        for block in f.blocks(
+            frames=blksz, overlap=ovlp, dtype=read_dtype, fill_value=0, out=buf
+        ):
+            start_frame = block_index * STEP_SIZE_FRAMES
+            end_frame = start_frame + SEGMENT_SIZE
 
-    step_samples = int(SAMPLE_RATE * STEP_SIZE)
-    for start_index in range(0, total_samples - SEGMENT_SIZE + 1, step_samples):
-        end_index = start_index + SEGMENT_SIZE
-        for ch in range(audio.shape[0]):
-            segment = audio[ch, start_index:end_index]
-            # Use the file's modification time to compute segment times.
-            mod_time = os.path.getmtime(file_path)
-            segment_start = datetime.datetime.utcfromtimestamp(
+            start_time = datetime.datetime.utcfromtimestamp(
                 mod_time
-            ) + datetime.timedelta(seconds=start_index / SAMPLE_RATE)
-            segment_end = datetime.datetime.utcfromtimestamp(
+            ) + datetime.timedelta(seconds=start_frame / info.samplerate)
+            end_time = datetime.datetime.utcfromtimestamp(
                 mod_time
-            ) + datetime.timedelta(seconds=end_index / SAMPLE_RATE)
-            store_audio(segment, segment_start, segment_end, file_id, ch)
+            ) + datetime.timedelta(seconds=end_frame / info.samplerate)
+
+            for ch in range(info.channels):
+                segment = block[:, ch]
+                store_audio(segment, start_time, end_time, file_id, ch)
+
+            block_index += 1
 
 
 def process_directory():
     """
     Continuously scan the unprocessed directory for new sound files,
-    record file-level metadata (using the timestamp from the filename if available),
-    process each file into segments (using pre-extracted metadata),
-    update its processing status, and move it to a processed directory while preserving its structure.
+    record file-level metadata, process each file into segments,
+    update its processing status, and move it to a processed directory.
     """
     file_stable_threshold = 30
     processed_dir = "/mnt/audio_recordings/processed"
@@ -227,7 +290,6 @@ def process_directory():
                     continue
                 file_path = os.path.join(root, file)
 
-                # Check if this file has already been processed.
                 cursor.execute(
                     "SELECT id FROM sensos.audio_files WHERE file_path = %s",
                     (file_path,),
@@ -250,50 +312,20 @@ def process_directory():
                     time.sleep(5)
                     continue
 
-                # Extract recording timestamp from filename if possible.
                 recording_timestamp = extract_timestamp_from_filename(file_path)
                 if recording_timestamp is None:
                     recording_timestamp = mod_time
 
-                # Read metadata only once here.
                 try:
                     info = sf.info(file_path)
                 except Exception as e:
                     logging.error(f"Error reading file info for {file_path}: {e}")
                     continue
-                srate = info.samplerate
-                channel_count = info.channels
 
-                native_format = os.environ.get("AUDIO_FORMAT_CODE")
-                if not native_format:
-                    if info.subtype in ["PCM_16", "PCM_S16LE", "PCM_S16BE"]:
-                        native_format = "S16_LE"
-                    elif info.subtype in ["PCM_24"]:
-                        native_format = "S24_LE"
-                    elif info.subtype in ["PCM_32", "S32_LE", "S32_BE"]:
-                        native_format = "S32_LE"
-                    elif info.subtype in ["FLOAT", "FLOAT32"]:
-                        native_format = "FLOAT_LE"
-                    else:
-                        logging.error(f"Unknown audio subtype: {info.subtype}")
-                        raise ValueError(
-                            f"Unsupported audio byte layout: {info.subtype}"
-                        )
-
-                metadata = {"native_format": native_format, "samplerate": srate}
-
-                # Record file-level metadata using the extracted timestamp.
-                file_id = create_file_recording(
-                    file_path,
-                    srate,
-                    native_format,
-                    channel_count,
-                    recording_timestamp,
-                )
+                file_id = record_file_info(info, recording_timestamp)
                 logging.info(f"Created file recording record {file_id} for {file_path}")
 
-                # Process the file into segments using the metadata.
-                process_file(file_path, file_id, metadata)
+                process_file(info, file_id)
 
                 rel_path = os.path.relpath(file_path, unprocessed_dir)
                 destination = os.path.join(processed_dir, rel_path)
@@ -305,7 +337,6 @@ def process_directory():
                     logging.error(f"Error moving {file_path} to {destination}: {e}")
                     continue
 
-                # Update the audio_files table with the new file path.
                 try:
                     cursor.execute(
                         "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
