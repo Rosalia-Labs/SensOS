@@ -130,8 +130,6 @@ services:
     ports:
       - "${API_PORT:-8000}:8000"
       - "${SENSOS_REGISTRY_PORT:-5000}:5000"
-    volumes:
-      - sensos_api_proxy_wg_config:/etc/wireguard
     networks:
       - sensos_network
 
