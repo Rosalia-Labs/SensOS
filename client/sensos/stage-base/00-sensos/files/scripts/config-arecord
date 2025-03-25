@@ -3,6 +3,8 @@
 
 set -e
 
+script_name=$(basename "$0")
+
 Usage() {
     cat <<EOF
 Usage: $0 [options]
@@ -18,7 +20,7 @@ Optional (interactive if omitted):
 EOF
 }
 
-# Defaults
+# Built-in defaults
 device=""
 format=""
 channels=""
@@ -26,16 +28,14 @@ rate="48000"
 max_time="900"
 base_dir="/sensos/data/audio_recordings/"
 
-# Parse arguments
+# Parse command-line arguments
 TEMP=$(getopt -o "" \
     --long device:,format:,channels:,rate:,max-time:,base-dir:,help \
     -n 'config-arecord.sh' -- "$@")
-
 if [ $? != 0 ]; then
     Usage
     exit 1
 fi
-
 eval set -- "$TEMP"
 
 while true; do
@@ -79,6 +79,13 @@ while true; do
         ;;
     esac
 done
+
+# Load overrides
+if [ -f /sensos/lib/load-defaults.sh ]; then
+    # shellcheck source=/dev/null
+    source /sensos/lib/load-defaults.sh
+    apply_defaults /sensos/etc/defaults.conf "$script_name"
+fi
 
 # Prompt for device if not specified
 if [ -z "$device" ]; then
@@ -153,19 +160,19 @@ if [ -z "$channels" ]; then
     fi
 fi
 
-# Prompt for sample rate if empty
+# Prompt for sample rate
 if [ -z "$rate" ]; then
     read -p "Enter sample rate in Hz (default: 48000): " rate
     rate="${rate:-48000}"
 fi
 
-# Prompt for max time if empty
+# Prompt for max file duration
 if [ -z "$max_time" ]; then
     read -p "Enter max file duration in seconds (default: 900): " max_time
     max_time="${max_time:-900}"
 fi
 
-# Prompt for base dir if empty
+# Prompt for base directory
 if [ -z "$base_dir" ]; then
     read -p "Enter base directory for recordings (default: /sensos/data/audio_recordings/): " base_dir
     base_dir="${base_dir:-/sensos/data/audio_recordings/}"

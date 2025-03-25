@@ -6,6 +6,7 @@ import argparse
 import requests
 import datetime
 import subprocess
+import configparser
 import base64
 import json
 import shutil
@@ -80,6 +81,24 @@ def parse_args():
         help="Optional note or description to register with the device (default: empty)",
     )
     return parser.parse_args()
+
+
+def load_defaults(script_name):
+    defaults = {}
+    config_path = "/sensos/etc/defaults.conf"
+    if not os.path.exists(config_path):
+        return defaults
+
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config.read(config_path)
+
+    # Merge [global] and [script_name] sections
+    for section in ["global", script_name]:
+        if section in config:
+            for k, v in config[section].items():
+                defaults[k] = v
+    return defaults
 
 
 def run_command(cmd):
@@ -1024,7 +1043,18 @@ def upload_hardware_profile(config_server, port, api_password, wg_ip):
 
 def main():
     setup_logging()
+    script_name = os.path.basename(sys.argv[0]).replace(".py", "").replace("-", "_")
+    overrides = load_defaults(script_name)
+
+    # Apply overrides to DEFAULT_* values
+    global DEFAULT_SERVER, DEFAULT_PORT, DEFAULT_NETWORK_NAME, DEFAULT_KEEPALIVE
+    DEFAULT_SERVER = overrides.get("config_server", DEFAULT_SERVER)
+    DEFAULT_PORT = overrides.get("port", DEFAULT_PORT)
+    DEFAULT_NETWORK_NAME = overrides.get("network", DEFAULT_NETWORK_NAME)
+    DEFAULT_KEEPALIVE = overrides.get("wg_keepalive", DEFAULT_KEEPALIVE)
+
     args = parse_args()
+
     print("🚀 Starting device configuration...")
     api_password = get_api_password(args.config_server, args.port)
     if not api_password:

@@ -1,16 +1,36 @@
 #!/bin/bash
+set -e
 
 CONFIG_DIR="/sensos/etc"
 CONFIG_FILE="$CONFIG_DIR/sensos_modem.conf"
+SCRIPT_NAME=$(basename "$0")
+
+# Load defaults if available
+if [[ -f /sensos/lib/load-defaults.sh ]]; then
+    source /sensos/lib/load-defaults.sh
+    declare -A default_vars
+    load_defaults "$SCRIPT_NAME" default_vars
+fi
+
+# Helper to get default value with optional override
+get_default() {
+    local varname="$1"
+    local fallback="$2"
+    if [[ -n "${default_vars[$varname]:-}" ]]; then
+        echo "${default_vars[$varname]}"
+    else
+        echo "$fallback"
+    fi
+}
+
+# Default values (may be overridden)
+SERVICE=""
+MODEM_IFACE=$(get_default MODEM_IFACE "wwan0")
+MODEM_INTERNAL_NAME=$(get_default MODEM_INTERNAL_NAME "cdc-wdm0")
+ENABLE_SERVICE=$(get_default ENABLE_SERVICE "true")
 
 # Ensure necessary directories exist
 mkdir -p "$CONFIG_DIR"
-
-# Default values
-SERVICE=""
-MODEM_IFACE="wwan0"
-MODEM_INTERNAL_NAME="cdc-wdm0"
-ENABLE_SERVICE="true"
 
 # Check if SENSOS_USER is set and warn if it differs from the current user
 if [[ -n "$SENSOS_USER" && "$USER" != "$SENSOS_USER" ]]; then
@@ -80,10 +100,8 @@ echo "Modem configuration saved to $CONFIG_FILE."
 if [[ "$ENABLE_SERVICE" == "true" ]]; then
     echo "Enabling and starting modem service..."
 
-    # Ensure systemd recognizes the new service
     sudo systemctl daemon-reload
 
-    # Only enable the service if it's not already enabled
     if ! sudo systemctl is-enabled sensos-modem.service &>/dev/null; then
         sudo systemctl enable sensos-modem.service
     fi

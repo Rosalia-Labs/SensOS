@@ -1,25 +1,45 @@
 #!/bin/bash
+set -e
 
+SCRIPT_NAME=$(basename "$0")
 CONFIG_DIR="/sensos/etc"
 CONFIG_FILE="$CONFIG_DIR/wifi_access_point.conf"
 LOG_DIR="/sensos/log"
-ENABLE_SERVICE="true" # Default: Enable & start service
-INTERFACE=""
+
+# Load defaults if available
+if [[ -f /sensos/lib/load-defaults.sh ]]; then
+    source /sensos/lib/load-defaults.sh
+    declare -A default_vars
+    load_defaults "$SCRIPT_NAME" default_vars
+fi
+
+# Helper to get override or fallback
+get_default() {
+    local varname="$1"
+    local fallback="$2"
+    if [[ -n "${default_vars[$varname]:-}" ]]; then
+        echo "${default_vars[$varname]}"
+    else
+        echo "$fallback"
+    fi
+}
+
+# Defaults (overridable)
+ENABLE_SERVICE=$(get_default ENABLE_SERVICE "true")
+INTERFACE=$(get_default INTERFACE "")
+SSID=$(get_default SSID "")
+PASSWORD=$(get_default PASSWORD "")
+BAND=$(get_default BAND "")
+CHANNEL=$(get_default CHANNEL "")
+COUNTRY_CODE=$(get_default COUNTRY_CODE "")
+LOW_TXPOWER=$(get_default LOW_TXPOWER "false")
+POWER_SAVE=$(get_default POWER_SAVE "false")
+LIMIT_WIDTH=$(get_default LIMIT_WIDTH "false")
+BEACON_INTERVAL=$(get_default BEACON_INTERVAL "false")
 
 # Ensure necessary directories exist
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$LOG_DIR"
-
-# Default values
-SSID=""
-PASSWORD="" # WPA2 requires at least 8 characters
-BAND=""
-CHANNEL=""
-COUNTRY_CODE="" # Only set if explicitly provided
-LOW_TXPOWER="false"
-POWER_SAVE="false"
-LIMIT_WIDTH="false"
-BEACON_INTERVAL="false"
 
 # Function to display usage
 usage() {
@@ -87,7 +107,7 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-# **Enforce required arguments**
+# Validate required arguments
 if [[ -z "$SSID" || -z "$PASSWORD" ]]; then
     echo "ERROR: Both --ssid and --password are required."
     usage
@@ -104,15 +124,10 @@ fi
     echo "[WiFi]"
     echo "ssid = $SSID"
     echo "password = $PASSWORD"
-    if [[ -n "$INTERFACE" ]]; then
-        echo "interface = $INTERFACE"
-    fi
+    [[ -n "$INTERFACE" ]] && echo "interface = $INTERFACE"
     echo "band = $BAND"
     echo "channel = $CHANNEL"
-    if [[ -n "$COUNTRY_CODE" ]]; then
-        echo "country = $COUNTRY_CODE"
-    fi
-
+    [[ -n "$COUNTRY_CODE" ]] && echo "country = $COUNTRY_CODE"
     echo ""
     echo "[PowerSaving]"
     echo "low_txpower = $LOW_TXPOWER"
@@ -123,12 +138,11 @@ fi
 
 echo "WiFi Access Point configuration saved to $CONFIG_FILE."
 
-# Enable and start the access point service unless --no-enable was used
 if [[ "$ENABLE_SERVICE" == "true" ]]; then
-    echo "Disabling and stoping auto WiFi Access Point service..."
+    echo "Disabling and stopping auto-hotspot service..."
     sudo systemctl stop auto-hotspot.service
     sudo systemctl disable auto-hotspot.service
-    echo "Enabling and starting WiFi Access Point service..."
+    echo "Enabling and starting wifi-access-point.service..."
     sudo systemctl daemon-reload
     sudo systemctl enable wifi-access-point.service
     sudo systemctl restart wifi-access-point.service

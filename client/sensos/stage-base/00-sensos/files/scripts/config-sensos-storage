@@ -1,0 +1,116 @@
+#!/bin/bash -e
+#
+# setup-sensos-data.sh
+#
+# Mounts external storage to /sensos/data, with safeguards.
+#
+
+DATA_MOUNT="/sensos/data"
+MAKE_FS=false
+FS_TYPE_ARG="ext4"
+DEVICE_HINT=""
+
+# Load from defaults.conf
+if [[ -f /sensos/lib/load-defaults.sh ]]; then
+    source /sensos/lib/load-defaults.sh
+    declare -A default_vars
+    load_defaults "setup-sensos-data.sh" default_vars
+    DEVICE_HINT="${default_vars[DEVICE_HINT]:-}"
+fi
+
+# Parse command-line options
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --make-fs)
+        MAKE_FS=true
+        shift
+        ;;
+    --fs-type)
+        FS_TYPE_ARG="$2"
+        shift 2
+        ;;
+    *)
+        echo "Unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+done
+
+mkdir -p "$DATA_MOUNT"
+
+# ❗ Check if /sensos/data has existing data
+if mountpoint -q "$DATA_MOUNT"; then
+    echo "$DATA_MOUNT is already mounted."
+    exit 0
+elif [[ -n "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ]]; then
+    echo "⚠️  Warning: $DATA_MOUNT is not empty. It may contain important data."
+    echo "You can back it up before proceeding."
+    read -p "Continue and possibly hide existing contents under mount? [y/N]: " confirm
+    [[ "$confirm" =~ ^[Yy]$ ]] || {
+        echo "Aborting."
+        exit 1
+    }
+fi
+
+# 📦 Select device
+if [[ -n "$DEVICE_HINT" ]]; then
+    echo "Using device hint: $DEVICE_HINT"
+    DEVICE="$DEVICE_HINT"
+else
+    echo "Looking for unmounted external partitions..."
+    DEVICE=$(lsblk -nrpo NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1}' | grep -v '^/dev/loop' | grep -v '/dev/mmcblk0p' | head -n 1)
+fi
+
+if [[ -z "$DEVICE" ]]; then
+    echo "No external unmounted partition found. Using internal storage."
+    exit 0
+fi
+
+echo "Selected device: $DEVICE"
+
+# 🔍 Check filesystem type
+FS_TYPE=$(blkid -o value -s TYPE "$DEVICE" || true)
+if [[ -z "$FS_TYPE" ]]; then
+    echo "No filesystem detected on $DEVICE."
+
+    # Check for existing data on raw device
+    echo "Checking for non-zero bytes..."
+    if hexdump -n 512 "$DEVICE" | grep -qv ' 00 '; then
+        echo "⚠️  Detected non-zero bytes — this device may contain data or a non-standard format."
+        read -p "Are you sure you want to create a new $FS_TYPE_ARG filesystem on $DEVICE? [y/N]: " confirm
+        [[ "$confirm" =~ ^[Yy]$ ]] || {
+            echo "Aborting to avoid data loss."
+            exit 1
+        }
+    fi
+
+    if [[ "$MAKE_FS" == true ]]; then
+        echo "Creating filesystem..."
+        mkfs -t "$FS_TYPE_ARG" "$DEVICE"
+        FS_TYPE="$FS_TYPE_ARG"
+        echo "✅ Filesystem created."
+    else
+        echo "❌ Use --make-fs to create a filesystem on $DEVICE."
+        exit 1
+    fi
+else
+    echo "Detected filesystem: $FS_TYPE"
+fi
+
+# 📂 Mount
+case "$FS_TYPE" in
+ext4)
+    echo "Mounting ext4 device to $DATA_MOUNT..."
+    mount "$DEVICE" "$DATA_MOUNT"
+    ;;
+vfat | exfat)
+    echo "Mounting $FS_TYPE (USB) device to $DATA_MOUNT..."
+    mount "$DEVICE" "$DATA_MOUNT"
+    ;;
+*)
+    echo "❌ Unsupported filesystem type: $FS_TYPE"
+    exit 1
+    ;;
+esac
+
+echo "✅ Mount complete: $DEVICE → $DATA_MOUNT"
