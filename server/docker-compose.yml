@@ -108,6 +108,7 @@ services:
   sensos-registry:
     image: registry:2
     container_name: sensos-registry
+    profiles: ["disabled"]
     restart: always
     volumes:
       - sensos_registry:/var/lib/registry

@@ -1454,8 +1454,15 @@ def wireguard_status_dashboard(
         except Exception:
             return text
 
+    skip_interface = True
     for line in lines:
         line = line.strip()
+        if skip_interface:
+            if line.startswith("peer:"):
+                skip_interface = False
+            else:
+                continue  # skip lines before first peer
+
         if line.startswith("peer:"):
             if current_peer:
                 peers.append(current_peer)
