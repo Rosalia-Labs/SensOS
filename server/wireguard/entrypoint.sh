@@ -16,7 +16,7 @@ while true; do
         dest="/etc/wireguard/$vpn.conf"
 
         # Use || true to avoid breaking the loop
-        mv -f "$config_file" "$dest" || true
+        cp "$config_file" "$dest" || true
         chown root:root "$dest" || true
         chmod 0600 "$dest" || true
 
