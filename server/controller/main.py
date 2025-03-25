@@ -450,6 +450,7 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
 def create_wireguard_configs(
     network_id: int, name: str, ip_range: str, private_key: str, wg_public_key: str
 ):
+    WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     wg_config_path = WG_CONFIG_DIR / f"{name}.conf"
     controller_config_path = CONTROLLER_CONFIG_DIR / f"{name}.conf"
 
