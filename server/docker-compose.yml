@@ -43,28 +43,6 @@ services:
     networks:
       - sensos_network
 
-  sensos-wireguard-old:
-    image: lscr.io/linuxserver/wireguard:latest
-    container_name: sensos-wireguard-old
-    restart: unless-stopped
-    profiles: ["disabled"]
-    env_file: .env
-    cap_add:
-      - NET_ADMIN
-    environment:
-      LOG_CONFS: "true"
-    volumes:
-      - sensos_wireguard_config:/config
-    ports:
-      - "${WG_PORT:-51820}:51820/udp"
-    healthcheck:
-      test: ["CMD", "wg", "show"]
-      interval: 10s
-      retries: 5
-      start_period: 10s
-    networks:
-      - sensos_network
-
   sensos-wireguard:
     build: ./wireguard
     container_name: sensos-wireguard
@@ -108,7 +86,6 @@ services:
   sensos-registry:
     image: registry:2
     container_name: sensos-registry
-    profiles: ["disabled"]
     restart: always
     volumes:
       - sensos_registry:/var/lib/registry
