@@ -1,5 +1,7 @@
+# Use a slim Debian base image
 FROM debian:bookworm-slim
 
+# Install system dependencies in a single step
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
@@ -10,15 +12,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
+# Set up a virtual environment
 WORKDIR /app
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
-# Install Python dependencies
-RUN pip install psycopg[binary] soundfile numpy
+# Upgrade pip and install required Python packages
+RUN pip install psycopg librosa
 
-# Copy script
+# Copy analysis script
 COPY manage-db.py .
 
-# Entrypoint
+# Set default command
 CMD ["python", "manage-db.py"]

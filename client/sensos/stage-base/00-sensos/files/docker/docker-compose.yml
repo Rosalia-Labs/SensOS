@@ -79,5 +79,27 @@ services:
         condition: on-failure
         max_attempts: 3
 
+  sensos-client-db-manager:
+    build:
+      context: ./db_manager
+      platforms: [linux/arm64]
+    container_name: sensos-client-db-manager
+    restart: always
+    depends_on:
+      - sensos-client-database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
+    volumes:
+      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
 volumes:
   sensos-db-data:
