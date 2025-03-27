@@ -4,6 +4,9 @@ Description=Apply Geekworm UPS Configuration on First Boot
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/config-geekworm-ups.sh
+StandardError=journal
+StandardOutput=journal
+StandardInput=null
 
 [Install]
 WantedBy=multi-user.target
