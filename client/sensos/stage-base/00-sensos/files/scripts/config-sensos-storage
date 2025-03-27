@@ -8,19 +8,43 @@
 DATA_MOUNT="/sensos/data"
 MAKE_FS=false
 FS_TYPE_ARG="ext4"
+PERMANENT=false
+DRY_RUN=false
+DEVICE=""
 DEVICE_HINT=""
+
+script_name=$(basename "$0")
 
 # Load from defaults.conf
 if [[ -f /sensos/lib/load-defaults.sh ]]; then
     source /sensos/lib/load-defaults.sh
     declare -A default_vars
-    load_defaults "setup-sensos-data.sh" default_vars
-    DEVICE_HINT="${default_vars[DEVICE_HINT]:-}"
+    load_defaults "$script_name" default_vars
+    DEVICE_HINT="${default_vars[device_hint]:-}"
 fi
+
+usage() {
+    cat <<EOF
+Usage: $0 [options]
+
+Options:
+  --device <path>       Specify device manually (e.g., /dev/sda1)
+  --make-fs             Create a new filesystem if none is found (requires confirmation)
+  --fs-type <type>      Filesystem type to create if needed (default: ext4)
+  --permanent           Add mount to /etc/fstab for persistence across reboot
+  --dry-run             Print actions instead of executing them
+  --help                Show this help message
+EOF
+    exit 0
+}
 
 # Parse command-line options
 while [[ $# -gt 0 ]]; do
     case "$1" in
+    --device)
+        DEVICE="$2"
+        shift 2
+        ;;
     --make-fs)
         MAKE_FS=true
         shift
@@ -29,9 +53,20 @@ while [[ $# -gt 0 ]]; do
         FS_TYPE_ARG="$2"
         shift 2
         ;;
+    --permanent)
+        PERMANENT=true
+        shift
+        ;;
+    --dry-run)
+        DRY_RUN=true
+        shift
+        ;;
+    --help)
+        usage
+        ;;
     *)
         echo "Unknown option: $1" >&2
-        exit 1
+        usage
         ;;
     esac
 done
@@ -53,17 +88,19 @@ elif [[ -n "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ]]; then
 fi
 
 # 📦 Select device
-if [[ -n "$DEVICE_HINT" ]]; then
-    echo "Using device hint: $DEVICE_HINT"
-    DEVICE="$DEVICE_HINT"
-else
-    echo "Looking for unmounted external partitions..."
-    DEVICE=$(lsblk -nrpo NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1}' | grep -v '^/dev/loop' | grep -v '/dev/mmcblk0p' | head -n 1)
+if [[ -z "$DEVICE" ]]; then
+    if [[ -n "$DEVICE_HINT" && -b "$DEVICE_HINT" ]]; then
+        echo "Using device hint from config: $DEVICE_HINT"
+        DEVICE="$DEVICE_HINT"
+    else
+        echo "Looking for unmounted external partitions..."
+        DEVICE=$(lsblk -nrpo NAME,TYPE,MOUNTPOINT | awk '$2=="part" && $3=="" {print $1}' | grep -v '^/dev/loop' | grep -v '/dev/mmcblk0p' | head -n 1)
+    fi
 fi
 
-if [[ -z "$DEVICE" ]]; then
-    echo "No external unmounted partition found. Using internal storage."
-    exit 0
+if [[ -z "$DEVICE" || ! -b "$DEVICE" ]]; then
+    echo "❌ No suitable external device found."
+    exit 1
 fi
 
 echo "Selected device: $DEVICE"
@@ -73,7 +110,6 @@ FS_TYPE=$(blkid -o value -s TYPE "$DEVICE" || true)
 if [[ -z "$FS_TYPE" ]]; then
     echo "No filesystem detected on $DEVICE."
 
-    # Check for existing data on raw device
     echo "Checking for non-zero bytes..."
     if hexdump -n 512 "$DEVICE" | grep -qv ' 00 '; then
         echo "⚠️  Detected non-zero bytes — this device may contain data or a non-standard format."
@@ -85,32 +121,51 @@ if [[ -z "$FS_TYPE" ]]; then
     fi
 
     if [[ "$MAKE_FS" == true ]]; then
-        echo "Creating filesystem..."
-        mkfs -t "$FS_TYPE_ARG" "$DEVICE"
+        if [[ "$DRY_RUN" == true ]]; then
+            echo "[dry-run] mkfs -t $FS_TYPE_ARG $DEVICE"
+        else
+            echo "Creating filesystem..."
+            mkfs -t "$FS_TYPE_ARG" "$DEVICE"
+        fi
         FS_TYPE="$FS_TYPE_ARG"
-        echo "✅ Filesystem created."
+        echo "✅ Filesystem ready."
     else
-        echo "❌ Use --make-fs to create a filesystem on $DEVICE."
+        echo "❌ No filesystem found and --make-fs not specified."
         exit 1
     fi
 else
     echo "Detected filesystem: $FS_TYPE"
 fi
 
-# 📂 Mount
-case "$FS_TYPE" in
-ext4)
-    echo "Mounting ext4 device to $DATA_MOUNT..."
+# 📂 Mount the device
+if [[ "$DRY_RUN" == true ]]; then
+    echo "[dry-run] mount $DEVICE $DATA_MOUNT"
+else
+    echo "Mounting $DEVICE as $FS_TYPE at $DATA_MOUNT..."
     mount "$DEVICE" "$DATA_MOUNT"
-    ;;
-vfat | exfat)
-    echo "Mounting $FS_TYPE (USB) device to $DATA_MOUNT..."
-    mount "$DEVICE" "$DATA_MOUNT"
-    ;;
-*)
-    echo "❌ Unsupported filesystem type: $FS_TYPE"
-    exit 1
-    ;;
-esac
+    echo "✅ Mount complete: $DEVICE → $DATA_MOUNT"
+fi
 
-echo "✅ Mount complete: $DEVICE → $DATA_MOUNT"
+# 📌 Add to fstab if requested
+if [[ "$PERMANENT" == true ]]; then
+    echo "Adding permanent mount entry to /etc/fstab..."
+
+    UUID=$(blkid -s UUID -o value "$DEVICE")
+    if [[ -z "$UUID" ]]; then
+        echo "❌ Could not determine UUID for $DEVICE"
+        exit 1
+    fi
+
+    FSTAB_LINE="UUID=$UUID $DATA_MOUNT $FS_TYPE defaults 0 2"
+
+    if grep -q "$DATA_MOUNT" /etc/fstab; then
+        echo "⚠️  /etc/fstab already has an entry for $DATA_MOUNT. Not modifying."
+    else
+        if [[ "$DRY_RUN" == true ]]; then
+            echo "[dry-run] echo '$FSTAB_LINE' >> /etc/fstab"
+        else
+            echo "$FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
+            echo "✅ Added to /etc/fstab"
+        fi
+    fi
+fi

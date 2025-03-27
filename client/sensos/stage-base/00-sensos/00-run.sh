@@ -3,40 +3,37 @@
 SYSD_SYS_DIR="${ROOTFS_DIR}/etc/systemd/system"
 SENSOS_DIR="${ROOTFS_DIR}/sensos"
 BIN_DIR="${ROOTFS_DIR}/usr/local/bin"
+FILES_DIR="files"
 
-SERVICE_SCRIPTS_DIR=files/service_scripts
-SERVICES_DIR=files/services
-SCRIPTS_DIR=files/scripts
-DOCKER_DIR=files/docker
-LIB_DIR=files/lib
-ETC_DIR=files/etc
+# Ensure base dirs exist
+mkdir -p "$SENSOS_DIR/log" "$SENSOS_DIR/data/audio_recordings" "$SENSOS_DIR/data/database"
 
-# Ensure /sensos subdirectories exist
-mkdir -p "$SENSOS_DIR/log" "$SENSOS_DIR/etc" "$SENSOS_DIR/data" "$SENSOS_DIR/lib"
-
-# Enable nullglob to avoid errors on empty directories
+# Enable nullglob so globs return empty instead of literal pattern
 shopt -s nullglob
 
-# Install scripts to /usr/local/bin
-for script in "${SCRIPTS_DIR}"/*; do
-    install -m 755 "$script" "$BIN_DIR"
+# Install to /usr/local/bin
+for f in "${FILES_DIR}/scripts/"* "${FILES_DIR}/service_scripts/"*; do
+    [[ -f "$f" ]] && install -m 755 "$f" "$BIN_DIR"
 done
 
-# Install service files
-for service in "${SERVICES_DIR}"/*; do
-    install -m 644 "$service" "$SYSD_SYS_DIR"
+# Install systemd services
+for f in "${FILES_DIR}/services/"*; do
+    [[ -f "$f" ]] && install -m 644 "$f" "$SYSD_SYS_DIR"
 done
 
-# Install service start scripts
-for script in "${SERVICE_SCRIPTS_DIR}"/*; do
-    install -m 755 "$script" "$BIN_DIR"
+# Copy everything else to /sensos/<name>
+for subdir in "${FILES_DIR}/"*/; do
+    name=$(basename "$subdir")
+    case "$name" in
+    scripts | service_scripts | services)
+        # Skip those — already handled
+        ;;
+    *)
+        echo "Copying ${name} → /sensos/${name}"
+        mkdir -p "$SENSOS_DIR/$name"
+        cp -a "$subdir"/* "$SENSOS_DIR/$name/"
+        ;;
+    esac
 done
 
 shopt -u nullglob
-
-# Copy lib and etc directories
-cp -a "$LIB_DIR/." "$SENSOS_DIR/lib/"
-cp -a "$ETC_DIR/." "$SENSOS_DIR/etc/"
-
-# Install docker image directories
-cp -a "$DOCKER_DIR" "$SENSOS_DIR"

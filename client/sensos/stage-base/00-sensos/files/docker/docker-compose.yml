@@ -34,6 +34,7 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - /sensos/python:/wheels:ro
     deploy:
       restart_policy:
         condition: on-failure
@@ -54,6 +55,8 @@ services:
       AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+    volumes:
+      - /sensos/python:/wheels:ro
     deploy:
       restart_policy:
         condition: on-failure
@@ -74,6 +77,8 @@ services:
       AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+    volumes:
+      - /sensos/python:/wheels:ro
     deploy:
       restart_policy:
         condition: on-failure
@@ -96,6 +101,7 @@ services:
       AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - /sensos/python:/wheels:ro
     deploy:
       restart_policy:
         condition: on-failure

@@ -19,7 +19,8 @@ RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 # Upgrade pip and install required Python packages
-RUN pip install numpy psycopg librosa
+COPY requirements.txt .
+RUN pip install --no-cache-dir --find-links=/wheels --prefer-binary -r requirements.txt
 
 # Copy analysis script
 COPY analyze-sound.py .

@@ -26,38 +26,39 @@ API_PASSWORD_FILE = "/sensos/.sensos_api_password"
 REGISTRY_CONFIG_FILE = "/sensos/.sensos_registry_config.json"
 
 
-def parse_args():
-    """Parse command-line arguments."""
+def parse_args(defaults):
     parser = argparse.ArgumentParser(
         description="Configure the Sensos WireGuard client."
     )
     parser.add_argument(
         "--config-server",
-        default=DEFAULT_SERVER,
+        default=defaults.get("config_server", DEFAULT_SERVER),
         help="Configuration server hostname or IP (default: localhost)",
     )
     parser.add_argument(
         "--port",
-        default=DEFAULT_PORT,
+        default=defaults.get("port", DEFAULT_PORT),
         help="Server port (default: 8000)",
     )
     parser.add_argument(
-        "--network", default=DEFAULT_NETWORK_NAME, help="Network name (default: sensos)"
+        "--network",
+        default=defaults.get("network", DEFAULT_NETWORK_NAME),
+        help="Network name (default: sensos)",
     )
     parser.add_argument(
         "--subnet",
         type=int,
-        default=1,
+        default=int(defaults.get("subnet", 1)),
         help="Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
     )
     parser.add_argument(
         "--wg-endpoint",
-        default=None,
+        default=defaults.get("wg_endpoint", None),
         help="Override WireGuard endpoint IP (default: use server-assigned IP)",
     )
     parser.add_argument(
         "--wg-keepalive",
-        default=DEFAULT_KEEPALIVE,
+        default=defaults.get("wg_keepalive", DEFAULT_KEEPALIVE),
         help="WireGuard persistent keepalive interval (default: 0 seconds)",
     )
     parser.add_argument(
@@ -77,7 +78,7 @@ def parse_args():
     )
     parser.add_argument(
         "--note",
-        default="",
+        default=defaults.get("note", ""),
         help="Optional note or description to register with the device (default: empty)",
     )
     return parser.parse_args()
@@ -1046,14 +1047,7 @@ def main():
     script_name = os.path.basename(sys.argv[0]).replace(".py", "").replace("-", "_")
     overrides = load_defaults(script_name)
 
-    # Apply overrides to DEFAULT_* values
-    global DEFAULT_SERVER, DEFAULT_PORT, DEFAULT_NETWORK_NAME, DEFAULT_KEEPALIVE
-    DEFAULT_SERVER = overrides.get("config_server", DEFAULT_SERVER)
-    DEFAULT_PORT = overrides.get("port", DEFAULT_PORT)
-    DEFAULT_NETWORK_NAME = overrides.get("network", DEFAULT_NETWORK_NAME)
-    DEFAULT_KEEPALIVE = overrides.get("wg_keepalive", DEFAULT_KEEPALIVE)
-
-    args = parse_args()
+    args = parse_args(overrides)
 
     print("🚀 Starting device configuration...")
     api_password = get_api_password(args.config_server, args.port)

@@ -1,0 +1,4 @@
+psycopg[binary]
+librosa
+soundfile
+numpy

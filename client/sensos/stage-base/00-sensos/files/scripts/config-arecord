@@ -16,6 +16,8 @@ Optional (interactive if omitted):
   --rate RATE             Sample rate in Hz (default: 48000)
   --max-time SECONDS      Max duration per file (default: 900)
   --base-dir DIR          Base directory for sound files (default: /sensos/data/audio_recordings/)
+  --enable-service BOOL    Enable the systemd service (default: true)
+  --start-service BOOL     Start the systemd service (default: true)
   --help                  Show this help message
 EOF
 }
@@ -27,10 +29,12 @@ channels=""
 rate="48000"
 max_time="900"
 base_dir="/sensos/data/audio_recordings/"
+enable_service="true"
+start_service="true"
 
 # Parse command-line arguments
 TEMP=$(getopt -o "" \
-    --long device:,format:,channels:,rate:,max-time:,base-dir:,help \
+    --long device:,format:,channels:,rate:,max-time:,base-dir:,enable-service:,start-service:,help \
     -n 'config-arecord.sh' -- "$@")
 if [ $? != 0 ]; then
     Usage
@@ -64,6 +68,14 @@ while true; do
         base_dir="$2"
         shift 2
         ;;
+    --enable-service)
+        enable_service="$2"
+        shift 2
+        ;;
+    --start-service)
+        start_service="$2"
+        shift 2
+        ;;
     --help)
         Usage
         exit 0
@@ -80,11 +92,9 @@ while true; do
     esac
 done
 
-# Load overrides
 if [ -f /sensos/lib/load-defaults.sh ]; then
-    # shellcheck source=/dev/null
     source /sensos/lib/load-defaults.sh
-    apply_defaults /sensos/etc/defaults.conf "$script_name"
+    load_defaults /sensos/etc/defaults.conf "$script_name"
 fi
 
 # Prompt for device if not specified
@@ -97,6 +107,20 @@ if [ -z "$device" ]; then
     echo
     read -p "Select device index: " dev_index
     device="${device_list[$dev_index]}"
+    # Normalize device string if it uses CARD= style
+    if [[ "$device" =~ ^(plug)?hw:CARD=([a-zA-Z0-9]+),DEV=([0-9]+) ]]; then
+        card_name="${BASH_REMATCH[2]}"
+        dev_index="${BASH_REMATCH[3]}"
+        card_number=$(arecord -l | grep "^card " | grep "$card_name" | awk '{print $2}' | tr -d ':')
+
+        if [ -z "$card_number" ]; then
+            echo "Unable to map card name '$card_name' to a card number."
+            exit 1
+        fi
+
+        device="${BASH_REMATCH[1]}hw:$card_number,$dev_index"
+        echo "Normalized device string: $device"
+    fi
     echo "Selected device: $device"
 fi
 
@@ -197,7 +221,15 @@ chmod -R g+w /sensos/data || sudo chmod -R g+w /sensos/data || true
 
 echo "Configuration written to $config_file"
 
-echo "Enabling and starting sensos-arecord.service..."
+echo "Reloading systemd..."
 sudo systemctl daemon-reload
-sudo systemctl enable sensos-arecord.service
-sudo systemctl start sensos-arecord.service
+
+if [[ "$enable_service" == "true" ]]; then
+    echo "Enabling sensos-arecord.service..."
+    sudo systemctl enable sensos-arecord.service
+fi
+
+if [[ "$start_service" == "true" ]]; then
+    echo "Starting sensos-arecord.service..."
+    sudo systemctl start sensos-arecord.service
+fi

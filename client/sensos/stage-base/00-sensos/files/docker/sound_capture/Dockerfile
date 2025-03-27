@@ -1,5 +1,6 @@
 FROM debian:bookworm-slim
 
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
@@ -11,14 +12,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Set up virtual environment
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
-# Install Python dependencies
-RUN pip install psycopg[binary] soundfile numpy
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --find-links=/wheels --prefer-binary -r requirements.txt
 
-# Copy script
-COPY manage-db.py .
+# Copy application code
+COPY capture-audio.py .
 
-# Entrypoint
-CMD ["python", "manage-db.py"]
+# Default command
+CMD ["python", "capture-audio.py"]

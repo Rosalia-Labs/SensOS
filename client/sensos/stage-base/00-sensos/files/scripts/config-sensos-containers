@@ -1,11 +1,13 @@
 #!/bin/bash
 set -e
 
+script_name=$(basename "$0")
+
 # Load default overrides
 if [[ -f /sensos/lib/load-defaults.sh ]]; then
     source /sensos/lib/load-defaults.sh
     declare -A default_vars
-    load_defaults "configure-docker" default_vars
+    load_defaults "$script_name" default_vars
 fi
 
 # Helper to get value with optional override
@@ -19,68 +21,80 @@ get_default() {
     fi
 }
 
-# Set defaults (can be overridden by defaults.conf or CLI)
-POSTGRES_DB=$(get_default POSTGRES_DB "postgres")
-POSTGRES_USER=$(get_default POSTGRES_USER "postgres")
-POSTGRES_PASSWORD=$(get_default POSTGRES_PASSWORD "sensos")
-DB_HOST=$(get_default DB_HOST "sensos-client-database")
-DB_PORT=$(get_default DB_PORT "5432")
-DB_DATA_PATH=$(get_default DB_DATA_PATH "sensos-db-data")
-AUDIO_DIRECTORY=$(get_default AUDIO_DIRECTORY "")
-AUDIO_FORMAT_CODE=$(get_default AUDIO_FORMAT_CODE "")
-DOCKER_COMPOSE_DIR=$(get_default DOCKER_COMPOSE_DIR "/sensos/docker")
-ARECORD_CONF=$(get_default ARECORD_CONF "/sensos/etc/arecord.conf")
+# Defaults (overridable)
+postgres_db=$(get_default postgres_db "postgres")
+postgres_user=$(get_default postgres_user "postgres")
+postgres_password=$(get_default postgres_password "sensos")
+db_host=$(get_default db_host "sensos-client-database")
+db_port=$(get_default db_port "5432")
+db_data_path=$(get_default db_data_path "sensos-db-data")
+audio_directory=$(get_default audio_directory "")
+audio_format_code=$(get_default audio_format_code "")
+docker_compose_dir=$(get_default docker_compose_dir "/sensos/docker")
+arecord_conf=$(get_default arecord_conf "/sensos/etc/arecord.conf")
+enable_service=$(get_default enable_service "true")
+start_service=$(get_default start_service "true")
 
 usage() {
     cat <<EOF
 Usage: $0 [options]
 
 Options:
-  --postgres-db <value>       Set POSTGRES_DB
-  --postgres-user <value>     Set POSTGRES_USER
-  --postgres-password <value> Set POSTGRES_PASSWORD
-  --db-host <value>           Set DB_HOST
-  --db-port <value>           Set DB_PORT
-  --db-data-path <value>      Set DB_DATA_PATH
-  --audio-directory <value>   Set AUDIO_DIRECTORY
-  --audio-format <value>      Set AUDIO_FORMAT_CODE
+  --postgres-db <value>       Set database name
+  --postgres-user <value>     Set database user
+  --postgres-password <value> Set database password
+  --db-host <value>           Set database host
+  --db-port <value>           Set database port
+  --db-data-path <value>      Set Docker volume path
+  --audio-directory <value>   Set path for audio files
+  --audio-format <value>      Set ALSA audio format code
+  --enable-service <true|false>  Enable sensos-docker.service (default: true)
+  --start-service <true|false>   Start sensos-docker.service (default: true)
   --help                      Show this help message
 EOF
 }
 
-# Parse command-line options
+# Parse CLI overrides
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
     --postgres-db)
-        POSTGRES_DB="$2"
+        postgres_db="$2"
         shift 2
         ;;
     --postgres-user)
-        POSTGRES_USER="$2"
+        postgres_user="$2"
         shift 2
         ;;
     --postgres-password)
-        POSTGRES_PASSWORD="$2"
+        postgres_password="$2"
         shift 2
         ;;
     --db-host)
-        DB_HOST="$2"
+        db_host="$2"
         shift 2
         ;;
     --db-port)
-        DB_PORT="$2"
+        db_port="$2"
         shift 2
         ;;
     --db-data-path)
-        DB_DATA_PATH="$2"
+        db_data_path="$2"
         shift 2
         ;;
     --audio-directory)
-        AUDIO_DIRECTORY="$2"
+        audio_directory="$2"
         shift 2
         ;;
     --audio-format)
-        AUDIO_FORMAT_CODE="$2"
+        audio_format_code="$2"
+        shift 2
+        ;;
+    --enable-service)
+        enable_service="$2"
+        shift 2
+        ;;
+    --start-service)
+        start_service="$2"
         shift 2
         ;;
     --help)
@@ -95,40 +109,50 @@ while [[ "$#" -gt 0 ]]; do
     esac
 done
 
-# If arecord.conf exists and values not already provided, extract defaults
-if [[ -f "$ARECORD_CONF" ]]; then
-    echo "Reading config from $ARECORD_CONF..."
-    [[ -z "$AUDIO_DIRECTORY" ]] && AUDIO_DIRECTORY=$(grep '^BASE_DIR=' "$ARECORD_CONF" | cut -d= -f2- | tr -d '"')
-    [[ -z "$AUDIO_FORMAT_CODE" ]] && AUDIO_FORMAT_CODE=$(grep '^FORMAT=' "$ARECORD_CONF" | cut -d= -f2- | tr -d '"')
+# Load values from arecord.conf if available
+if [[ -f "$arecord_conf" ]]; then
+    echo "Reading config from $arecord_conf..."
+    [[ -z "$audio_directory" ]] && audio_directory=$(grep '^BASE_DIR=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
+    [[ -z "$audio_format_code" ]] && audio_format_code=$(grep '^FORMAT=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
 fi
 
 # Final fallbacks
-AUDIO_DIRECTORY="${AUDIO_DIRECTORY:-/sensos/data/audio_recordings}"
-AUDIO_FORMAT_CODE="${AUDIO_FORMAT_CODE:-S32_LE}"
+audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
+audio_format_code="${audio_format_code:-S32_LE}"
 
-# Ensure directory exists
-mkdir -p "$DOCKER_COMPOSE_DIR"
-if [[ ! -w "$DOCKER_COMPOSE_DIR" ]]; then
-    echo "ERROR: Cannot write to $DOCKER_COMPOSE_DIR"
+# Ensure output directory exists
+mkdir -p "$docker_compose_dir"
+if [[ ! -w "$docker_compose_dir" ]]; then
+    echo "ERROR: Cannot write to $docker_compose_dir"
     exit 1
 fi
 
-# Write .env
-cat >"$DOCKER_COMPOSE_DIR/.env" <<EOF
-POSTGRES_DB=${POSTGRES_DB}
-POSTGRES_USER=${POSTGRES_USER}
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-DB_HOST=${DB_HOST}
-DB_PORT=${DB_PORT}
-DB_DATA_PATH=${DB_DATA_PATH}
-AUDIO_DIRECTORY=${AUDIO_DIRECTORY}
-AUDIO_FORMAT_CODE=${AUDIO_FORMAT_CODE}
+# Write .env file
+env_file="$docker_compose_dir/.env"
+cat >"$env_file" <<EOF
+POSTGRES_DB=${postgres_db}
+POSTGRES_USER=${postgres_user}
+POSTGRES_PASSWORD=${postgres_password}
+DB_HOST=${db_host}
+DB_PORT=${db_port}
+DB_DATA_PATH=${db_data_path}
+AUDIO_DIRECTORY=${audio_directory}
+AUDIO_FORMAT_CODE=${audio_format_code}
 EOF
 
-echo ".env written to ${DOCKER_COMPOSE_DIR}/.env:"
-cat "$DOCKER_COMPOSE_DIR/.env"
+echo ".env written to $env_file:"
+cat "$env_file"
 
-echo "Enabling and starting sensos-docker.service..."
+# Manage systemd service
+echo "Reloading systemd..."
 sudo systemctl daemon-reload
-sudo systemctl enable sensos-docker.service
-sudo systemctl start sensos-docker.service
+
+if [[ "$enable_service" == "true" ]]; then
+    echo "Enabling sensos-docker.service..."
+    sudo systemctl enable sensos-docker.service
+fi
+
+if [[ "$start_service" == "true" ]]; then
+    echo "Starting sensos-docker.service..."
+    sudo systemctl start sensos-docker.service
+fi

@@ -8,9 +8,11 @@ CONFIG_FILE="${PI_GEN_DIR}/config"
 
 STAGE_SRC="${SENSOS_DIR}/stage-base/00-sensos"
 STAGE_DST="${PI_GEN_DIR}/stage2/04-sensos"
+WHEEL_DIR="${STAGE_SRC}/files/python"
 
 REMOVE_DEPLOY=false
 CONTINUE_BUILD=false
+DOWNLOAD_WHEELS=false
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -18,6 +20,7 @@ usage() {
     echo "Options:"
     echo "  --remove-existing   Delete the 'deploy' directory before building"
     echo "  --continue          Continue from a previously interrupted build"
+    echo "  --download-wheels   Download Python wheels for offline install"
     echo "  -h, --help          Show this help message and exit"
     echo
     exit 0
@@ -32,6 +35,10 @@ while [[ $# -gt 0 ]]; do
         ;;
     --continue)
         CONTINUE_BUILD=true
+        shift
+        ;;
+    --download-wheels)
+        DOWNLOAD_WHEELS=true
         shift
         ;;
     -h | --help)
@@ -56,9 +63,31 @@ echo "Building image using config:"
 cat "$CONFIG_FILE"
 echo
 
+if [ "$DOWNLOAD_WHEELS" = true ]; then
+    echo "Finding all requirements.txt files..."
+    REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
+    mkdir -p "$WHEEL_DIR"
+    TMP_REQ="${WHEEL_DIR}/combined-requirements.txt"
+    >"$TMP_REQ"
+
+    for req in $REQUIREMENTS_LIST; do
+        echo "Adding: $req"
+        cat "$req" >>"$TMP_REQ"
+    done
+
+    echo "Removing duplicates..."
+    sort -u "$TMP_REQ" -o "$TMP_REQ"
+
+    echo "Downloading Python wheels for arm64..."
+    docker run --rm -v "$WHEEL_DIR":/out arm64v8/python:3.11-slim \
+        sh -c "pip install --upgrade pip && pip download -d /out -r /out/combined-requirements.txt"
+
+    echo "✅ Wheels downloaded to $WHEEL_DIR"
+fi
+
 # Stage copy
 echo "Copying custom stage to pi-gen..."
-sudo rm -rf "$STAGE_DST"
+rm -rf "$STAGE_DST" || sudo rm -rf "$STAGE_DST"
 cp -R "$STAGE_SRC" "$STAGE_DST"
 
 cd "$PI_GEN_DIR"
@@ -82,7 +111,7 @@ fi
 
 # Cleanup
 echo "Cleaning up copied stage..."
-sudo rm -rf "$STAGE_DST"
+rm -rf "$STAGE_DST" || sudo rm -rf "$STAGE_DST"
 
 echo "Build complete."
 exit 0

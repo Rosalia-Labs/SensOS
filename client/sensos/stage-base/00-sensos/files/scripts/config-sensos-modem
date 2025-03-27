@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-CONFIG_DIR="/sensos/etc"
-CONFIG_FILE="$CONFIG_DIR/sensos_modem.conf"
-SCRIPT_NAME=$(basename "$0")
+script_name=$(basename "$0")
+config_dir="/sensos/etc"
+config_file="$config_dir/sensos_modem.conf"
 
-# Load defaults if available
+# Load default overrides
 if [[ -f /sensos/lib/load-defaults.sh ]]; then
     source /sensos/lib/load-defaults.sh
     declare -A default_vars
-    load_defaults "$SCRIPT_NAME" default_vars
+    load_defaults "$script_name" default_vars
 fi
 
-# Helper to get default value with optional override
+# Helper: get value with optional fallback
 get_default() {
     local varname="$1"
     local fallback="$2"
@@ -23,47 +23,52 @@ get_default() {
     fi
 }
 
-# Default values (may be overridden)
-SERVICE=""
-MODEM_IFACE=$(get_default MODEM_IFACE "wwan0")
-MODEM_INTERNAL_NAME=$(get_default MODEM_INTERNAL_NAME "cdc-wdm0")
-ENABLE_SERVICE=$(get_default ENABLE_SERVICE "true")
-
-# Ensure necessary directories exist
-mkdir -p "$CONFIG_DIR"
-
-# Check if SENSOS_USER is set and warn if it differs from the current user
-if [[ -n "$SENSOS_USER" && "$USER" != "$SENSOS_USER" ]]; then
-    echo "WARNING: Current user ($USER) does not match SENSOS_USER ($SENSOS_USER). Configuration may not work."
-fi
+# Defaults (overridable via config or CLI)
+service=""
+modem_iface=$(get_default modem_iface "wwan0")
+modem_internal_name=$(get_default modem_internal_name "cdc-wdm0")
+enable_service=$(get_default enable_service "true")
+start_service=$(get_default start_service "true")
 
 usage() {
-    echo "Usage: $0 --service <service> [--modem-iface <iface>] [--modem-internal-name <internal_name>] [--no-enable]"
+    cat <<EOF
+Usage: $0 --service <1nce|...> [options]
+
+Options:
+  --service <name>              Required modem service name (e.g., 1nce)
+  --modem-iface <iface>         Modem network interface (default: wwan0)
+  --modem-internal-name <name>  Internal modem name (default: cdc-wdm0)
+  --enable-service <true|false> Whether to enable sensos-modem.service (default: true)
+  --start-service <true|false>  Whether to start sensos-modem.service (default: true)
+  --help                        Show this help message
+EOF
     exit 1
 }
 
-# Process command-line arguments
+# Parse CLI arguments
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
     --service)
-        SERVICE="$2"
+        service="$2"
         shift 2
         ;;
     --modem-iface)
-        MODEM_IFACE="$2"
+        modem_iface="$2"
         shift 2
         ;;
     --modem-internal-name)
-        MODEM_INTERNAL_NAME="$2"
+        modem_internal_name="$2"
         shift 2
         ;;
-    --no-enable)
-        ENABLE_SERVICE="false"
-        shift
+    --enable-service)
+        enable_service="$2"
+        shift 2
         ;;
-    --help)
-        usage
+    --start-service)
+        start_service="$2"
+        shift 2
         ;;
+    --help) usage ;;
     *)
         echo "Unknown option: $1"
         usage
@@ -71,43 +76,44 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Ensure a service is specified
-if [[ -z "$SERVICE" ]]; then
-    echo "Error: Service must be specified."
+# Validate required argument
+if [[ -z "$service" ]]; then
+    echo "Error: --service must be specified."
     usage
 fi
 
-# Set APN based on the service value
-case "$SERVICE" in
-1nce) APN="iot.1nce.net" ;;
+# Map service to APN
+case "$service" in
+1nce) apn="iot.1nce.net" ;;
 *)
-    echo "Service '$SERVICE' is not supported by this script."
+    echo "Error: Unsupported service '$service'"
     exit 1
     ;;
 esac
 
-# Save configuration
-cat >"$CONFIG_FILE" <<EOF
-SERVICE=$SERVICE
-MODEM_IFACE=$MODEM_IFACE
-MODEM_INTERNAL_NAME=$MODEM_INTERNAL_NAME
-APN=$APN
+# Ensure output directory exists
+mkdir -p "$config_dir"
+
+# Write config file
+cat >"$config_file" <<EOF
+SERVICE=$service
+MODEM_IFACE=$modem_iface
+MODEM_INTERNAL_NAME=$modem_internal_name
+APN=$apn
 EOF
 
-echo "Modem configuration saved to $CONFIG_FILE."
+echo "Modem configuration saved to $config_file"
 
-# Enable and start the modem service unless --no-enable was used
-if [[ "$ENABLE_SERVICE" == "true" ]]; then
-    echo "Enabling and starting modem service..."
+# Manage systemd service
+echo "Reloading systemd..."
+sudo systemctl daemon-reload
 
-    sudo systemctl daemon-reload
+if [[ "$enable_service" == "true" ]]; then
+    echo "Enabling sensos-modem.service..."
+    sudo systemctl enable sensos-modem.service
+fi
 
-    if ! sudo systemctl is-enabled sensos-modem.service &>/dev/null; then
-        sudo systemctl enable sensos-modem.service
-    fi
-
+if [[ "$start_service" == "true" ]]; then
+    echo "Starting sensos-modem.service..."
     sudo systemctl restart sensos-modem.service
-    echo "Modem service enabled and started."
-else
-    echo "Modem service NOT enabled (per user request)."
 fi
