@@ -1,29 +1,16 @@
-# Use a slim Debian base image
 FROM debian:bookworm-slim
 
-# Install system dependencies in a single step
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-venv \
-    python3-pip \
-    libportaudio2 \
-    libpq5 \
-    libsndfile1 \
-    libopenblas0 \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+ENV REQUIRED_DEBS="python3 python3-venv python3-pip libportaudio2 libpq5 libsndfile1 libopenblas0 ffmpeg"
+RUN /lib/install-debs.sh
 
-# Set up a virtual environment
 WORKDIR /app
+
+# Set up virtual environment
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
-# Upgrade pip and install required Python packages
-COPY requirements.txt .
-RUN pip install --no-cache-dir --find-links=/wheels --prefer-binary -r requirements.txt
+# Install Python dependencies from pre-downloaded wheels (fallback to PyPI if needed)
+RUN pip install --find-links=/wheels/sound_analyzer --prefer-binary -r requirements.txt
 
-# Copy analysis script
-COPY analyze-sound.py .
-
-# Set default command
+# Skip COPY — assumes /app, /wheels, and /debs are mounted
 CMD ["python", "analyze-sound.py"]

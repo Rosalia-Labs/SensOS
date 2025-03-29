@@ -19,8 +19,8 @@ usage() {
     echo
     echo "Options:"
     echo "  --remove-existing   Delete the 'deploy' directory before building"
-    echo "  --continue          Continue from a previously interrupted build"
     echo "  --download-wheels   Download Python wheels for offline install"
+    echo "  --continue          Continue from a previously interrupted build"
     echo "  -h, --help          Show this help message and exit"
     echo
     exit 0
@@ -33,12 +33,17 @@ while [[ $# -gt 0 ]]; do
         REMOVE_DEPLOY=true
         shift
         ;;
+    --download-wheels)
+        if [[ -n "$2" && "$2" != --* ]]; then
+            DOWNLOAD_WHEELS="$2"
+            shift 2
+        else
+            DOWNLOAD_WHEELS="true"
+            shift
+        fi
+        ;;
     --continue)
         CONTINUE_BUILD=true
-        shift
-        ;;
-    --download-wheels)
-        DOWNLOAD_WHEELS=true
         shift
         ;;
     -h | --help)
@@ -63,27 +68,80 @@ echo "Building image using config:"
 cat "$CONFIG_FILE"
 echo
 
-if [ "$DOWNLOAD_WHEELS" = true ]; then
+if [ -n "$DOWNLOAD_WHEELS" ]; then
     echo "Finding all requirements.txt files..."
     REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
     mkdir -p "$WHEEL_DIR"
-    TMP_REQ="${WHEEL_DIR}/combined-requirements.txt"
-    >"$TMP_REQ"
 
     for req in $REQUIREMENTS_LIST; do
-        echo "Adding: $req"
-        cat "$req" >>"$TMP_REQ"
+        rel_path="${req#$SENSOS_DIR/}"
+        target_subdir="$WHEEL_DIR/$(dirname "$rel_path")"
+        mkdir -p "$target_subdir"
+        echo "📦 Checking wheels for: $rel_path → $target_subdir"
+
+        wheel_count=$(ls "$target_subdir"/*.whl 2>/dev/null | wc -l)
+        if [[ "$DOWNLOAD_WHEELS" != "force" && "$wheel_count" -gt 0 ]]; then
+            echo "✅ Wheels already exist in $target_subdir, skipping."
+            continue
+        fi
+
+        echo "⬇️ Downloading wheels..."
+        docker run --rm \
+            -v "$target_subdir":/out \
+            -v "$(dirname "$req")":/src \
+            arm64v8/python:3.11-slim \
+            sh -c "pip install --upgrade pip && pip download -d /out -r /src/$(basename "$req")"
     done
 
-    echo "Removing duplicates..."
-    sort -u "$TMP_REQ" -o "$TMP_REQ"
-
-    echo "Downloading Python wheels for arm64..."
-    docker run --rm -v "$WHEEL_DIR":/out arm64v8/python:3.11-slim \
-        sh -c "pip install --upgrade pip && pip download -d /out -r /out/combined-requirements.txt"
-
-    echo "✅ Wheels downloaded to $WHEEL_DIR"
+    echo "✅ All wheels downloaded to $WHEEL_DIR/*"
 fi
+
+OS_PACKAGE_DIR="${STAGE_SRC}/files/os_packages"
+
+echo "📦 Scanning Dockerfiles for APT packages..."
+DOCKERFILES=$(find "$SENSOS_DIR" -name 'Dockerfile')
+
+mkdir -p "$OS_PACKAGE_DIR"
+APT_PACKAGES=()
+
+for dockerfile in $DOCKERFILES; do
+    echo "🔍 Scanning $dockerfile for APT packages..."
+
+    # Read all lines and merge line continuations
+    contents=$(sed ':a;N;$!ba;s/\\\n/ /g' "$dockerfile")
+
+    # Extract lines with apt or apt-get install
+    matches=$(echo "$contents" | grep -Eo 'apt(-get)? install[^&|;]*')
+
+    while IFS= read -r line; do
+        # Remove known flags and tokenize package names
+        pkgs=$(echo "$line" |
+            sed -E 's/apt(-get)? install//; s/--no-install-recommends//g; s/-y//g' |
+            tr -s ' ')
+        APT_PACKAGES+=($pkgs)
+    done <<<"$matches"
+done
+
+# Remove duplicates and download using apt-get download
+UNIQUE_PACKAGES=$(echo "${APT_PACKAGES[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
+echo "⬇️ Downloading .deb packages to $OS_PACKAGE_DIR..."
+docker run --rm --platform linux/arm64 \
+    -v "$OS_PACKAGE_DIR":/debs \
+    arm64v8/debian:bookworm bash -c "
+        apt-get update && \
+        apt-get install -y --no-install-recommends \
+            apt-utils \
+            apt-file \
+            wget \
+            gnupg \
+            apt-transport-https \
+            ca-certificates && \
+        apt-get install -y --no-install-recommends ${UNIQUE_PACKAGES} --download-only && \
+        cp -a /var/cache/apt/archives/*.deb /debs
+"
+
+echo "✅ Downloaded .deb files stored in $OS_PACKAGE_DIR"
 
 # Stage copy
 echo "Copying custom stage to pi-gen..."

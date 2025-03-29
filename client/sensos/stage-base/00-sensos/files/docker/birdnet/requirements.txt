@@ -1,4 +1,4 @@
-numpy
+numpy<2
 psycopg[binary]
 librosa
 tflite-runtime
