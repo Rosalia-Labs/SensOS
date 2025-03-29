@@ -1,0 +1,14 @@
+[Unit]
+Description=Continuously update /sensos/etc/location.conf from GPS
+After=local-fs.target gpsd.service
+Requires=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/check-location.py
+User=root
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -2,9 +2,6 @@
 
 [ -f /config ] && source /config
 
-echo "ENABLE_HOTSPOT: ${ENABLE_HOTSPOT}"
-echo "ENABLE_FIRSTBOOT_GEEKWORM_EEPROM: ${ENABLE_GEEKWORM_EEPROM}"
-
 if [ "${ENABLE_HOTSPOT}" = "1" ]; then
     on_chroot <<EOF
 systemctl enable auto-hotspot.service

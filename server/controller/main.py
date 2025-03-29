@@ -50,6 +50,7 @@ async def lifespan(app: FastAPI):
                 create_ssh_keys_table(cur)
                 create_client_status_table(cur)
                 create_hardware_profile_table(cur)
+                create_peer_location_table(cur)
                 network_id = create_initial_network(cur)
                 if network_id:
                     add_peers_to_wireguard()
@@ -711,6 +712,20 @@ def create_hardware_profile_table(cur):
             profile_json JSONB NOT NULL,
             uploaded_at TIMESTAMP DEFAULT NOW(),
             UNIQUE(peer_id)
+        );
+    """
+    )
+
+
+def create_peer_location_table(cur):
+    cur.execute(
+        """
+        CREATE EXTENSION IF NOT EXISTS postgis;
+        CREATE TABLE IF NOT EXISTS sensos.peer_locations (
+            id SERIAL PRIMARY KEY,
+            peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
+            location GEOGRAPHY(POINT, 4326) NOT NULL,
+            recorded_at TIMESTAMP DEFAULT NOW()
         );
     """
     )
@@ -1517,3 +1532,67 @@ def wireguard_status_dashboard(
 
     html += "</table></body></html>"
     return HTMLResponse(content=html)
+
+
+class LocationUpdateRequest(BaseModel):
+    wg_ip: str
+    latitude: float
+    longitude: float
+
+
+@app.post("/set-peer_location")
+def set_client_location(
+    req: LocationUpdateRequest,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Find peer by IP
+            cur.execute(
+                "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;",
+                (req.wg_ip,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Peer not found.")
+
+            peer_id = row[0]
+            cur.execute(
+                """
+                INSERT INTO sensos.client_locations (peer_id, location)
+                VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326));
+                """,
+                (peer_id, req.longitude, req.latitude),  # Note: lon, lat order!
+            )
+            conn.commit()
+
+    return {"status": "location stored"}
+
+
+@app.get("/get-peer_location")
+def get_client_location(
+    wg_ip: str,
+    credentials: HTTPBasicCredentials = Depends(authenticate),
+):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT l.recorded_at, ST_Y(l.location)::float AS latitude, ST_X(l.location)::float AS longitude
+                FROM sensos.client_locations l
+                JOIN sensos.wireguard_peers p ON l.peer_id = p.id
+                WHERE p.wg_ip = %s
+                ORDER BY l.recorded_at DESC
+                LIMIT 1;
+                """,
+                (wg_ip,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="No location found.")
+
+            return {
+                "latitude": row[1],
+                "longitude": row[2],
+                "recorded_at": row[0],
+            }

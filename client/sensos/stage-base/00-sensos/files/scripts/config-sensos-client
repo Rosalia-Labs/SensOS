@@ -52,6 +52,18 @@ def parse_args(defaults):
         help="Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
     )
     parser.add_argument(
+        "--latitude",
+        type=float,
+        default=defaults.get("latitude"),
+        help="Latitude of the device (default from config files)",
+    )
+    parser.add_argument(
+        "--longitude",
+        type=float,
+        default=defaults.get("longitude"),
+        help="Longitude of the device (default from config files)",
+    )
+    parser.add_argument(
         "--wg-endpoint",
         default=defaults.get("wg_endpoint", None),
         help="Override WireGuard endpoint IP (default: use server-assigned IP)",
@@ -60,11 +72,6 @@ def parse_args(defaults):
         "--wg-keepalive",
         default=defaults.get("wg_keepalive", DEFAULT_KEEPALIVE),
         help="WireGuard persistent keepalive interval (default: 0 seconds)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force overwrite of existing files and settings",
     )
     parser.add_argument(
         "--enable-ssh-passwords",
@@ -81,24 +88,32 @@ def parse_args(defaults):
         default=defaults.get("note", ""),
         help="Optional note or description to register with the device (default: empty)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force overwrite of existing files and settings",
+    )
     return parser.parse_args()
 
 
 def load_defaults(script_name):
     defaults = {}
-    config_path = "/sensos/etc/defaults.conf"
-    if not os.path.exists(config_path):
-        return defaults
 
-    config = configparser.ConfigParser()
-    config.optionxform = str
-    config.read(config_path)
+    for path, sections in [
+        ("/sensos/etc/defaults.conf", ["global", script_name]),
+        ("/sensos/etc/location.conf", ["location"]),
+    ]:
+        if not os.path.exists(path):
+            continue
 
-    # Merge [global] and [script_name] sections
-    for section in ["global", script_name]:
-        if section in config:
-            for k, v in config[section].items():
-                defaults[k] = v
+        parser = configparser.ConfigParser()
+        parser.optionxform = str  # preserve case
+        parser.read(path)
+
+        for section in sections:
+            if section in parser:
+                defaults.update(parser[section].items())
+
     return defaults
 
 
@@ -1042,6 +1057,38 @@ def upload_hardware_profile(config_server, port, api_password, wg_ip):
         print(f"Upload failed: {response.status_code}, {response.text}")
 
 
+def send_peer_location(args, api_password, wg_ip):
+    """Send device location to the server at /set-peer-location."""
+    if not wg_ip or args.latitude is None or args.longitude is None:
+        print("ℹ️ Skipping peer location update (missing IP or coordinates).")
+        return
+
+    payload = {
+        "wg_ip": wg_ip,
+        "latitude": float(args.latitude),
+        "longitude": float(args.longitude),
+    }
+    headers = {
+        "Authorization": f"Basic {get_basic_auth(api_password)}",
+        "Content-Type": "application/json",
+    }
+
+    url = f"http://{args.config_server}:{args.port}/set-peer-location"
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=5)
+        if resp.status_code == 200:
+            print(
+                f"✅ Location updated to {args.latitude}, {args.longitude} for {wg_ip}."
+            )
+        else:
+            print(
+                f"❌ Location update failed: {resp.status_code} {resp.text}",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(f"❌ Error during location update: {e}", file=sys.stderr)
+
+
 def main():
     setup_logging()
     script_name = os.path.basename(sys.argv[0]).replace(".py", "").replace("-", "_")
@@ -1062,6 +1109,7 @@ def main():
     if not server_wg_ip:
         print("❌ Failed to compute API server WireGuard IP. Aborting.")
         return
+    send_peer_location(args, api_password, client_wg_ip)
     configure_ssh(args, api_password)
     print("Starting WireGuard and SSH services...")
     try:
