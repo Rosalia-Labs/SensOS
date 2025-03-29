@@ -28,26 +28,44 @@ curl -s -u "$API_USERNAME:$API_PASSWORD" http://sensos-controller:8000/get-wireg
 
     LOCAL_WG_CONF="/etc/wireguard/${N_NAME}.conf"
 
+    echo "📡 Fetching network info for '${N_NAME}'..."
+    NETWORK_INFO=$(curl -s -u "$API_USERNAME:$API_PASSWORD" \
+        "http://sensos-controller:8000/get-network-info?network_name=${N_NAME}")
+
+    WG_IP_RANGE=$(echo "$NETWORK_INFO" | jq -r '.ip_range')
+    WG_SERVER_PUBLIC_IP=$(echo "$NETWORK_INFO" | jq -r '.wg_public_ip')
+    WG_SERVER_PUBLIC_KEY=$(echo "$NETWORK_INFO" | jq -r '.wg_public_key')
+
+    if [[ -z "$WG_IP_RANGE" || -z "$WG_SERVER_PUBLIC_IP" || -z "$WG_SERVER_PUBLIC_KEY" ]]; then
+        echo "❌ Incomplete network information. Exiting."
+        exit 1
+    fi
+
+    IFS='.' read -r -a IP_PARTS <<<"${WG_IP_RANGE%%/*}"
+    WG_NETWORK_PREFIX="${IP_PARTS[0]}.${IP_PARTS[1]}"
+    WG_IP="${WG_NETWORK_PREFIX}.0.1"
+
+    NEEDS_KEYGEN=true
+
     if [ -f "$LOCAL_WG_CONF" ]; then
-        echo "✔️ Configuration already exists for ${N_NAME}. Skipping."
-    else
-        echo "📡 Fetching network info for '${N_NAME}'..."
-        NETWORK_INFO=$(curl -s -u "$API_USERNAME:$API_PASSWORD" \
-            "http://sensos-controller:8000/get-network-info?network_name=${N_NAME}")
+        echo "✔️ Found existing WireGuard config: ${LOCAL_WG_CONF}"
+        LOCAL_PRIVATE_KEY=$(awk '/^PrivateKey = / { print $3 }' "$LOCAL_WG_CONF")
+        LOCAL_PUBLIC_KEY=$(echo "$LOCAL_PRIVATE_KEY" | wg pubkey)
 
-        WG_IP_RANGE=$(echo "$NETWORK_INFO" | jq -r '.ip_range')
-        WG_SERVER_PUBLIC_IP=$(echo "$NETWORK_INFO" | jq -r '.wg_public_ip')
-        WG_SERVER_PUBLIC_KEY=$(echo "$NETWORK_INFO" | jq -r '.wg_public_key')
+        # Fetch registered public key
+        REGISTERED_PUBLIC_KEY=$(curl -s -u "$API_USERNAME:$API_PASSWORD" \
+            "http://sensos-controller:8000/get-peer-info?ip_address=${WG_IP}" |
+            jq -r '.peer_wg_public_key')
 
-        if [[ -z "$WG_IP_RANGE" || -z "$WG_SERVER_PUBLIC_IP" || -z "$WG_SERVER_PUBLIC_KEY" ]]; then
-            echo "❌ Incomplete network information. Exiting."
-            exit 1
+        if [[ "$REGISTERED_PUBLIC_KEY" == "$LOCAL_PUBLIC_KEY" ]]; then
+            echo "🔑 Public key matches registered key. No action needed."
+            NEEDS_KEYGEN=false
+        else
+            echo "🔄 Public key mismatch or not registered. Will regenerate."
         fi
+    fi
 
-        IFS='.' read -r -a IP_PARTS <<<"${WG_IP_RANGE%%/*}"
-        WG_NETWORK_PREFIX="${IP_PARTS[0]}.${IP_PARTS[1]}"
-        WG_IP="${WG_NETWORK_PREFIX}.0.1"
-
+    if [ "$NEEDS_KEYGEN" = true ]; then
         echo "🔐 Generating WireGuard key pair..."
         CLIENT_PRIVATE_KEY=$(wg genkey)
         CLIENT_PUBLIC_KEY=$(echo "$CLIENT_PRIVATE_KEY" | wg pubkey)
