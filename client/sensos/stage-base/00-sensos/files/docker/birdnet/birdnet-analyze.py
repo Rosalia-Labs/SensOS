@@ -130,9 +130,9 @@ def initialize_schema():
                 """
                 CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
                     segment_id INTEGER REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
-                    species TEXT NOT NULL,
+                    label TEXT NOT NULL,
                     score FLOAT NOT NULL,
-                    PRIMARY KEY (segment_id, species)
+                    PRIMARY KEY (segment_id, label)
                 );
                 """
             )
@@ -247,12 +247,12 @@ def store_results(segment_id, embeddings, scores, top_n=5):
                     "INSERT INTO sensos.birdnet_embeddings (segment_id, vector) VALUES (%s, %s);",
                     (segment_id, embeddings.tolist()),
                 )
-            for species, score in sorted(
+            for label, score in sorted(
                 scores.items(), key=lambda x: x[1], reverse=True
             )[:top_n]:
                 cur.execute(
-                    "INSERT INTO sensos.birdnet_scores (segment_id, species, score) VALUES (%s, %s, %s);",
-                    (segment_id, species, score),
+                    "INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES (%s, %s, %s);",
+                    (segment_id, label, score),
                 )
             conn.commit()
     logger.info(f"Stored embeddings and scores for segment {segment_id}.")
