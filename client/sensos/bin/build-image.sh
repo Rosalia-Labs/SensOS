@@ -13,13 +13,15 @@ WHEEL_DIR="${STAGE_SRC}/files/python"
 REMOVE_DEPLOY=false
 CONTINUE_BUILD=false
 DOWNLOAD_WHEELS=false
+DOWNLOAD_OS_PACKAGES=
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo
     echo "Options:"
     echo "  --remove-existing   Delete the 'deploy' directory before building"
-    echo "  --download-wheels   Download Python wheels for offline install"
+    echo "  --download-wheels[=force]   Download Python wheels for offline install"
+    echo "  --download-os-packages[=force]  Download OS-level .deb packages used in Dockerfiles"
     echo "  --continue          Continue from a previously interrupted build"
     echo "  -h, --help          Show this help message and exit"
     echo
@@ -39,6 +41,15 @@ while [[ $# -gt 0 ]]; do
             shift 2
         else
             DOWNLOAD_WHEELS="true"
+            shift
+        fi
+        ;;
+    --download-os-packages)
+        if [[ -n "$2" && "$2" != --* ]]; then
+            DOWNLOAD_OS_PACKAGES="$2"
+            shift 2
+        else
+            DOWNLOAD_OS_PACKAGES="true"
             shift
         fi
         ;;
@@ -68,14 +79,16 @@ echo "Building image using config:"
 cat "$CONFIG_FILE"
 echo
 
-if [ -n "$DOWNLOAD_WHEELS" ]; then
+if [ -n "$DOWNLOAD_WHEELS" != "false" ]; then
     echo "Finding all requirements.txt files..."
     REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
     mkdir -p "$WHEEL_DIR"
 
     for req in $REQUIREMENTS_LIST; do
         rel_path="${req#$SENSOS_DIR/}"
-        target_subdir="$WHEEL_DIR/$(dirname "$rel_path")"
+        rel_path_trimmed="${rel_path#stage-base/00-sensos/files/docker/}"
+        target_subdir="$WHEEL_DIR/$(dirname "$rel_path_trimmed")"
+
         mkdir -p "$target_subdir"
         echo "📦 Checking wheels for: $rel_path → $target_subdir"
 
@@ -96,54 +109,59 @@ if [ -n "$DOWNLOAD_WHEELS" ]; then
     echo "✅ All wheels downloaded to $WHEEL_DIR/*"
 fi
 
-OS_PACKAGE_DIR="${STAGE_SRC}/files/os_packages"
+if [ -n "$DOWNLOAD_OS_PACKAGES" != "false" ]; then
+    OS_PACKAGE_DIR="${STAGE_SRC}/files/os_packages"
 
-echo "📦 Scanning Dockerfiles for APT packages..."
-DOCKERFILES=$(find "$SENSOS_DIR" -name 'Dockerfile')
+    if [[ "$DOWNLOAD_OS_PACKAGES" != "force" && -n "$(find "$OS_PACKAGE_DIR" -name '*.deb' 2>/dev/null)" ]]; then
+        echo "✅ OS packages already exist in $OS_PACKAGE_DIR, skipping download."
+    else
+        echo "📦 Scanning Dockerfiles for APT packages..."
+        DOCKERFILES=$(find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -name 'Dockerfile')
 
-mkdir -p "$OS_PACKAGE_DIR"
-APT_PACKAGES=()
+        mkdir -p "$OS_PACKAGE_DIR"
+        APT_PACKAGES=()
 
-for dockerfile in $DOCKERFILES; do
-    echo "🔍 Scanning $dockerfile for APT packages..."
+        for dockerfile in $DOCKERFILES; do
+            echo "🔍 Scanning $dockerfile for APT packages..."
 
-    # Read all lines and merge line continuations
-    contents=$(sed ':a;N;$!ba;s/\\\n/ /g' "$dockerfile")
+            contents=$(awk '{ if (sub(/\\$/, "")) { line = line $0 } else { print line $0; line = "" } }' "$dockerfile")
 
-    # Extract lines with apt or apt-get install
-    matches=$(echo "$contents" | grep -Eo 'apt(-get)? install[^&|;]*')
+            matches=$(echo "$contents" |
+                grep -Eo 'apt(-get)? install[^&|;]*|REQUIRED_DEBS="[^"]*"')
 
-    while IFS= read -r line; do
-        # Remove known flags and tokenize package names
-        pkgs=$(echo "$line" |
-            sed -E 's/apt(-get)? install//; s/--no-install-recommends//g; s/-y//g' |
-            tr -s ' ')
-        APT_PACKAGES+=($pkgs)
-    done <<<"$matches"
-done
+            while IFS= read -r line; do
+                if [[ "$line" == *REQUIRED_DEBS* ]]; then
+                    pkgs=$(echo "$line" | sed -E 's/.*REQUIRED_DEBS="([^"]*)".*/\1/')
+                else
+                    pkgs=$(echo "$line" |
+                        sed -E 's/apt(-get)? install//; s/--no-install-recommends//g; s/-y//g' |
+                        tr -s ' ')
+                fi
+                APT_PACKAGES+=($pkgs)
+            done <<<"$matches"
+        done
+    fi
 
-# Remove duplicates and download using apt-get download
-UNIQUE_PACKAGES=$(echo "${APT_PACKAGES[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+    UNIQUE_PACKAGES=$(echo "${APT_PACKAGES[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
 
-echo "⬇️ Downloading .deb packages to $OS_PACKAGE_DIR..."
-docker run --rm --platform linux/arm64 \
-    -v "$OS_PACKAGE_DIR":/debs \
-    arm64v8/debian:bookworm bash -c "
-        apt-get update && \
-        apt-get install -y --no-install-recommends \
-            apt-utils \
-            apt-file \
-            wget \
-            gnupg \
-            apt-transport-https \
-            ca-certificates && \
-        apt-get install -y --no-install-recommends ${UNIQUE_PACKAGES} --download-only && \
-        cp -a /var/cache/apt/archives/*.deb /debs
-"
+    if [[ -z "$UNIQUE_PACKAGES" ]]; then
+        echo "⚠️  No APT packages found in any Dockerfile. Skipping .deb download."
+    else
+        echo "⬇️ Downloading .deb packages to $OS_PACKAGE_DIR..."
+        docker run --rm --platform linux/arm64 \
+            -v "$OS_PACKAGE_DIR":/debs \
+            arm64v8/debian:bookworm bash -c "
+                apt-get update && \
+                apt-get install -y --no-install-recommends \
+                    apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
+                apt-get install -y --no-install-recommends ${UNIQUE_PACKAGES} --download-only && \
+                cp -a /var/cache/apt/archives/*.deb /debs
+            "
 
-echo "✅ Downloaded .deb files stored in $OS_PACKAGE_DIR"
+        echo "✅ Downloaded .deb files stored in $OS_PACKAGE_DIR"
+    fi
+fi
 
-# Stage copy
 echo "Copying custom stage to pi-gen..."
 rm -rf "$STAGE_DST" || sudo rm -rf "$STAGE_DST"
 cp -R "$STAGE_SRC" "$STAGE_DST"

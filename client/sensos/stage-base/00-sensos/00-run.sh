@@ -25,13 +25,14 @@ done
 for subdir in "${FILES_DIR}/"*/; do
     name=$(basename "$subdir")
     case "$name" in
-    scripts | service_scripts | services)
-        # Skip those — already handled
-        ;;
+    scripts | service_scripts | services) ;;
     *)
         echo "Copying ${name} → /sensos/${name}"
         mkdir -p "$SENSOS_DIR/$name"
-        cp -a "$subdir"/* "$SENSOS_DIR/$name/"
+        files=("$subdir"/*)
+        if [ ${#files[@]} -gt 0 ]; then
+            cp -a "${files[@]}" "$SENSOS_DIR/$name/"
+        fi
         ;;
     esac
 done
