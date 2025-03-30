@@ -14,29 +14,10 @@ import socket
 import psutil
 import time
 
-from sensos.lib.utils import (
-    load_defaults,
-    run_command,
-    get_basic_auth,
-    parse_args_with_defaults,
-    get_api_password,
-    compute_hostname,
-    read_file,
-    sudo_read_file,
-    parse_local_config,
-    compute_api_server_wg_ip,
-    setup_logging,
-)
-
+sys.path.insert(0, "/sensos/lib")
+import utils
 
 WG_DIR = "/etc/wireguard"
-
-# Default Configuration
-DEFAULT_SERVER = "localhost"
-DEFAULT_NETWORK_NAME = "sensos"
-DEFAULT_KEEPALIVE = "25"
-DEFAULT_PORT = "8765"
-
 
 def parse_args():
     script_name = os.path.basename(sys.argv[0])
@@ -54,14 +35,30 @@ def parse_args():
                 "dest": "config_server",
             },
         ),
-        (["--port"], {"help": "Server port (default: 8765)", "dest": "port"}),
-        (["--network"], {"help": "Network name (default: sensos)", "dest": "network"}),
+        (
+            ["--port"],
+            {
+                "help": "Server port (default: 8765)",
+                "dest": "port",
+                "type": int,
+                "default": 8765,
+            },
+        ),
+        (
+            ["--network"],
+            {
+                "help": "Network name (default: sensos)",
+                "dest": "network",
+                "default": "sensos",
+            },
+        ),
         (
             ["--subnet"],
             {
-                "type": int,
                 "help": "Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
                 "dest": "subnet",
+                "type": int,
+                "default": 1,
             },
         ),
         (
@@ -74,8 +71,10 @@ def parse_args():
         (
             ["--wg-keepalive"],
             {
-                "help": "WireGuard persistent keepalive interval (default: 0 seconds)",
+                "help": "WireGuard persistent keepalive interval (default: 25 seconds)",
                 "dest": "wg_keepalive",
+                "type": int,
+                "default": 25,
             },
         ),
         (
@@ -366,9 +365,12 @@ PersistentKeepalive = {wg_keepalive}
 
     run_command(f"echo '{config}' | sudo tee {wg_config_file} > /dev/null")
     run_command(f"sudo chmod 600 {wg_config_file}")
-    print(
-        f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
-    )
+    if not os.path.exists(wg_config_file):
+        print(f"❌ Expected WireGuard config not found at {wg_config_file}", file=sys.stderr)
+    else
+        print(
+            f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
+        )
     print(f"🔧 Allowed IPs set to {allowed_ips}")
 
 

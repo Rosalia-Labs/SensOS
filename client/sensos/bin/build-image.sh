@@ -15,11 +15,26 @@ CONTINUE_BUILD=false
 DOWNLOAD_WHEELS=false
 DOWNLOAD_OS_PACKAGES=
 
+CLEAN_WHEELS=false
+CLEAN_OS_PACKAGES=false
+
+try_rm_rf() {
+    local target="$1"
+    rm -rf "$target" 2>/dev/null || sudo rm -rf "$target" 2>/dev/null
+}
+
+try_rm_rf_contents() {
+    local target="$1"
+    if [ -d "$target" ]; then
+        rm -rf "${target:?}/"* 2>/dev/null || sudo rm -rf "${target:?}/"* 2>/dev/null
+    fi
+}
+
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo
     echo "Options:"
-    echo "  --remove-existing   Delete the 'deploy' directory before building"
+    echo "  --remove-existing-images   Delete the 'deploy' directory before building"
     echo "  --download-wheels[=force]   Download Python wheels for offline install"
     echo "  --download-os-packages[=force]  Download OS-level .deb packages used in Dockerfiles"
     echo "  --continue          Continue from a previously interrupted build"
@@ -31,7 +46,7 @@ usage() {
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-    --remove-existing)
+    --remove-existing-images)
         REMOVE_DEPLOY=true
         shift
         ;;
@@ -53,8 +68,22 @@ while [[ $# -gt 0 ]]; do
             shift
         fi
         ;;
+    --clean-wheels)
+        CLEAN_WHEELS=true
+        shift
+        ;;
+    --clean-os-packages)
+        CLEAN_OS_PACKAGES=true
+        shift
+        ;;
     --continue)
         CONTINUE_BUILD=true
+        shift
+        ;;
+    --clean)
+        REMOVE_DEPLOY=true
+        CLEAN_WHEELS=true
+        CLEAN_OS_PACKAGES=true
         shift
         ;;
     -h | --help)
@@ -79,7 +108,18 @@ echo "Building image using config:"
 cat "$CONFIG_FILE"
 echo
 
-if [ -n "$DOWNLOAD_WHEELS" != "false" ]; then
+# 🧼 Clean early
+if [ "$CLEAN_WHEELS" = true ]; then
+    echo "🧹 Cleaning downloaded Python wheels..."
+    try_rm_rf_contents "$WHEEL_DIR"
+fi
+
+if [ "$CLEAN_OS_PACKAGES" = true ]; then
+    echo "🧹 Cleaning downloaded OS .deb packages..."
+    try_rm_rf_contents "${STAGE_SRC}/files/os_packages"
+fi
+
+if [ "$DOWNLOAD_WHEELS" = "true" ] || [ "$DOWNLOAD_WHEELS" = "force" ]; then
     echo "Finding all requirements.txt files..."
     REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
     mkdir -p "$WHEEL_DIR"
@@ -109,7 +149,7 @@ if [ -n "$DOWNLOAD_WHEELS" != "false" ]; then
     echo "✅ All wheels downloaded to $WHEEL_DIR/*"
 fi
 
-if [ -n "$DOWNLOAD_OS_PACKAGES" != "false" ]; then
+if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]; then
     OS_PACKAGE_DIR="${STAGE_SRC}/files/os_packages"
 
     if [[ "$DOWNLOAD_OS_PACKAGES" != "force" && -n "$(find "$OS_PACKAGE_DIR" -name '*.deb' 2>/dev/null)" ]]; then
@@ -163,16 +203,14 @@ if [ -n "$DOWNLOAD_OS_PACKAGES" != "false" ]; then
 fi
 
 echo "Copying custom stage to pi-gen..."
-rm -rf "$STAGE_DST" || sudo rm -rf "$STAGE_DST"
+try_rm_rf "$STAGE_DST"
 cp -R "$STAGE_SRC" "$STAGE_DST"
 
 cd "$PI_GEN_DIR"
+pwd
 
 if [ "$REMOVE_DEPLOY" = true ]; then
-    echo "Removing existing deploy directory..."
-    rm -rf ./deploy/
-else
-    echo "Keeping existing deploy directory."
+    try_rm_rf_contents ./deploy
 fi
 
 # Build image
@@ -187,7 +225,7 @@ fi
 
 # Cleanup
 echo "Cleaning up copied stage..."
-rm -rf "$STAGE_DST" || sudo rm -rf "$STAGE_DST"
+try_rm_rf "$STAGE_DST"
 
 echo "Build complete."
 exit 0

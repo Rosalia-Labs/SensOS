@@ -107,19 +107,10 @@ if [ -z "$device" ]; then
     echo
     read -p "Select device index: " dev_index
     device="${device_list[$dev_index]}"
-    # Normalize device string if it uses CARD= style
-    if [[ "$device" =~ ^(plug)?hw:CARD=([a-zA-Z0-9]+),DEV=([0-9]+) ]]; then
-        card_name="${BASH_REMATCH[2]}"
-        dev_index="${BASH_REMATCH[3]}"
-        card_number=$(arecord -l | grep "^card " | grep "$card_name" | awk '{print $2}' | tr -d ':')
-
-        if [ -z "$card_number" ]; then
-            echo "Unable to map card name '$card_name' to a card number."
-            exit 1
-        fi
-
-        device="${BASH_REMATCH[1]}hw:$card_number,$dev_index"
-        echo "Normalized device string: $device"
+    # Verify the selected device works with arecord
+    if ! arecord -D "$device" --dump-hw-params >/dev/null 2>&1; then
+        echo "ERROR: Selected device '$device' is not usable with arecord."
+        exit 1
     fi
     echo "Selected device: $device"
 fi
