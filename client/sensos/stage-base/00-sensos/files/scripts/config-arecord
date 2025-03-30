@@ -11,13 +11,14 @@ Usage: $0 [options]
 
 Optional (interactive if omitted):
   --device DEVICE         Recording device string (e.g., plughw:1,0)
-  --format FORMAT         Recording format (e.g., S16_LE)
+  --use-plughw BOOL       Use plughw instead of hw (default: true)
   --channels CHANNELS     Channel count (e.g., 2)
-  --rate RATE             Sample rate in Hz (default: 48000)
   --max-time SECONDS      Max duration per file (default: 900)
+  --format FORMAT         Recording format (e.g., S16_LE)
+  --rate RATE             Sample rate in Hz (default: 48000)
+  --no-enable-service     Do not enable the systemd service (implies --no-start-service)
+  --no-start-service      Do not start the systemd service
   --base-dir DIR          Base directory for sound files (default: /sensos/data/audio_recordings/)
-  --enable-service BOOL    Enable the systemd service (default: true)
-  --start-service BOOL     Start the systemd service (default: true)
   --help                  Show this help message
 EOF
 }
@@ -26,15 +27,16 @@ EOF
 device=""
 format=""
 channels=""
-rate="48000"
+rate=""
 max_time="900"
 base_dir="/sensos/data/audio_recordings/"
 enable_service="true"
 start_service="true"
+use_plughw="true"
 
 # Parse command-line arguments
 TEMP=$(getopt -o "" \
-    --long device:,format:,channels:,rate:,max-time:,base-dir:,enable-service:,start-service:,help \
+    --long device:,format:,channels:,rate:,max-time:,base-dir:,no-enable-service,no-start-service,use-plughw:,help \
     -n 'config-arecord.sh' -- "$@")
 if [ $? != 0 ]; then
     Usage
@@ -68,12 +70,17 @@ while true; do
         base_dir="$2"
         shift 2
         ;;
-    --enable-service)
-        enable_service="$2"
-        shift 2
+    --no-enable-service)
+        enable_service="false"
+        start_service="false"
+        shift
         ;;
-    --start-service)
-        start_service="$2"
+    --no-start-service)
+        start_service="false"
+        shift
+        ;;
+    --use-plughw)
+        use_plughw="$2"
         shift 2
         ;;
     --help)
@@ -97,89 +104,165 @@ if [ -f /sensos/lib/load-defaults.sh ]; then
     load_defaults /sensos/etc/defaults.conf "$script_name"
 fi
 
-# Prompt for device if not specified
+get_hw_params() {
+    local device="$1"
+    if [ -z "$device" ]; then
+        echo "Usage: get_hw_params <device>" >&2
+        return 1
+    fi
+
+    # Capture only stderr (which holds the hw parameters) by redirecting stdout to /dev/null
+    local params
+    params=$(arecord --dump-hw-params -D "$device" -d 1 -f S16_LE /dev/null 2>&1 1>/dev/null || true)
+
+    # Filter output to display only lines from "HW Params of device" onward
+    echo "$params" | sed -n '/HW Params of device/,$p'
+}
+
+# Check if sensos-arecord.service is running
+if systemctl is-active --quiet sensos-arecord.service; then
+    read -p "sensos-arecord.service is currently running. Would you like to stop it? (y/n): " answer
+    if [[ "$answer" =~ ^[Yy] ]]; then
+        echo "Stopping sensos-arecord.service..."
+        sudo systemctl stop sensos-arecord.service
+    else
+        echo "Service is still running; note that running arecord may fail if the service is listening on a device."
+    fi
+fi
+
 if [ -z "$device" ]; then
-    echo "Available recording devices:"
-    mapfile -t device_list < <(arecord -L | grep -v '^ ' | grep -E '^plughw|^hw')
-    for i in "${!device_list[@]}"; do
-        echo "[$i] ${device_list[$i]}"
-    done
-    echo
-    read -p "Select device index: " dev_index
-    device="${device_list[$dev_index]}"
-    # Verify the selected device works with arecord
-    if ! arecord -D "$device" --dump-hw-params >/dev/null 2>&1; then
-        echo "ERROR: Selected device '$device' is not usable with arecord."
+    # Get a list of device lines (only those that start with "card ")
+    mapfile -t device_choices < <(arecord -l | grep '^card ')
+    if [ ${#device_choices[@]} -eq 0 ]; then
+        echo "No recording devices found."
         exit 1
     fi
-    echo "Selected device: $device"
-fi
 
-# Extract numeric device (e.g., hw:3,0) from card name
-if [[ "$device" =~ ^(plug)?hw:([^,]+),([0-9]+) ]]; then
-    card_name="${BASH_REMATCH[2]}"
-    dev_index="${BASH_REMATCH[3]}"
-else
-    echo "Unable to parse selected device string: $device"
-    exit 1
-fi
-
-card_number=$(arecord -l | grep "^card " | grep "$card_name" | awk '{print $2}' | tr -d ':')
-
-if [ -z "$card_number" ]; then
-    echo "Unable to map card name '$card_name' to a card number."
-    exit 1
-fi
-
-hw_numeric="hw:$card_number,$dev_index"
-params=$(arecord --dump-hw-params -D "$hw_numeric" 2>/dev/null || true)
-
-if [ -z "$params" ]; then
-    echo "WARNING: Unable to query hardware params for '$device'. Proceeding without param introspection."
-fi
-
-# Prompt for format
-if [ -z "$format" ]; then
-    formats=$(echo "$params" | grep "^  FORMAT" | sed 's/^.*:\s*//' | tr ',' '\n')
-    mapfile -t format_list < <(echo "$formats")
-    echo "Available formats:"
-    for i in "${!format_list[@]}"; do
-        echo "[$i] ${format_list[$i]}"
+    # Display the list with index numbers
+    echo "Available recording devices:"
+    for i in "${!device_choices[@]}"; do
+        echo "$i) ${device_choices[$i]}"
     done
-    echo
-    read -p "Select format index: " fmt_index
-    format="${format_list[$fmt_index]}"
-    echo "Selected format: $format"
+
+    # Prompt the user for a device index and store the selected string in 'choice'
+    read -p "Select device index: " device_index
+    choice="${device_choices[$device_index]}"
+    echo "Selected device: $choice"
+
+    # Extract card number (the number following "card ")
+    card_number=$(echo "$choice" | sed -n 's/^card \([0-9]\+\):.*/\1/p')
+
+    # Extract device number (the number following "device ")
+    device_number=$(echo "$choice" | sed -n 's/.*device \([0-9]\+\):.*/\1/p')
+
+    echo "Extracted card number: $card_number"
+    echo "Extracted device number: $device_number"
 fi
 
-# Prompt for channels
-if [ -z "$channels" ]; then
-    ch_range=$(echo "$params" | grep "^  CHANNELS" | awk -F'[][]' '{print $2}')
-    min_ch=$(echo "$ch_range" | cut -d: -f1)
-    max_ch=$(echo "$ch_range" | cut -d: -f2)
+# Define the native and plughw device strings using the extracted numbers
+native_device="hw:${card_number},${device_number}"
+plughw_device="plughw:${card_number},${device_number}"
 
-    if [ "$min_ch" = "$max_ch" ]; then
-        channels="$min_ch"
-        echo "Only one channel count available: $channels"
-    else
-        echo "Available channel counts:"
-        ch_options=()
-        for ((c = min_ch; c <= max_ch; c++)); do
-            ch_options+=("$c")
-            echo "[$((c - min_ch))] $c"
-        done
-        echo
-        read -p "Select channel count index: " ch_index
-        channels="${ch_options[$ch_index]}"
-        echo "Selected channels: $channels"
-    fi
+# Get hardware parameters for native and plughw devices using the provided function
+native_params=$(get_hw_params "$native_device")
+plughw_params=$(get_hw_params "$plughw_device")
+
+# Extract the line that starts with "FORMAT:" from each output
+native_line=$(echo "$native_params" | sed -n 's/^[[:space:]]*FORMAT:[[:space:]]*//p')
+plughw_line=$(echo "$plughw_params" | sed -n 's/^[[:space:]]*FORMAT:[[:space:]]*//p')
+
+# Convert the format lines into arrays (splitting by whitespace)
+read -ra native_formats_arr <<<"$native_line"
+read -ra plughw_formats_arr <<<"$plughw_line"
+
+# Build a combined list where each format from the plughw list is annotated if it appears in the native list.
+combined_formats=()
+for fmt in "${plughw_formats_arr[@]}"; do
+    annotation=""
+    for nfmt in "${native_formats_arr[@]}"; do
+        if [ "$fmt" = "$nfmt" ]; then
+            annotation=" (native)"
+            break
+        fi
+    done
+    combined_formats+=("$fmt$annotation")
+done
+
+# Display the combined list with index numbers for the user to choose from
+echo "Available formats:"
+for i in "${!combined_formats[@]}"; do
+    # Using -2d for a two-digit index and a tab separator for columns.
+    printf "[%2d] %s\t" "$i" "${combined_formats[$i]}"
+done | column -t -s $'\t'
+
+# Later, you can prompt the user for a selection:
+read -p "Select format index: " fmt_index
+format=$(echo "${combined_formats[$fmt_index]}" | sed 's/ (native)$//')
+echo "Selected format: $format"
+
+# Extract the native CHANNELS line from native_params (e.g., "CHANNELS: [2 4]")
+native_channels_line=$(echo "$native_params" | grep -E "^[[:space:]]*CHANNELS:")
+# Get the lower and upper bounds (e.g., "2 4")
+native_range=$(echo "$native_channels_line" | sed -n 's/.*\[\(.*\)\].*/\1/p')
+read -ra native_range_arr <<<"$native_range"
+native_low="${native_range_arr[0]}"
+native_high="${native_range_arr[1]}"
+
+# Enumerate all numbers from native_low to native_high as native options
+native_channel_options=()
+for ((ch = native_low; ch <= native_high; ch++)); do
+    native_channel_options+=("$ch (native)")
+done
+
+# Extract the plughw CHANNELS line from plughw_params (e.g., "CHANNELS: [1 10000]")
+plughw_channels_line=$(echo "$plughw_params" | grep -E "^[[:space:]]*CHANNELS:")
+plughw_range=$(echo "$plughw_channels_line" | sed -n 's/.*\[\(.*\)\].*/\1/p')
+read -ra plughw_range_arr <<<"$plughw_range"
+plughw_low="${plughw_range_arr[0]}"
+plughw_high="${plughw_range_arr[1]}"
+
+# Combine the native options with an extra option for manual entry
+channel_options=("${native_channel_options[@]}")
+channel_options+=("enter number (${plughw_low} - ${plughw_high})")
+
+# Display the available channel options:
+echo "Available channel options:"
+for i in "${!channel_options[@]}"; do
+    printf "[%2d] %s\t" "$i" "${channel_options[$i]}"
+done | column -t -s $'\t'
+
+# Prompt the user for a selection:
+read -p "Select channel option index: " channel_index
+if [ "$channel_index" -eq $((${#channel_options[@]} - 1)) ]; then
+    # Last option: user enters a custom channel count within the plughw range.
+    read -p "Enter channel count (${plughw_low} - ${plughw_high}): " channels
+else
+    # Otherwise, remove the " (native)" annotation to get the raw number.
+    channels=$(echo "${channel_options[$channel_index]}" | sed 's/ (native)//')
 fi
 
-# Prompt for sample rate
-if [ -z "$rate" ]; then
-    read -p "Enter sample rate in Hz (default: 48000): " rate
-    rate="${rate:-48000}"
-fi
+echo "Selected channels: $channels"
+
+# Extract RATE range from native_params
+native_rate_line=$(echo "$native_params" | grep -E "^[[:space:]]*RATE:" | sed -n 's/^[[:space:]]*RATE:[[:space:]]*\[\(.*\)\].*/\1/p')
+read -ra native_rate_range_arr <<<"$native_rate_line"
+native_rate_low="${native_rate_range_arr[0]}"
+native_rate_high="${native_rate_range_arr[1]}"
+
+# Extract RATE range from plughw_params
+plughw_rate_line=$(echo "$plughw_params" | grep -E "^[[:space:]]*RATE:" | sed -n 's/^[[:space:]]*RATE:[[:space:]]*\[\(.*\)\].*/\1/p')
+read -ra plughw_rate_range_arr <<<"$plughw_rate_line"
+plughw_rate_low="${plughw_rate_range_arr[0]}"
+plughw_rate_high="${plughw_rate_range_arr[1]}"
+
+# Display the ranges
+echo "Native sample rate range: [${native_rate_low} - ${native_rate_high}]"
+echo "Extended sample rate range: [${plughw_rate_low} - ${plughw_rate_high}]"
+
+# Prompt for sample rate (default 48000 if user enters nothing)
+read -p "Enter sample rate in Hz (default: 48000): " rate
+rate="${rate:-48000}"
+echo "Selected sample rate: $rate"
 
 # Prompt for max file duration
 if [ -z "$max_time" ]; then
@@ -193,7 +276,21 @@ if [ -z "$base_dir" ]; then
     base_dir="${base_dir:-/sensos/data/audio_recordings/}"
 fi
 
-# Write config
+# Set the device string based on use_plughw
+if [ "$use_plughw" = "true" ]; then
+    device="$plughw_device"
+else
+    device="$native_device"
+fi
+
+echo "Testing recording configuration on device $device..."
+if ! arecord -D "$device" -f "$format" -c "$channels" -r "$rate" -d 1 /dev/null; then
+    echo "Error: arecord test failed with these parameters."
+    echo "Restarting configuration prompts..."
+    exec "$0"
+fi
+
+# Write config file
 config_dir="/sensos/etc"
 mkdir -p "$config_dir"
 config_file="$config_dir/arecord.conf"
@@ -208,7 +305,7 @@ MAX_TIME=$max_time
 BASE_DIR="$base_dir"
 EOF
 
-chmod -R g+w /sensos/data || sudo chmod -R g+w /sensos/data || true
+sudo chmod -R g+w /sensos/data || true
 
 echo "Configuration written to $config_file"
 
@@ -218,9 +315,8 @@ sudo systemctl daemon-reload
 if [[ "$enable_service" == "true" ]]; then
     echo "Enabling sensos-arecord.service..."
     sudo systemctl enable sensos-arecord.service
-fi
-
-if [[ "$start_service" == "true" ]]; then
-    echo "Starting sensos-arecord.service..."
-    sudo systemctl start sensos-arecord.service
+    if [[ "$start_service" == "true" ]]; then
+        echo "Starting sensos-arecord.service..."
+        sudo systemctl start sensos-arecord.service
+    fi
 fi

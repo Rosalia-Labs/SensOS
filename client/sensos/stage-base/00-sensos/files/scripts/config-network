@@ -15,7 +15,7 @@ import psutil
 import time
 
 sys.path.insert(0, "/sensos/lib")
-import utils
+from utils import *
 
 WG_DIR = "/etc/wireguard"
 

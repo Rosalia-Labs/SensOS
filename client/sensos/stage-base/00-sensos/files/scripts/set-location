@@ -3,12 +3,8 @@ import sys
 import os
 import requests
 
-from sensos.lib.utils import (
-    parse_args_with_defaults,
-    read_network_conf,
-    read_api_password,
-    get_basic_auth,
-)
+sys.path.insert(0, "/sensos/lib")
+from utils import *
 
 
 def send_location(server_ip, port, wg_ip, api_password, latitude, longitude):
