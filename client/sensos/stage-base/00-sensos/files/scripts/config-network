@@ -14,120 +14,103 @@ import socket
 import psutil
 import time
 
+from sensos.lib.utils import (
+    load_defaults,
+    run_command,
+    get_basic_auth,
+    parse_args_with_defaults,
+    get_api_password,
+    compute_hostname,
+    read_file,
+    sudo_read_file,
+    parse_local_config,
+    compute_api_server_wg_ip,
+    setup_logging,
+)
+
+
 WG_DIR = "/etc/wireguard"
 
 # Default Configuration
 DEFAULT_SERVER = "localhost"
-DEFAULT_PORT = "8000"
 DEFAULT_NETWORK_NAME = "sensos"
-DEFAULT_KEEPALIVE = "0"
-
-API_PASSWORD_FILE = "/sensos/.sensos_api_password"
-REGISTRY_CONFIG_FILE = "/sensos/.sensos_registry_config.json"
+DEFAULT_KEEPALIVE = "25"
+DEFAULT_PORT = "8765"
 
 
-def parse_args(defaults):
-    parser = argparse.ArgumentParser(
-        description="Configure the Sensos WireGuard client."
-    )
-    parser.add_argument(
-        "--config-server",
-        default=defaults.get("config_server", DEFAULT_SERVER),
-        help="Configuration server hostname or IP (default: localhost)",
-    )
-    parser.add_argument(
-        "--port",
-        default=defaults.get("port", DEFAULT_PORT),
-        help="Server port (default: 8000)",
-    )
-    parser.add_argument(
-        "--network",
-        default=defaults.get("network", DEFAULT_NETWORK_NAME),
-        help="Network name (default: sensos)",
-    )
-    parser.add_argument(
-        "--subnet",
-        type=int,
-        default=int(defaults.get("subnet", 1)),
-        help="Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
-    )
-    parser.add_argument(
-        "--latitude",
-        type=float,
-        default=defaults.get("latitude"),
-        help="Latitude of the device (default from config files)",
-    )
-    parser.add_argument(
-        "--longitude",
-        type=float,
-        default=defaults.get("longitude"),
-        help="Longitude of the device (default from config files)",
-    )
-    parser.add_argument(
-        "--wg-endpoint",
-        default=defaults.get("wg_endpoint", None),
-        help="Override WireGuard endpoint IP (default: use server-assigned IP)",
-    )
-    parser.add_argument(
-        "--wg-keepalive",
-        default=defaults.get("wg_keepalive", DEFAULT_KEEPALIVE),
-        help="WireGuard persistent keepalive interval (default: 0 seconds)",
-    )
-    parser.add_argument(
-        "--enable-ssh-passwords",
-        action="store_true",
-        help="Enable SSH password authentication (default: disabled)",
-    )
-    parser.add_argument(
-        "--no-connectivity-checks",
-        action="store_true",
-        help="Indicate device has no networking; skip connectivity check service",
-    )
-    parser.add_argument(
-        "--note",
-        default=defaults.get("note", ""),
-        help="Optional note or description to register with the device (default: empty)",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force overwrite of existing files and settings",
-    )
-    return parser.parse_args()
+def parse_args():
+    script_name = os.path.basename(sys.argv[0])
+    if script_name.endswith(".py"):
+        script_name = script_name[:-3]
+    elif "." in script_name:
+        script_name = script_name.split(".")[0]
+    script_name = script_name.replace("-", "_")
 
-
-def load_defaults(script_name):
-    defaults = {}
-
-    for path, sections in [
-        ("/sensos/etc/defaults.conf", ["global", script_name]),
-        ("/sensos/etc/location.conf", ["location"]),
-    ]:
-        if not os.path.exists(path):
-            continue
-
-        parser = configparser.ConfigParser()
-        parser.optionxform = str  # preserve case
-        parser.read(path)
-
-        for section in sections:
-            if section in parser:
-                defaults.update(parser[section].items())
-
-    return defaults
-
-
-def run_command(cmd):
-    """Runs a shell command and returns its output."""
-    return subprocess.run(
-        cmd, shell=True, check=True, capture_output=True, text=True
-    ).stdout.strip()
-
-
-def get_basic_auth(api_password):
-    """Encode API password in Basic Auth format (username is ignored)."""
-    auth_str = f":{api_password}"
-    return base64.b64encode(auth_str.encode()).decode()
+    arg_defs = [
+        (
+            ["--config-server"],
+            {
+                "help": "Configuration server hostname or IP (default: localhost)",
+                "dest": "config_server",
+            },
+        ),
+        (["--port"], {"help": "Server port (default: 8765)", "dest": "port"}),
+        (["--network"], {"help": "Network name (default: sensos)", "dest": "network"}),
+        (
+            ["--subnet"],
+            {
+                "type": int,
+                "help": "Subnet offset for WireGuard IP assignment (default: 1, i.e., x.x.1.1)",
+                "dest": "subnet",
+            },
+        ),
+        (
+            ["--wg-endpoint"],
+            {
+                "help": "Override WireGuard endpoint IP (default: use server-assigned IP)",
+                "dest": "wg_endpoint",
+            },
+        ),
+        (
+            ["--wg-keepalive"],
+            {
+                "help": "WireGuard persistent keepalive interval (default: 0 seconds)",
+                "dest": "wg_keepalive",
+            },
+        ),
+        (
+            ["--enable-ssh-passwords"],
+            {
+                "action": "store_true",
+                "help": "Enable SSH password authentication (default: disabled)",
+                "dest": "enable_ssh_passwords",
+            },
+        ),
+        (
+            ["--no-connectivity-checks"],
+            {
+                "action": "store_true",
+                "help": "Indicate device has no networking; skip connectivity check service",
+                "dest": "no_connectivity_checks",
+            },
+        ),
+        (
+            ["--note"],
+            {
+                "help": "Optional note or description to register with the device (default: empty)",
+                "dest": "note",
+            },
+        ),
+        (
+            ["--force"],
+            {
+                "action": "store_true",
+                "help": "Force overwrite of existing files and settings",
+                "dest": "force",
+            },
+        ),
+    ]
+    return parse_args_with_defaults(arg_defs, ["global", script_name])
 
 
 def enable_wireguard(netname: str):
@@ -164,58 +147,6 @@ def enable_ssh(passwords: bool = False):
 
     print("✅ SSH service enabled and started.")
     print("🔄 A reboot is required for changes to fully take effect.")
-
-
-def validate_api_password(config_server, port, api_password):
-    """Test the API password by sending a GET request to a /validate endpoint."""
-    url = f"http://{config_server}:{port}/"
-    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            return True
-        else:
-            print(
-                f"❌ Server returned status code {response.status_code}.",
-                file=sys.stderr,
-            )
-            return False
-    except Exception as e:
-        print(f"❌ Error testing API password: {e}", file=sys.stderr)
-        return False
-
-
-def get_api_password(config_server, port):
-    """Retrieve or prompt for API password, testing it with the server.
-    Allows up to 3 attempts.
-    """
-    tries = 3
-    for attempt in range(tries):
-        if os.path.exists(API_PASSWORD_FILE):
-            with open(API_PASSWORD_FILE, "r") as f:
-                stored_password = f.read().strip()
-            print("Testing stored API password...")
-            if validate_api_password(config_server, port, stored_password):
-                print("✅ API password from file is valid.")
-                return stored_password
-            else:
-                print("⚠️ Stored API password is invalid.", file=sys.stderr)
-        api_password = input("🔑 Enter API password: ").strip()
-        if validate_api_password(config_server, port, api_password):
-            if api_password is None or api_password == "":
-                print("❌ Error: API password is empty. Not saving.", file=sys.stderr)
-                continue
-            with open(API_PASSWORD_FILE, "w") as f:
-                f.write(api_password)
-            os.chmod(API_PASSWORD_FILE, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
-            print(f"✅ API password saved securely in {API_PASSWORD_FILE}.")
-            return api_password
-        else:
-            print("❌ API password is invalid, please try again.", file=sys.stderr)
-    print(
-        "🚫 Failed to provide a valid API password after 3 attempts.", file=sys.stderr
-    )
-    return None
 
 
 def generate_wireguard_keys(network_name, force):
@@ -262,15 +193,6 @@ def generate_wireguard_keys(network_name, force):
     print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
     print(f"  - Public Key stored in: {public_key_file}")
     return public_key
-
-
-def compute_hostname(network_name, wg_ip):
-    """Compute hostname as {network_name}-{3rd_octet}-{4th_octet}."""
-    ip_parts = wg_ip.split(".")
-    if len(ip_parts) != 4:
-        print(f"❌ Error: Invalid IP format '{wg_ip}'.", file=sys.stderr)
-        return None
-    return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
 
 def register_peer(
@@ -593,51 +515,6 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
 
-def read_file(filepath):
-    """Reads a file and returns its contents as a string, or None if an error occurs."""
-    try:
-        with open(filepath, "r") as f:
-            return f.read().strip()
-    except Exception as e:
-        print(f"❌ Error reading file {filepath}: {e}", file=sys.stderr)
-        return None
-
-
-def sudo_read_file(filepath):
-    """Helper to read a file using sudo (for WireGuard files not world-readable)."""
-    try:
-        content = run_command(f"sudo cat {filepath}")
-        return content.strip()
-    except Exception as e:
-        print(f"❌ Error reading {filepath} with sudo: {e}", file=sys.stderr)
-        return None
-
-
-def parse_local_config(config_file):
-    """
-    Simple parser for a WireGuard config file using sudo.
-    Returns a dict with keys:
-      - wg_ip: from the [Interface] Address line (e.g., "10.0.0.5" from "Address = 10.0.0.5/32")
-      - server_pubkey: from the [Peer] PublicKey line
-    """
-    config = {}
-    content = sudo_read_file(config_file)
-    if not content:
-        return config
-    current_section = None
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            current_section = line[1:-1].strip()
-        elif "=" in line and current_section:
-            key, value = [x.strip() for x in line.split("=", 1)]
-            if current_section.lower() == "interface" and key.lower() == "address":
-                config["wg_ip"] = value.split("/")[0]
-            elif current_section.lower() == "peer" and key.lower() == "publickey":
-                config["server_pubkey"] = value
-    return config
-
-
 def configure_wireguard(args, api_password):
     """
     Check whether the local WireGuard configuration is valid...
@@ -840,83 +717,6 @@ def configure_ssh(args, api_password):
         print("Keeping existing SSH key configuration.")
 
 
-def validate_registry_password(registry_info, registry_password):
-    url = f"https://{registry_info['registry_ip']}:{registry_info['registry_port']}/v2/"
-    auth = (registry_info["registry_user"], registry_password)
-    try:
-        response = requests.get(url, auth=auth, timeout=5, verify=False)
-        return response.status_code == 200
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Debug: Error during request: {e}", file=sys.stderr)
-        return False
-
-
-def save_registry_config(registry_info, registry_password):
-    if not registry_info or not registry_password:
-        print(
-            "❌ Error: Incomplete registry configuration data. Not saving.",
-            file=sys.stderr,
-        )
-        return
-    required_keys = ["registry_ip", "registry_port", "registry_user"]
-    if not all(key in registry_info for key in required_keys):
-        print(
-            "❌ Error: Registry information is incomplete. Not saving.", file=sys.stderr
-        )
-        return
-    config = {
-        "registry_ip": registry_info["registry_ip"],
-        "registry_port": registry_info["registry_port"],
-        "registry_user": registry_info["registry_user"],
-        "registry_password": registry_password,
-    }
-    with open(REGISTRY_CONFIG_FILE, "w") as f:
-        json.dump(config, f)
-    os.chmod(REGISTRY_CONFIG_FILE, 0o640)
-    print(f"✅ Registry configuration saved to {REGISTRY_CONFIG_FILE}.")
-
-
-def get_registry_password_from_info(registry_info):
-    tries = 3
-    for attempt in range(tries):
-        if os.path.exists(REGISTRY_CONFIG_FILE):
-            with open(REGISTRY_CONFIG_FILE, "r") as f:
-                stored_config = json.load(f)
-                stored_password = stored_config.get("registry_password")
-                if stored_password:
-                    return stored_password
-            print(
-                "⚠️ Password not found in config file or file malformed.",
-                file=sys.stderr,
-            )
-
-        registry_password = input("🔑 Enter registry password: ").strip()
-        if not registry_password:
-            print("❌ Error: Empty registry password provided.", file=sys.stderr)
-            continue
-        if validate_registry_password(registry_info, registry_password):
-            save_registry_config(registry_info, registry_password)
-            print(f"✅ Registry password saved to {REGISTRY_CONFIG_FILE}.")
-            return registry_password
-    print(
-        "❌ Failed to obtain a valid registry password after 3 attempts.",
-        file=sys.stderr,
-    )
-    return None
-
-
-def compute_api_server_wg_ip(client_wg_ip):
-    """Compute the API server’s WireGuard IP (x.x.0.1) from the client’s WireGuard IP."""
-    parts = client_wg_ip.split(".")
-    if len(parts) != 4:
-        print(
-            f"❌ Error: Invalid client WireGuard IP format: {client_wg_ip}",
-            file=sys.stderr,
-        )
-        return None
-    return f"{parts[0]}.{parts[1]}.0.1"
-
-
 def write_client_settings(args, server_wg_ip):
     """Write client settings to /sensos/etc/network.conf after validating the data."""
     if not all([server_wg_ip, args.port, args.network]):
@@ -958,46 +758,6 @@ def enable_service(service_name, start=False):
         print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
 
 
-class Tee:
-    """A class that writes output to both stdout/stderr and a file."""
-
-    def __init__(self, filename, mode="a"):
-        self.terminal = sys.stdout
-        self.log = open(filename, mode)
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.terminal.flush()
-        self.log.write(message)
-        self.log.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
-
-
-def setup_logging():
-    """Configure logging to write to /sensos/log/sensos_setup.log while also displaying output."""
-    sensos_dir = "/sensos"
-    log_dir = os.path.join(sensos_dir, "log")
-    log_file = os.path.join(log_dir, "sensos_setup.log")
-    os.makedirs(log_dir, exist_ok=True)
-    sys.stdout = Tee(log_file)
-    sys.stderr = sys.stdout
-
-
-def remove_nulls(data):
-    """Recursively remove null characters from strings in data."""
-    if isinstance(data, dict):
-        return {k: remove_nulls(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [remove_nulls(item) for item in data]
-    elif isinstance(data, str):
-        return data.replace("\x00", "")
-    else:
-        return data
-
-
 def safe_cmd_output(cmd, try_sudo=False):
     try:
         return subprocess.check_output(cmd, shell=True, text=True).strip()
@@ -1008,93 +768,10 @@ def safe_cmd_output(cmd, try_sudo=False):
             return f"ERROR: {e}"
 
 
-def generate_hardware_profile():
-    profile = {
-        "hostname": socket.gethostname(),
-        "model": safe_cmd_output("cat /proc/device-tree/model"),
-        "kernel_version": safe_cmd_output("uname -a"),
-        "cpu": {
-            "model": safe_cmd_output(
-                "cat /proc/cpuinfo | grep 'Model' | awk -F': ' '{print $2}'"
-            ),
-            "revision": safe_cmd_output(
-                "cat /proc/cpuinfo | grep 'Revision' | awk -F': ' '{print $2}'"
-            ),
-            "serial": safe_cmd_output(
-                "cat /proc/cpuinfo | grep 'Serial' | awk -F': ' '{print $2}'"
-            ),
-        },
-        "firmware": {
-            "bootloader": safe_cmd_output("vcgencmd bootloader_version"),
-            "firmware": safe_cmd_output("vcgencmd version"),
-        },
-        "memory": {
-            "total": psutil.virtual_memory().total,
-            "available": psutil.virtual_memory().available,
-        },
-        "disks": json.loads(safe_cmd_output("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
-        "usb_devices": safe_cmd_output("lsusb"),
-        "network_interfaces": {
-            iface: [addr.address for addr in addrs if addr.family == socket.AF_INET]
-            for iface, addrs in psutil.net_if_addrs().items()
-        },
-    }
-    return remove_nulls(profile)
-
-
-def upload_hardware_profile(config_server, port, api_password, wg_ip):
-    profile = generate_hardware_profile()
-    profile["wg_ip"] = wg_ip
-    headers = {
-        "Authorization": f"Basic {get_basic_auth(api_password)}",
-        "Content-Type": "application/json",
-    }
-    url = f"http://{config_server}:{port}/upload-hardware-profile"
-    response = requests.post(url, headers=headers, json=profile)
-    if response.ok:
-        print(f"Hardware profile uploaded successfully for {wg_ip}.")
-    else:
-        print(f"Upload failed: {response.status_code}, {response.text}")
-
-
-def send_peer_location(args, api_password, wg_ip):
-    """Send device location to the server at /set-peer-location."""
-    if not wg_ip or args.latitude is None or args.longitude is None:
-        print("ℹ️ Skipping peer location update (missing IP or coordinates).")
-        return
-
-    payload = {
-        "wg_ip": wg_ip,
-        "latitude": float(args.latitude),
-        "longitude": float(args.longitude),
-    }
-    headers = {
-        "Authorization": f"Basic {get_basic_auth(api_password)}",
-        "Content-Type": "application/json",
-    }
-
-    url = f"http://{args.config_server}:{args.port}/set-peer-location"
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=5)
-        if resp.status_code == 200:
-            print(
-                f"✅ Location updated to {args.latitude}, {args.longitude} for {wg_ip}."
-            )
-        else:
-            print(
-                f"❌ Location update failed: {resp.status_code} {resp.text}",
-                file=sys.stderr,
-            )
-    except Exception as e:
-        print(f"❌ Error during location update: {e}", file=sys.stderr)
-
-
 def main():
     setup_logging()
-    script_name = os.path.basename(sys.argv[0]).replace(".py", "").replace("-", "_")
-    overrides = load_defaults(script_name)
 
-    args = parse_args(overrides)
+    args = parse_args()
 
     print("🚀 Starting device configuration...")
     api_password = get_api_password(args.config_server, args.port)
@@ -1109,7 +786,6 @@ def main():
     if not server_wg_ip:
         print("❌ Failed to compute API server WireGuard IP. Aborting.")
         return
-    send_peer_location(args, api_password, client_wg_ip)
     configure_ssh(args, api_password)
     print("Starting WireGuard and SSH services...")
     try:
@@ -1125,7 +801,6 @@ def main():
         print(
             "ℹ️ No-connectivity-checks mode active. Skipping connectivity check service enablement."
         )
-    upload_hardware_profile(args.config_server, args.port, api_password, client_wg_ip)
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
 

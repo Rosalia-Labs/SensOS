@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+import sys
+import os
+import requests
+
+from sensos.lib.utils import (
+    parse_args_with_defaults,
+    read_network_conf,
+    read_api_password,
+    get_basic_auth,
+)
+
+
+def send_location(server_ip, port, wg_ip, api_password, latitude, longitude):
+    payload = {
+        "wg_ip": wg_ip,
+        "latitude": latitude,
+        "longitude": longitude,
+    }
+    url = f"http://{server_ip}:{port}/set-peer-location"
+    headers = {
+        "Authorization": f"Basic {get_basic_auth(api_password)}",
+        "Content-Type": "application/json",
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=5)
+        if r.status_code == 200:
+            print(f"✅ Location updated to ({latitude}, {longitude}) for {wg_ip}.")
+        else:
+            print(
+                f"❌ Server responded with {r.status_code}: {r.text}", file=sys.stderr
+            )
+    except Exception as e:
+        print(f"❌ Request failed: {e}", file=sys.stderr)
+
+
+def main():
+    arg_defs = [
+        (["--latitude"], {"type": float, "help": "Latitude"}),
+        (["--longitude"], {"type": float, "help": "Longitude"}),
+        (["--config-server"], {"help": "Override config server hostname or IP"}),
+        (["--port"], {"help": "Override server port"}),
+    ]
+    args = parse_args_with_defaults(arg_defs, ["global", "set_location"])
+
+    if args.latitude is None or args.longitude is None:
+        print("❌ Both --latitude and --longitude must be provided.", file=sys.stderr)
+        return
+
+    conf = read_network_conf()
+    server_ip = args.config_server or conf.get("SERVER_IP")
+    port = args.port or conf.get("SERVER_PORT")
+    wg_ip = conf.get("WG_IP") or server_ip
+
+    if not server_ip:
+        print("❌ Missing config server IP.", file=sys.stderr)
+        return
+
+    api_password = read_api_password()
+    if not api_password:
+        print("❌ API password required. Exiting.", file=sys.stderr)
+        return
+
+    send_location(server_ip, port, wg_ip, api_password, args.latitude, args.longitude)
+
+
+if __name__ == "__main__":
+    main()

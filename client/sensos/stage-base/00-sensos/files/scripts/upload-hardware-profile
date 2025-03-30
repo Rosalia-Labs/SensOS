@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+import os
+import sys
+import json
+import socket
+import psutil
+import subprocess
+import base64
+import requests
+
+from sensos.lib.utils import (
+    run_command,
+    get_basic_auth,
+    remove_nulls,
+    read_api_password,
+    detect_wireguard_api,
+    parse_args_with_defaults,
+    setup_logging,
+)
+
+API_PASSWORD_FILE = "/sensos/.sensos_api_password"
+DEFAULT_PORT = "8000"
+
+ARG_DEFS = [
+    (
+        ["--config-server"],
+        {"help": "Configuration server hostname or IP", "dest": "config_server"},
+    ),
+    (["--port"], {"help": "Server port", "dest": "port"}),
+]
+
+
+def generate_hardware_profile():
+    return remove_nulls(
+        {
+            "hostname": socket.gethostname(),
+            "model": run_command("cat /proc/device-tree/model"),
+            "kernel_version": run_command("uname -a"),
+            "cpu": {
+                "model": run_command(
+                    "grep 'Model' /proc/cpuinfo | awk -F': ' '{print $2}'"
+                ),
+                "revision": run_command(
+                    "grep 'Revision' /proc/cpuinfo | awk -F': ' '{print $2}'"
+                ),
+                "serial": run_command(
+                    "grep 'Serial' /proc/cpuinfo | awk -F': ' '{print $2}'"
+                ),
+            },
+            "firmware": {
+                "bootloader": run_command("vcgencmd bootloader_version"),
+                "firmware": run_command("vcgencmd version"),
+            },
+            "memory": {
+                "total": psutil.virtual_memory().total,
+                "available": psutil.virtual_memory().available,
+            },
+            "disks": json.loads(run_command("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
+            "usb_devices": run_command("lsusb"),
+            "network_interfaces": {
+                iface: [addr.address for addr in addrs if addr.family == socket.AF_INET]
+                for iface, addrs in psutil.net_if_addrs().items()
+            },
+        }
+    )
+
+
+def upload_hardware_profile(server_ip, port, api_password):
+    profile = generate_hardware_profile()
+    profile["wg_ip"] = None  # we don't try to infer this now
+
+    headers = {
+        "Authorization": f"Basic {get_basic_auth(api_password)}",
+        "Content-Type": "application/json",
+    }
+    url = f"http://{server_ip}:{port}/upload-hardware-profile"
+    try:
+        response = requests.post(url, headers=headers, json=profile, timeout=10)
+        if response.ok:
+            print("✅ Hardware profile uploaded successfully.")
+        else:
+            print(f"❌ Upload failed: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"❌ Exception during upload: {e}")
+
+
+def main():
+    setup_logging()
+
+    args = parse_args_with_defaults(ARG_DEFS, ["global", "upload_hardware_profile"])
+
+    server_ip = args.config_server
+    port = args.port or DEFAULT_PORT
+
+    if not server_ip:
+        server_ip, port = detect_wireguard_api()
+        if server_ip:
+            print(f"ℹ️ Detected WireGuard API at {server_ip}:{port}")
+        else:
+            print(
+                "❌ Missing --config-server and could not detect API on WireGuard network",
+                file=sys.stderr,
+            )
+            return
+
+    api_password = read_api_password()
+    if not api_password:
+        print("❌ API password unavailable. Aborting.", file=sys.stderr)
+        return
+
+    upload_hardware_profile(server_ip, port, api_password)
+
+
+if __name__ == "__main__":
+    main()

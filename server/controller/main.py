@@ -42,6 +42,7 @@ async def lifespan(app: FastAPI):
             with conn.cursor() as cur:
                 logger.info("Creating schema 'sensos' if not exists...")
                 cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+                cur.execute("set search_path to sensos, public;")
                 create_version_history_table(cur)
                 update_version_history_table(cur)
                 create_networks_table(cur)
