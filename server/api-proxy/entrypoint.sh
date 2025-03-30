@@ -49,19 +49,30 @@ curl -s -u "$API_USERNAME:$API_PASSWORD" http://sensos-controller:8000/get-wireg
 
     if [ -f "$LOCAL_WG_CONF" ]; then
         echo "✔️ Found existing WireGuard config: ${LOCAL_WG_CONF}"
+
         LOCAL_PRIVATE_KEY=$(awk '/^PrivateKey = / { print $3 }' "$LOCAL_WG_CONF")
-        LOCAL_PUBLIC_KEY=$(echo "$LOCAL_PRIVATE_KEY" | wg pubkey)
+        echo "🔐 Local private key from config: ${LOCAL_PRIVATE_KEY}"
 
-        # Fetch registered public key
-        REGISTERED_PUBLIC_KEY=$(curl -s -u "$API_USERNAME:$API_PASSWORD" \
-            "http://sensos-controller:8000/get-peer-info?ip_address=${WG_IP}" |
-            jq -r '.peer_wg_public_key')
-
-        if [[ "$REGISTERED_PUBLIC_KEY" == "$LOCAL_PUBLIC_KEY" ]]; then
-            echo "🔑 Public key matches registered key. No action needed."
-            NEEDS_KEYGEN=false
+        if [[ -z "$LOCAL_PRIVATE_KEY" ]]; then
+            echo "❌ Could not extract PrivateKey from config. Will regenerate."
         else
-            echo "🔄 Public key mismatch or not registered. Will regenerate."
+            LOCAL_PUBLIC_KEY=$(echo "$LOCAL_PRIVATE_KEY" | wg pubkey)
+            echo "🔍 Local public key (derived): ${LOCAL_PUBLIC_KEY}"
+
+            REGISTERED_PUBLIC_KEY=$(curl -s -u "$API_USERNAME:$API_PASSWORD" \
+                "http://sensos-controller:8000/get-peer-info?ip_address=${WG_IP}" |
+                jq -r '.peer_wg_public_key')
+
+            echo "🔍 Registered public key from API: ${REGISTERED_PUBLIC_KEY}"
+
+            if [[ -z "$REGISTERED_PUBLIC_KEY" || "$REGISTERED_PUBLIC_KEY" == "null" ]]; then
+                echo "⚠️ No registered public key found. Will regenerate."
+            elif [[ "$REGISTERED_PUBLIC_KEY" == "$LOCAL_PUBLIC_KEY" ]]; then
+                echo "🔑 Public key matches registered key. No action needed."
+                NEEDS_KEYGEN=false
+            else
+                echo "🔄 Public key mismatch. Will regenerate."
+            fi
         fi
     fi
 
