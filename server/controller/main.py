@@ -1559,7 +1559,7 @@ def set_client_location(
             peer_id = row[0]
             cur.execute(
                 """
-                INSERT INTO sensos.client_locations (peer_id, location)
+                INSERT INTO sensos.peer_locations (peer_id, location)
                 VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326));
                 """,
                 (peer_id, req.longitude, req.latitude),  # Note: lon, lat order!
@@ -1579,7 +1579,7 @@ def get_client_location(
             cur.execute(
                 """
                 SELECT l.recorded_at, ST_Y(l.location)::float AS latitude, ST_X(l.location)::float AS longitude
-                FROM sensos.client_locations l
+                FROM sensos.peer_locations l
                 JOIN sensos.wireguard_peers p ON l.peer_id = p.id
                 WHERE p.wg_ip = %s
                 ORDER BY l.recorded_at DESC
