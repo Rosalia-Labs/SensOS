@@ -7,6 +7,8 @@ import librosa
 import sys
 import logging
 
+os.environ["NUMBA_LOG_LEVEL"] = "WARN"
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,

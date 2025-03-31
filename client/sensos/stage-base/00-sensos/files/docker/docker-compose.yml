@@ -4,7 +4,7 @@ services:
       context: ./database
       platforms: [linux/arm64]
       args:
-        HAS_CONNECTIVITY: ${HAS_CONNECTIVITY:-true}
+        OFFLINE: ${OFFLINE:-false}
     container_name: sensos-client-database
     restart: always
     environment:
@@ -24,7 +24,7 @@ services:
       context: ./sound_capture
       platforms: [linux/arm64]
       args:
-        HAS_CONNECTIVITY: ${HAS_CONNECTIVITY:-true}
+        OFFLINE: ${OFFLINE:-false}
     container_name: sensos-client-sound-capture
     restart: always
     depends_on:
@@ -48,7 +48,7 @@ services:
       context: ./birdnet
       platforms: [linux/arm64]
       args:
-        HAS_CONNECTIVITY: ${HAS_CONNECTIVITY:-true}
+        OFFLINE: ${OFFLINE:-false}
     container_name: sensos-client-birdnet
     restart: always
     depends_on:
@@ -70,7 +70,7 @@ services:
       context: ./sound_analyzer
       platforms: [linux/arm64]
       args:
-        HAS_CONNECTIVITY: ${HAS_CONNECTIVITY:-true}
+        OFFLINE: ${OFFLINE:-false}
     container_name: sensos-client-sound-analyzer
     restart: always
     depends_on:
@@ -92,7 +92,7 @@ services:
       context: ./db_manager
       platforms: [linux/arm64]
       args:
-        HAS_CONNECTIVITY: ${HAS_CONNECTIVITY:-true}
+        OFFLINE: ${OFFLINE:-false}
     container_name: sensos-client-db-manager
     restart: always
     depends_on:

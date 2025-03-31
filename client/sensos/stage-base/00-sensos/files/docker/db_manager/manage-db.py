@@ -229,6 +229,20 @@ def delete_audio(conn, segment_id: int, file_path: str):
         )
 
 
+def table_exists(conn, table_name):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'sensos' AND table_name = %s
+            )
+            """,
+            (table_name,),
+        )
+        return cur.fetchone()["exists"]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -242,8 +256,17 @@ def main():
     while True:
         time.sleep(SLEEP_SECONDS)
         try:
+
             with connect_with_retry() as conn:
                 initialize_schema(conn)
+
+                if not table_exists(conn, "birdnet_scores"):
+                    logger.info(
+                        "Waiting for sensos.birdnet_scores table to be created."
+                    )
+                    time.sleep(60)
+                    continue
+
                 mergeables = find_mergeable_segments(conn)
 
                 if not mergeables:

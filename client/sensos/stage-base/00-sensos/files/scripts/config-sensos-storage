@@ -267,11 +267,27 @@ echo "✅ Permissions set"
 
 # Check for existing fstab entry
 echo "📄 Checking for existing /etc/fstab entry for $PARTITION or $DATA_MOUNT..."
-uuid=$(sudo blkid -s UUID -o value "$PARTITION")
 
-if grep -Eq "^\s*(UUID=$uuid|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab; then
+uuid=$(sudo blkid -s UUID -o value "$PARTITION")
+label=$(sudo blkid -s LABEL -o value "$PARTITION")
+
+if [[ -z "$uuid" && -z "$label" ]]; then
+    echo "❌ No UUID or LABEL found for $PARTITION — will not add to /etc/fstab."
+    echo "ℹ️ blkid output:"
+    sudo blkid "$PARTITION"
+    echo "⚠️ Skipping persistent mount."
+    exit 1
+fi
+
+if [[ -n "$uuid" ]]; then
+    device_ref="UUID=$uuid"
+elif [[ -n "$label" ]]; then
+    device_ref="LABEL=$label"
+fi
+
+if grep -Eq "^\s*($device_ref|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab; then
     echo "✅ Found existing fstab entry:"
-    grep -E "^\s*(UUID=$uuid|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab
+    grep -E "^\s*($device_ref|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab
 
     read -p "❓ Keep this fstab entry? [Y/n] " keep
     if [[ "$keep" == [nN] ]]; then
@@ -286,7 +302,11 @@ else
     read -p "❓ Add new fstab entry to make mount persistent? [Y/n] " add
     if [[ "$add" != [nN] ]]; then
         echo "🔧 Adding fstab entry:"
-        fstab_line="UUID=$uuid $DATA_MOUNT $FS_TYPE_ARG defaults,noatime 0 2"
+        if [[ "$FS_TYPE_ARG" == "exfat" ]]; then
+            fstab_line="$device_ref $DATA_MOUNT exfat defaults,noauto,x-systemd.automount,x-systemd.device-timeout=10 0 0"
+        else
+            fstab_line="$device_ref $DATA_MOUNT ext4 defaults,noatime 0 2"
+        fi
         echo "$fstab_line"
         echo "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
         echo "✅ fstab updated"

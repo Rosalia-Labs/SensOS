@@ -17,8 +17,8 @@ RUN set -ex; \
     else \
     echo "🪹 No .deb files found in /os_packages or directory missing."; \
     fi; \
-    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
-    echo "🌐 HAS_CONNECTIVITY=true: Ensuring required packages are installed..."; \
+    if [ "$OFFLINE" = "false" ]; then \
+    echo "🌐 Not in offline mode. Ensuring required packages are installed..."; \
     apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
     fi
 

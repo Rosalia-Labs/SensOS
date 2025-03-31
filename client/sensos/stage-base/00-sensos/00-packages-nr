@@ -3,8 +3,11 @@ wireguard-tools
 openresolv
 python3-psutil
 python3-requests
+python3-smbus
 python3-gps
+gpsd
 gpsd-clients
 sox
+i2c-tools
 
 
