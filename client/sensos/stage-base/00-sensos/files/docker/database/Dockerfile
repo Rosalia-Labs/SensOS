@@ -1,23 +1,24 @@
 FROM postgres:17-bookworm
 
+ARG HAS_CONNECTIVITY=false
+ENV HAS_CONNECTIVITY=$HAS_CONNECTIVITY
+
 WORKDIR /app
 
 # Set required DEBs
 ENV REQUIRED_DEBS="postgresql-postgis postgresql-17-pgvector"
 
-# Copy local deb files into the image
+# Conditionally install packages
 COPY os_packages/ os_packages/
-
-# Install all .deb files in os_packages, then install any missing packages via APT
 RUN set -ex; \
-    echo "📦 Installing all local DEB files..."; \
+    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
+    echo "🌐 HAS_CONNECTIVITY=true: Installing packages from the internet"; \
+    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
+    else \
+    echo "🚫 HAS_CONNECTIVITY=false: Installing packages from local DEBs"; \
     if [ -d os_packages ]; then \
-    for deb in os_packages/*.deb; do \
-    if [ -f "$deb" ]; then \
-    echo "Installing $deb"; \
-    dpkg -i "$deb" || true; \
-    fi; \
-    done; \
+    dpkg -i os_packages/*.deb || true; \
+    dpkg --configure -a || true; \
     else \
     echo "No local DEB directory found."; \
     fi; \
@@ -27,10 +28,11 @@ RUN set -ex; \
     dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"; \
     done; \
     if [ -n "$MISSING" ]; then \
-    echo "🌐 Installing missing packages via APT: $MISSING"; \
+    echo "🌐 Attempting online install of missing packages: $MISSING"; \
     apt-get update && apt-get install -y --no-install-recommends $MISSING && rm -rf /var/lib/apt/lists/*; \
     else \
     echo "✅ All packages installed from local DEBs"; \
+    fi; \
     fi
 
 ENTRYPOINT ["docker-entrypoint.sh"]

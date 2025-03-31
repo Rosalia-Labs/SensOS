@@ -10,9 +10,6 @@ Restart=always
 RestartSec=10
 ExecStart=/usr/local/bin/start-sensos-modem.sh
 User=sensos-runner
-StandardError=journal
-StandardOutput=journal
-StandardInput=null
 
 [Install]
 WantedBy=multi-user.target

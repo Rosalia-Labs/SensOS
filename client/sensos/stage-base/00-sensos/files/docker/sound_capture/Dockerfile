@@ -1,23 +1,24 @@
 FROM debian:bookworm-slim
 
+ARG HAS_CONNECTIVITY=false
+ENV HAS_CONNECTIVITY=$HAS_CONNECTIVITY
+
 WORKDIR /app
 
 # Set required DEBs
 ENV REQUIRED_DEBS="python3 python3-venv python3-pip libpq5 libsndfile1 libopenblas0 ffmpeg"
 
-# Copy local deb files into the image
-COPY os_packages/ os_packages/
-
-# Install all .deb files in os_packages, then install any missing packages via APT
+# Conditionally install packages
+COPY ./os_packages/ /os_packages/
 RUN set -ex; \
-    echo "📦 Installing all local DEB files..."; \
-    if [ -d os_packages ]; then \
-    for deb in os_packages/*.deb; do \
-    if [ -f "$deb" ]; then \
-    echo "Installing $deb"; \
-    dpkg -i "$deb" || true; \
-    fi; \
-    done; \
+    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
+    echo "🌐 HAS_CONNECTIVITY=true: Installing packages from the internet"; \
+    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
+    else \
+    echo "🚫 HAS_CONNECTIVITY=false: Installing packages from local DEBs"; \
+    if [ -d /os_packages ]; then \
+    dpkg -i /os_packages/*.deb || true; \
+    dpkg --configure -a || true; \
     else \
     echo "No local DEB directory found."; \
     fi; \
@@ -27,20 +28,27 @@ RUN set -ex; \
     dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"; \
     done; \
     if [ -n "$MISSING" ]; then \
-    echo "🌐 Installing missing packages via APT: $MISSING"; \
+    echo "🌐 Attempting online install of missing packages: $MISSING"; \
     apt-get update && apt-get install -y --no-install-recommends $MISSING && rm -rf /var/lib/apt/lists/*; \
     else \
     echo "✅ All packages installed from local DEBs"; \
+    fi; \
     fi
 
 # Set up virtual environment
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
-# Install Python dependencies (using local wheels if available)
+# Conditionally install Python dependencies
 COPY requirements.txt .
-COPY wheels/ wheels/
-RUN pip install --find-links=wheels/birdnet --prefer-binary -r requirements.txt
+COPY ./wheels/ /wheels/
+RUN if [ "$HAS_CONNECTIVITY" = "true" ]; then \
+    echo "🌐 Installing Python dependencies from PyPI"; \
+    pip install -r requirements.txt; \
+    else \
+    echo "🚫 Installing Python dependencies from local wheels"; \
+    pip install --find-links=/wheels --prefer-binary -r requirements.txt; \
+    fi
 
 COPY capture-audio.py .
 CMD ["python", "capture-audio.py"]

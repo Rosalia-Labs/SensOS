@@ -186,18 +186,17 @@ if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]
             continue
         fi
 
-        echo "⬇️ Downloading .deb packages to $os_pkg_dir..."
-        # Extract the base image from the Dockerfile's first FROM line
-        BASE_IMAGE=$(awk '/^FROM/ {print $2; exit}' "$dockerfile")
+        echo "⬇️ Downloading .deb packages with full dependencies to $os_pkg_dir..."
+
         docker run --rm --platform linux/arm64 \
             -v "$os_pkg_dir":/debs \
             "$BASE_IMAGE" bash -c "
-                apt-get update && \
-                apt-get install -y --no-install-recommends \
-                    apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
-                apt-get install -y --no-install-recommends ${UNIQUE_PACKAGES} --download-only && \
-                cp -a /var/cache/apt/archives/*.deb /debs
-            "
+            apt-get update && \
+            apt-get install --reinstall --download-only -y --no-install-recommends \
+                apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
+            apt-get install --reinstall --download-only -y --no-install-recommends $UNIQUE_PACKAGES && \
+            cp -a /var/cache/apt/archives/*.deb /debs
+        "
     done
     echo "✅ OS packages download complete."
 fi

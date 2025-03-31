@@ -6,9 +6,6 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/start-arecord.sh
 User=sensos-runner
-StandardError=journal
-StandardOutput=journal
-StandardInput=null
 Restart=always
 RestartSec=5
 

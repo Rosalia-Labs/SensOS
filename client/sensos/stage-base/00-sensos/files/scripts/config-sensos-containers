@@ -34,6 +34,7 @@ docker_compose_dir=$(get_default docker_compose_dir "/sensos/docker")
 arecord_conf=$(get_default arecord_conf "/sensos/etc/arecord.conf")
 enable_service=$(get_default enable_service "true")
 start_service=$(get_default start_service "true")
+has_connectivity=$(get_default has_connectivity "true")
 
 usage() {
     cat <<EOF
@@ -50,6 +51,7 @@ Options:
   --audio-format <value>      Set ALSA audio format code
   --enable-service <true|false>  Enable sensos-docker.service (default: true)
   --start-service <true|false>   Start sensos-docker.service (default: true)
+  --no-internet               Set HAS_CONNECTIVITY to false (no internet during builds)
   --help                      Show this help message
 EOF
 }
@@ -97,6 +99,10 @@ while [[ "$#" -gt 0 ]]; do
         start_service="$2"
         shift 2
         ;;
+    --no-internet)
+        has_connectivity="false"
+        shift
+        ;;
     --help)
         usage
         exit 0
@@ -138,21 +144,20 @@ DB_PORT=${db_port}
 DB_DATA_PATH=${db_data_path}
 AUDIO_DIRECTORY=${audio_directory}
 AUDIO_FORMAT_CODE=${audio_format_code}
+HAS_CONNECTIVITY=${has_connectivity}
 EOF
 
 echo ".env written to $env_file:"
 cat "$env_file"
 
-# Manage systemd service
-echo "Reloading systemd..."
-sudo systemctl daemon-reload
-
 if [[ "$enable_service" == "true" ]]; then
+    # Manage systemd service
+    echo "Reloading systemd..."
+    sudo systemctl daemon-reload
     echo "Enabling sensos-docker.service..."
     sudo systemctl enable sensos-docker.service
-fi
-
-if [[ "$start_service" == "true" ]]; then
-    echo "Starting sensos-docker.service..."
-    sudo systemctl start sensos-docker.service
+    if [[ "$start_service" == "true" ]]; then
+        echo "Starting sensos-docker.service..."
+        sudo systemctl start sensos-docker.service
+    fi
 fi
