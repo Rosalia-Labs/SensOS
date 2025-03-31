@@ -1,13 +1,11 @@
 #!/bin/bash -e
 #
-# setup-sensos-data.sh
+# config-sensos-storage
 #
 # Mounts external storage to /sensos/data, with safeguards.
 #
 
 DATA_MOUNT="/sensos/data"
-MAKE_FS=false
-FS_TYPE_ARG="ext4"
 PERMANENT=false
 DEVICE=""
 DEVICE_HINT=""
@@ -27,10 +25,7 @@ usage() {
 Usage: $0 [options]
 
 Options:
-  --device <path>       Specify device manually (e.g., /dev/sda1 or /dev/sda)
-  --make-fs             Create a new filesystem if none is found (requires confirmation)
-  --fs-type <type>      Filesystem type to create if needed (default: ext4)
-  --permanent           Add sudo mount to /etc/fstab for persistence across reboot
+  --device <path>       Specify device manually (e.g., /dev/sda or /dev/nvme0n1)
   --help                Show this help message
 EOF
     exit 0
@@ -43,18 +38,6 @@ while [[ $# -gt 0 ]]; do
         DEVICE="$2"
         shift 2
         ;;
-    --make-fs)
-        MAKE_FS=true
-        shift
-        ;;
-    --fs-type)
-        FS_TYPE_ARG="$2"
-        shift 2
-        ;;
-    --permanent)
-        PERMANENT=true
-        shift
-        ;;
     --help)
         usage
         ;;
@@ -65,147 +48,249 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-mkdir -p "$DATA_MOUNT"
+has_partition_table() {
+    local device="$1"
+    if [[ -z "$device" || ! -b "$device" ]]; then
+        echo "❌ $device is not a block device." >&2
+        return 1
+    fi
 
-echo
-if [[ -z "$DEVICE" || ! -b "$DEVICE" ]]; then
-    echo "❌ --device must be specified and must refer to a valid block device."
-    exit 1
-fi
-
-echo "Selected device: $DEVICE"
-
-FS_TYPE=$(sudo blkid -o value -s TYPE "$DEVICE" 2>/dev/null || true)
-PART_TYPE=$(sudo lsblk -no PTTYPE "$DEVICE" 2>/dev/null || true)
-DEVICE_TYPE=$(sudo lsblk -no TYPE "$DEVICE")
-
-if [[ -z "$FS_TYPE" ]]; then
-    echo "❌ No filesystem found on $DEVICE."
-    read -p "Do you want to erase ALL data, create a new partition table, and format the device with $FS_TYPE_ARG? [y/N]: " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        MAKE_FS=true
+    if sudo parted -s "$device" print &>/dev/null; then
+        echo "true"
     else
-        echo "Aborting to avoid data loss."
-        exit 1
+        echo "false"
     fi
-fi
-
-STEPS=()
-
-if [[ "$DEVICE_TYPE" == "disk" && -z "$PART_TYPE" && "$MAKE_FS" == true ]]; then
-    echo "⚠️  $DEVICE appears to be a whole disk with no partition table."
-    STEPS+=("Create GPT partition table on $DEVICE")
-    STEPS+=("Create primary partition 0% - 100%")
-    DEVICE="${DEVICE}1"
-    STEPS+=("Use new partition: $DEVICE")
-fi
-
-if [[ -z "$FS_TYPE" ]]; then
-    STEPS+=("Check for non-zero bytes on $DEVICE")
-    STEPS+=("Create $FS_TYPE_ARG filesystem on $DEVICE")
-else
-    STEPS+=("Detected filesystem: $FS_TYPE")
-    if [[ "$FS_TYPE" == "vfat" || "$FS_TYPE" == "exfat" ]]; then
-        STEPS+=("Mount as-is (Windows-compatible: $FS_TYPE)")
-    fi
-fi
-
-STEPS+=("Mount $DEVICE to $DATA_MOUNT")
-
-if [[ "$PERMANENT" == true ]]; then
-    STEPS+=("Add mount to /etc/fstab")
-fi
-
-echo "The following actions will be performed:"
-for step in "${STEPS[@]}"; do
-    echo "  - $step"
-done
-
-read -p "Proceed with these actions? [y/N]: " confirm
-[[ "$confirm" =~ ^[Yy]$ ]] || {
-    echo "Aborting."
-    exit 1
 }
 
-if mountpoint -q "$DATA_MOUNT"; then
-    echo "$DATA_MOUNT is already mounted."
-    read -p "Do you want to unmount it before continuing? [y/N]: " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        echo "Unmounting $DATA_MOUNT..."
-        sudo umount "$DATA_MOUNT"
+is_device_mounted() {
+    local device="$1"
+    if mount | grep -q "^$device "; then
+        echo "true"
     else
-        echo "Aborting to avoid conflicting mount."
-        exit 1
+        echo "false"
     fi
-elif [[ -n "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ]]; then
-    echo "⚠️  Warning: $DATA_MOUNT is not empty. It may contain important data."
-    read -p "Continue and possibly hide existing contents under mount? [y/N]: " confirm
-    [[ "$confirm" =~ ^[Yy]$ ]] || {
-        echo "Aborting."
-        exit 1
-    }
-fi
+}
 
-if [[ "$DEVICE_TYPE" == "disk" && -z "$PART_TYPE" && "$MAKE_FS" == true ]]; then
-    echo "Creating GPT partition table on $DEVICE..."
-    sudo parted -s "$DEVICE" mklabel gpt
-    sudo parted -s "${DEVICE%1}" mkpart primary 0% 100%
-    echo "✅ Partition created."
+get_first_partition() {
+    local device="$1"
+    sudo lsblk -nrpo NAME "$device" | grep -v "^$device\$" | head -n 1
+}
 
-    echo "Waiting for partition device $DEVICE to be available..."
-    for i in {1..5}; do
-        [[ -b "$DEVICE" ]] && break
-        sleep 1
+get_filesystem_type() {
+    local part="$1"
+
+    if [[ -z "$part" || ! -b "$part" ]]; then
+        echo ""
+        return
+    fi
+
+    sudo blkid -s TYPE -o value "$part"
+}
+
+wait_for_partition() {
+    local device="$1"
+    for i in {1..10}; do
+        local part
+        part=$(get_first_partition "$device")
+        if [[ -n "$part" && -b "$part" ]]; then
+            echo "$part"
+            return
+        fi
+        sleep 0.5
     done
+    echo ""
+}
 
-    if [[ ! -b "$DEVICE" ]]; then
-        echo "❌ Partition $DEVICE did not appear."
-        exit 1
-    fi
-fi
-
-FS_TYPE=$(blkid -o value -s TYPE "$DEVICE" 2>/dev/null || true)
-
-if [[ -z "$FS_TYPE" ]]; then
-    echo "Checking for non-zero bytes on $DEVICE..."
-    if sudo hexdump -n 512 "$DEVICE" | grep -qv ' 00 '; then
-        echo "⚠️  Detected non-zero bytes — this device may contain data or a non-standard format."
-        read -p "Are you sure you want to create a new $FS_TYPE_ARG filesystem on $DEVICE? [y/N]: " confirm
-        [[ "$confirm" =~ ^[Yy]$ ]] || {
-            echo "Aborting to avoid data loss."
-            exit 1
-        }
-    fi
-
-    echo "Creating filesystem..."
-    sudo mkfs -t "$FS_TYPE_ARG" -F "$DEVICE"
-    FS_TYPE="$FS_TYPE_ARG"
-    echo "✅ Filesystem ready."
-else
-    echo "Detected filesystem: $FS_TYPE"
-    if [[ "$FS_TYPE" == "vfat" || "$FS_TYPE" == "exfat" ]]; then
-        echo "ℹ️  $DEVICE contains a Windows-compatible filesystem ($FS_TYPE)."
-    fi
-fi
-
-echo "Mounting $DEVICE as $FS_TYPE at $DATA_MOUNT..."
-sudo mount "$DEVICE" "$DATA_MOUNT"
-echo "✅ Mount complete: $DEVICE → $DATA_MOUNT"
-
-if [[ "$PERMANENT" == true ]]; then
-    echo "Adding permanent mount entry to /etc/fstab..."
-    UUID=$(sudo blkid -s UUID -o value "$DEVICE")
-    if [[ -z "$UUID" ]]; then
-        echo "❌ Could not determine UUID for $DEVICE"
-        exit 1
-    fi
-
-    FSTAB_LINE="UUID=$UUID $DATA_MOUNT $FS_TYPE defaults 0 2"
-
-    if grep -q "$DATA_MOUNT" /etc/fstab; then
-        echo "⚠️  /etc/fstab already has an entry for $DATA_MOUNT. Not modifying."
+prompt_for_filesystem_type() {
+    read -p "❓ Use Windows-compatible filesystem (exfat)? [y/N] " winfs
+    if [[ "$winfs" == [yY] ]]; then
+        FS_TYPE_ARG="exfat"
     else
-        echo "$FSTAB_LINE" | sudo tee -a /etc/fstab >/dev/null
-        echo "✅ Added to /etc/fstab"
+        FS_TYPE_ARG="ext4"
+    fi
+    MAKE_FS=true
+}
+
+if [[ -z "$DEVICE" ]]; then
+    echo "❌ --device must be specified."
+    exit 1
+fi
+
+if ! [[ -b "$DEVICE" ]]; then
+    echo "❌ $DEVICE is not a block device."
+    exit 1
+fi
+
+if [[ "$(is_device_mounted "$DEVICE")" == "true" ]]; then
+    echo "⚠️  Device $DEVICE is currently mounted."
+
+    read -p "❓ Unmount $DEVICE before proceeding? [y/N] " confirm
+    if [[ "$confirm" == [yY] ]]; then
+        echo "🔧 Unmounting $DEVICE..."
+        if sudo umount "$DEVICE"; then
+            echo "✅ Unmounted"
+        else
+            echo "❌ Failed to unmount $DEVICE — it may be busy."
+            echo "   Tip: Run \`lsof +f -- $DEVICE\` or \`mount | grep $DEVICE\` to investigate."
+            exit 1
+        fi
+    else
+        echo "❌ Aborting. Cannot proceed with mounted device."
+        exit 1
+    fi
+fi
+
+# PARTITION TABLE LOGIC
+if has_partition_table "$DEVICE"; then
+    echo "✅ Partition table found on $DEVICE"
+
+    echo "📄 Current partition table:"
+    sudo lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT "$DEVICE"
+
+    read -p "❓ Overwrite existing partition table on $DEVICE with a new GPT table? This will erase all data. [y/N] " confirm
+    if [[ "$confirm" == [yY] ]]; then
+        create_table=true
+    else
+        echo "➡️  Keeping existing partition table."
+        create_table=false
+    fi
+else
+    echo "⚠️  No partition table found on $DEVICE"
+
+    read -p "❓ Create a new GPT partition table on $DEVICE? This will erase all data. [Y/n] " confirm
+    if [[ "$confirm" == [nN] ]]; then
+        echo "❌ Aborting. No changes made."
+        exit 1
+    fi
+    create_table=true
+fi
+
+if [[ "$create_table" == true ]]; then
+    echo "🛠️  Creating GPT partition table and a single primary partition..."
+    sudo parted -s "$DEVICE" mklabel gpt
+    sudo parted -s -a optimal "$DEVICE" mkpart primary 0% 100%
+    sync
+    echo "✅ Partition table is ready"
+    echo "🌀 Informing kernel of partition changes..."
+    sudo partprobe "$DEVICE" || sudo udevadm settle
+    sleep 1
+fi
+
+# Wait for partition
+PARTITION=$(wait_for_partition "$DEVICE")
+if [[ -z "$PARTITION" ]]; then
+    echo "❌ Could not find partition on $DEVICE"
+    exit 1
+fi
+
+# FILESYSTEM LOGIC
+fstype=$(get_filesystem_type "$PARTITION")
+
+if [[ -n "$fstype" ]]; then
+    echo "✅ Detected existing filesystem: $fstype"
+
+    read -p "❓ Do you want to overwrite it with a new filesystem? This will erase all data. [y/N] " confirm
+    if [[ "$confirm" == [yY] ]]; then
+        prompt_for_filesystem_type
+    else
+        echo "➡️  Keeping existing filesystem. Continuing without changes."
+    fi
+else
+    echo "ℹ️  No filesystem detected on $PARTITION."
+
+    read -p "❓ Create new filesystem? [Y/n] " confirm
+    if [[ "$confirm" == [nN] ]]; then
+        echo "❌ Aborting. No filesystem will be created."
+        exit 1
+    fi
+
+    prompt_for_filesystem_type
+fi
+
+if [[ "$MAKE_FS" == true ]]; then
+    echo "🧼 Creating $FS_TYPE_ARG filesystem on $PARTITION..."
+
+    case "$FS_TYPE_ARG" in
+    ext4)
+        sudo mkfs.ext4 -F "$PARTITION"
+        ;;
+    exfat)
+        sudo mkfs.exfat -n SENSOS_DATA "$PARTITION"
+        ;;
+    *)
+        echo "❌ Unsupported filesystem type: $FS_TYPE_ARG"
+        exit 1
+        ;;
+    esac
+
+    echo "✅ Filesystem created on $PARTITION"
+fi
+
+echo "📁 Ensuring mount point exists at $DATA_MOUNT..."
+sudo mkdir -p "$DATA_MOUNT"
+
+if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
+    echo "⚠️  $DATA_MOUNT is not empty."
+
+    read -p "❓ Remove all contents of $DATA_MOUNT before mounting? [y/N] " confirm
+    if [[ "$confirm" == [yY] ]]; then
+        echo "🧹 Removing existing contents..."
+        sudo rm -rf "${DATA_MOUNT:?}/"*
+        echo "✅ Directory cleaned"
+    else
+        read -p "❓ Mount device over existing contents anyway? [y/N] " confirm_mount
+        if [[ "$confirm_mount" == [yY] ]]; then
+            echo "➡️  Will mount over existing contents at $DATA_MOUNT"
+        else
+            echo "❌ Aborting. Mount point must be clean or explicitly allowed."
+            exit 1
+        fi
+    fi
+else
+    echo "✅ $DATA_MOUNT is empty and ready."
+fi
+
+read -p "❓ Proceed with mounting the device? [Y/n] " confirm_mount
+if [[ "$confirm_mount" == [nN] ]]; then
+    echo "❌ Aborting before mount."
+    exit 1
+fi
+
+echo "🔧 Mounting $PARTITION as $FS_TYPE_ARG at $DATA_MOUNT..."
+sudo mount "$PARTITION" "$DATA_MOUNT"
+echo "✅ Mount complete: $PARTITION → $DATA_MOUNT"
+
+echo "🔑 Setting permissions on $DATA_MOUNT..."
+sudo chown -R sensos-admin:sensos-data "$DATA_MOUNT"
+sudo chmod -R g+rwsX "$DATA_MOUNT"
+echo "✅ Permissions set"
+
+# Check for existing fstab entry
+echo "📄 Checking for existing /etc/fstab entry for $PARTITION or $DATA_MOUNT..."
+uuid=$(sudo blkid -s UUID -o value "$PARTITION")
+
+if grep -Eq "^\s*(UUID=$uuid|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab; then
+    echo "✅ Found existing fstab entry:"
+    grep -E "^\s*(UUID=$uuid|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab
+
+    read -p "❓ Keep this fstab entry? [Y/n] " keep
+    if [[ "$keep" == [nN] ]]; then
+        echo "❌ Please edit /etc/fstab manually to remove or update the entry."
+        exit 1
+    else
+        echo "✅ Keeping existing fstab entry."
+    fi
+else
+    echo "ℹ️  No valid fstab entry found for $PARTITION at $DATA_MOUNT."
+
+    read -p "❓ Add new fstab entry to make mount persistent? [Y/n] " add
+    if [[ "$add" != [nN] ]]; then
+        echo "🔧 Adding fstab entry:"
+        fstab_line="UUID=$uuid $DATA_MOUNT $FS_TYPE_ARG defaults,noatime 0 2"
+        echo "$fstab_line"
+        echo "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
+        echo "✅ fstab updated"
+    else
+        echo "➡️  Skipping fstab update. Mount will not persist after reboot."
     fi
 fi
