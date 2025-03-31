@@ -190,10 +190,10 @@ done
 
 # Display the combined list with index numbers for the user to choose from
 echo "Available formats:"
+
 for i in "${!combined_formats[@]}"; do
-    # Using -2d for a two-digit index and a tab separator for columns.
-    printf "[%2d] %s\t" "$i" "${combined_formats[$i]}"
-done | column -t -s $'\t'
+    printf "%2d) %s\n" "$i" "${combined_formats[$i]}"
+done
 
 # Later, you can prompt the user for a selection:
 read -p "Select format index: " fmt_index
@@ -228,11 +228,16 @@ channel_options+=("enter number (${plughw_low} - ${plughw_high})")
 # Display the available channel options:
 echo "Available channel options:"
 for i in "${!channel_options[@]}"; do
-    printf "[%2d] %s\t" "$i" "${channel_options[$i]}"
-done | column -t -s $'\t'
+    printf "%2d) %s\n" "$i" "${channel_options[$i]}"
+done
 
 # Prompt the user for a selection:
 read -p "Select channel option index: " channel_index
+if ! [[ "$channel_index" =~ ^[0-9]+$ ]] || [ "$channel_index" -lt 0 ] || [ "$channel_index" -ge "${#channel_options[@]}" ]; then
+    echo "Invalid index."
+    exit 1
+fi
+
 if [ "$channel_index" -eq $((${#channel_options[@]} - 1)) ]; then
     # Last option: user enters a custom channel count within the plughw range.
     read -p "Enter channel count (${plughw_low} - ${plughw_high}): " channels

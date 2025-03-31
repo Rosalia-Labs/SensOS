@@ -1,3 +1,5 @@
 [submodule "client/pi-gen"]
 	path = client/pi-gen
 	url = https://github.com/RPi-Distro/pi-gen.git
+[submodule "pi-gen"]
+	branch = arm64
