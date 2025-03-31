@@ -19,6 +19,7 @@ from utils import *
 
 WG_DIR = "/etc/wireguard"
 
+
 def parse_args():
     script_name = os.path.basename(sys.argv[0])
     if script_name.endswith(".py"):
@@ -366,8 +367,11 @@ PersistentKeepalive = {wg_keepalive}
     run_command(f"echo '{config}' | sudo tee {wg_config_file} > /dev/null")
     run_command(f"sudo chmod 600 {wg_config_file}")
     if not os.path.exists(wg_config_file):
-        print(f"❌ Expected WireGuard config not found at {wg_config_file}", file=sys.stderr)
-    else
+        print(
+            f"❌ Expected WireGuard config not found at {wg_config_file}",
+            file=sys.stderr,
+        )
+    else:
         print(
             f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
         )
