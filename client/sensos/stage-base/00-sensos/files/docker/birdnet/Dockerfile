@@ -11,28 +11,16 @@ ENV REQUIRED_DEBS="python3 python3-venv python3-pip libpq5 libsndfile1 libopenbl
 # Conditionally install packages
 COPY ./os_packages/ /os_packages/
 RUN set -ex; \
-    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
-    echo "🌐 HAS_CONNECTIVITY=true: Installing packages from the internet"; \
-    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
-    else \
-    echo "🚫 HAS_CONNECTIVITY=false: Installing packages from local DEBs"; \
-    if [ -d /os_packages ]; then \
+    echo "📦 Attempting offline installation of packages from /os_packages..."; \
+    if [ -d /os_packages ] && ls /os_packages/*.deb >/dev/null 2>&1; then \
     dpkg -i /os_packages/*.deb || true; \
     dpkg --configure -a || true; \
     else \
-    echo "No local DEB directory found."; \
+    echo "🪹 No .deb files found in /os_packages or directory missing."; \
     fi; \
-    echo "🔍 Checking for missing packages..."; \
-    MISSING=""; \
-    for pkg in $REQUIRED_DEBS; do \
-    dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"; \
-    done; \
-    if [ -n "$MISSING" ]; then \
-    echo "🌐 Attempting online install of missing packages: $MISSING"; \
-    apt-get update && apt-get install -y --no-install-recommends $MISSING && rm -rf /var/lib/apt/lists/*; \
-    else \
-    echo "✅ All packages installed from local DEBs"; \
-    fi; \
+    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
+    echo "🌐 HAS_CONNECTIVITY=true: Ensuring required packages are installed..."; \
+    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
     fi
 
 # Set up virtual environment
@@ -42,12 +30,12 @@ ENV PATH="/app/venv/bin:$PATH"
 # Conditionally install Python dependencies
 COPY requirements.txt .
 COPY ./wheels/ /wheels/
-RUN if [ "$HAS_CONNECTIVITY" = "true" ]; then \
-    echo "🌐 Installing Python dependencies from PyPI"; \
+RUN set -ex; \
+    echo "📦 Attempting offline install of Python dependencies from /wheels..."; \
+    pip install --no-index --find-links=/wheels --prefer-binary -r requirements.txt || true; \
+    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
+    echo "🌐 HAS_CONNECTIVITY=true: Installing remaining Python dependencies from PyPI"; \
     pip install -r requirements.txt; \
-    else \
-    echo "🚫 Installing Python dependencies from local wheels"; \
-    pip install --find-links=/wheels --prefer-binary -r requirements.txt; \
     fi
 
 COPY model .

@@ -8,7 +8,6 @@ CONFIG_FILE="${PI_GEN_DIR}/config"
 
 STAGE_SRC="${SENSOS_DIR}/stage-base/00-sensos"
 STAGE_DST="${PI_GEN_DIR}/stage2/04-sensos"
-WHEEL_DIR="${STAGE_SRC}/files/python"
 
 REMOVE_DEPLOY=false
 CONTINUE_BUILD=false
@@ -114,12 +113,12 @@ echo
 # 🧼 Clean early
 if [ "$CLEAN_WHEELS" = true ]; then
     echo "🧹 Cleaning downloaded Python wheels..."
-    try_rm_rf_contents "$WHEEL_DIR"
+    find "$STAGE_SRC/files/docker" -type f -name '*.whl' -exec rm -f {} +
 fi
 
 if [ "$CLEAN_OS_PACKAGES" = true ]; then
     echo "🧹 Cleaning downloaded OS .deb packages..."
-    try_rm_rf_contents "${STAGE_SRC}/files/os_packages"
+    find "$STAGE_SRC/files/docker" -type f -name '*.deb' -exec rm -f {} +
 fi
 
 if [ "$DOWNLOAD_WHEELS" = "true" ] || [ "$DOWNLOAD_WHEELS" = "force" ]; then

@@ -8,31 +8,18 @@ WORKDIR /app
 # Set required DEBs
 ENV REQUIRED_DEBS="postgresql-postgis postgresql-17-pgvector"
 
-# Conditionally install packages
-COPY os_packages/ os_packages/
+COPY ./os_packages/ /os_packages/
 RUN set -ex; \
-    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
-    echo "🌐 HAS_CONNECTIVITY=true: Installing packages from the internet"; \
-    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
-    else \
-    echo "🚫 HAS_CONNECTIVITY=false: Installing packages from local DEBs"; \
-    if [ -d os_packages ]; then \
-    dpkg -i os_packages/*.deb || true; \
+    echo "📦 Attempting offline installation of packages from /os_packages..."; \
+    if [ -d /os_packages ] && ls /os_packages/*.deb >/dev/null 2>&1; then \
+    dpkg -i /os_packages/*.deb || true; \
     dpkg --configure -a || true; \
     else \
-    echo "No local DEB directory found."; \
+    echo "🪹 No .deb files found in /os_packages or directory missing."; \
     fi; \
-    echo "🔍 Checking for missing packages..."; \
-    MISSING=""; \
-    for pkg in $REQUIRED_DEBS; do \
-    dpkg -s "$pkg" >/dev/null 2>&1 || MISSING="$MISSING $pkg"; \
-    done; \
-    if [ -n "$MISSING" ]; then \
-    echo "🌐 Attempting online install of missing packages: $MISSING"; \
-    apt-get update && apt-get install -y --no-install-recommends $MISSING && rm -rf /var/lib/apt/lists/*; \
-    else \
-    echo "✅ All packages installed from local DEBs"; \
-    fi; \
+    if [ "$HAS_CONNECTIVITY" = "true" ]; then \
+    echo "🌐 HAS_CONNECTIVITY=true: Ensuring required packages are installed..."; \
+    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
     fi
 
 ENTRYPOINT ["docker-entrypoint.sh"]
