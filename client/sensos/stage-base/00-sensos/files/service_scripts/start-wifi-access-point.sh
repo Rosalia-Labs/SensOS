@@ -63,4 +63,4 @@ sudo systemctl daemon-reload
 sudo systemctl enable ssh
 sudo systemctl start ssh
 
-echo "✅ WiFi Access Point started successfully. Now resolvable as 'device.local' on local network." | tee -a "$LOG_FILE"
+echo "✅ WiFi Access Point started successfully." | tee -a "$LOG_FILE"

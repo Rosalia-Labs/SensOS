@@ -6,7 +6,8 @@ rm -rf /sensos/keys || true
 install -d -m 2755 -o root -g systemd-journal /var/log/journal
 
 # Ensure i2c module loads at boot
-echo "i2c_bcm2835" >> /etc/modules
+grep -q 'i2c_bcm2835' /etc/modules || \
+  echo 'i2c_bcm2835' >> /etc/modules
 
 # Avoid duplicate dtparam entries
 grep -q '^dtparam=i2c_arm_baudrate=' /boot/firmware/config.txt || \
