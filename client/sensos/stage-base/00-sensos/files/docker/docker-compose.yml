@@ -111,5 +111,33 @@ services:
         condition: on-failure
         max_attempts: 3
 
+  sensos-system-recorder:
+    build:
+      context: ./system-recorder
+      platforms: [linux/arm64]
+      args:
+        NO_LOCAL: ${NO_LOCAL:-false}
+    container_name: sensos-client-system-recorder
+    restart: always
+    depends_on:
+      - sensos-client-database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+    pid: "host"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/rootfs:ro
+      - /sensos/data:/sensos/data:ro
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
 volumes:
   sensos-db-data:
