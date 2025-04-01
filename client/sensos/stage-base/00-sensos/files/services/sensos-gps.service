@@ -1,0 +1,11 @@
+[Unit]
+Description=GPS service using i2c-3
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/start-gps.sh
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

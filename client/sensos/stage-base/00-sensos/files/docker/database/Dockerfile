@@ -1,14 +1,14 @@
 FROM postgres:17-bookworm
 
-ARG HAS_CONNECTIVITY=false
-ENV HAS_CONNECTIVITY=$HAS_CONNECTIVITY
+ARG OFFLINE=false
+ENV OFFLINE=$OFFLINE
 
 WORKDIR /app
 
 # Set required DEBs
 ENV REQUIRED_DEBS="postgresql-postgis postgresql-17-pgvector"
 
-COPY ./os_packages/ /os_packages/
+COPY os_packages/ /os_packages/
 RUN set -ex; \
     echo "📦 Attempting offline installation of packages from /os_packages..."; \
     if [ -d /os_packages ] && ls /os_packages/*.deb >/dev/null 2>&1; then \

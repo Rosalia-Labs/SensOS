@@ -169,33 +169,31 @@ if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]
         contents=$(awk '{ if (sub(/\\$/, "")) { line = line $0 } else { print line $0; line = "" } }' "$dockerfile")
         APT_PACKAGES=()
 
-        matches=$(echo "$contents" | grep -Eo 'apt(-get)? install[^&|;]*|REQUIRED_DEBS="[^"]*"')
+        matches=$(echo "$contents" | grep -E '^ENV[[:space:]]+REQUIRED_DEBS=')
         while IFS= read -r line; do
-            if [[ "$line" == *REQUIRED_DEBS* ]]; then
-                pkgs=$(echo "$line" | sed -E 's/.*REQUIRED_DEBS="([^"]*)".*/\1/')
-            else
-                pkgs=$(echo "$line" | sed -E 's/apt(-get)? install//; s/--no-install-recommends//g; s/-y//g' | tr -s ' ')
-            fi
+            pkgs=$(echo "$line" | sed -E 's/^ENV[[:space:]]+REQUIRED_DEBS="([^"]*)".*/\1/')
             APT_PACKAGES+=($pkgs)
         done <<<"$matches"
 
-        UNIQUE_PACKAGES=$(echo "${APT_PACKAGES[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' ')
-        if [[ -z "$UNIQUE_PACKAGES" ]]; then
-            echo "⚠️  No APT packages found in $dockerfile. Skipping .deb download."
+        echo "⬇️ Downloading .deb packages with full dependencies to $os_pkg_dir..."
+
+        # Extract base image from the Dockerfile
+        BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' "$dockerfile")
+
+        if [[ -z "$BASE_IMAGE" ]]; then
+            echo "❌ Could not determine base image from $dockerfile"
             continue
         fi
 
-        echo "⬇️ Downloading .deb packages with full dependencies to $os_pkg_dir..."
-
         docker run --rm --platform linux/arm64 \
             -v "$os_pkg_dir":/debs \
-            "$BASE_IMAGE" bash -c "
-            apt-get update && \
-            apt-get install --reinstall --download-only -y --no-install-recommends \
-                apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
-            apt-get install --reinstall --download-only -y --no-install-recommends $UNIQUE_PACKAGES && \
-            cp -a /var/cache/apt/archives/*.deb /debs
-        "
+            "$BASE_IMAGE" bash -c "\
+        apt-get update && \
+        apt-get install --reinstall --download-only -y --no-install-recommends \
+            apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
+        apt-get install --reinstall --download-only -y --no-install-recommends ${APT_PACKAGES[*]} && \
+        cp -a /var/cache/apt/archives/*.deb /debs"
+
     done
     echo "✅ OS packages download complete."
 fi
