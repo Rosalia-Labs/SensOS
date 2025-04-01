@@ -130,6 +130,18 @@ if systemctl is-active --quiet sensos-arecord.service; then
     fi
 fi
 
+# Validate provided or default device string
+if [ -n "$device" ]; then
+    echo "Validating provided device string: $device"
+    valid_devices=$(arecord -l | grep '^card ' | sed -n 's/^card \([0-9]\+\):.*device \([0-9]\+\):.*/hw:\1,\2\nplughw:\1,\2/p')
+    if ! echo "$valid_devices" | grep -qx "$device"; then
+        echo "Warning: Provided device '$device' is not listed in available devices:"
+        echo "$valid_devices"
+        echo "Restarting configuration prompts..."
+        device=""
+    fi
+fi
+
 if [ -z "$device" ]; then
     # Get a list of device lines (only those that start with "card ")
     mapfile -t device_choices < <(arecord -l | grep '^card ')
