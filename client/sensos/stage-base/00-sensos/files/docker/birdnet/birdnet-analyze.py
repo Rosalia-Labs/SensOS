@@ -136,6 +136,11 @@ def initialize_schema():
                 );
                 """
             )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_birdnet_scores_segment_id ON sensos.birdnet_scores(segment_id);
+                """
+            )
             conn.commit()
     logger.info("Database schema verified.")
 
@@ -169,7 +174,10 @@ def get_unprocessed_audio():
                 FROM sensos.raw_audio ra
                 JOIN sensos.audio_segments r ON ra.segment_id = r.id
                 JOIN sensos.audio_files af ON r.file_id = af.id
-                WHERE ra.segment_id NOT IN (SELECT segment_id FROM sensos.birdnet_embeddings);
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM sensos.birdnet_scores bs WHERE bs.segment_id = ra.segment_id
+                )
+                LIMIT 5;
                 """
             )
             rows = cur.fetchall()

@@ -9,6 +9,7 @@ DATA_MOUNT="/sensos/data"
 PERMANENT=false
 DEVICE=""
 DEVICE_HINT=""
+SKIP_FSTAB=false
 
 script_name=$(basename "$0")
 
@@ -265,26 +266,42 @@ sudo chown -R sensos-admin:sensos-data "$DATA_MOUNT"
 sudo chmod -R g+rwsX "$DATA_MOUNT"
 echo "✅ Permissions set"
 
-# Check for existing fstab entry
+read -p "❓ Make this mount persistent (automatically mounted on boot)? [y/N] " make_persistent
+if [[ "$make_persistent" =~ ^[yY]$ ]]; then
+    read -p "❓ Is this a removable device (e.g., USB stick) that should not be mounted on boot? [y/N] " removable
+    if [[ "$removable" =~ ^[yY]$ ]]; then
+        SKIP_FSTAB=true
+        echo "➡️  Will skip fstab entry for removable device."
+    fi
+else
+    SKIP_FSTAB=true
+    echo "➡️  Skipping persistent mount as requested."
+fi
+
+if [[ "$SKIP_FSTAB" == true ]]; then
+    echo "⏭️  Skipping fstab update."
+    exit 0
+fi
+
 echo "📄 Checking for existing /etc/fstab entry for $PARTITION or $DATA_MOUNT..."
 
+# Refresh UUID and LABEL info in case it changed after mkfs
 uuid=$(sudo blkid -s UUID -o value "$PARTITION")
 label=$(sudo blkid -s LABEL -o value "$PARTITION")
 
+# If neither UUID nor LABEL is available, fall back to device path
 if [[ -z "$uuid" && -z "$label" ]]; then
-    echo "❌ No UUID or LABEL found for $PARTITION — will not add to /etc/fstab."
-    echo "ℹ️ blkid output:"
-    sudo blkid "$PARTITION"
-    echo "⚠️ Skipping persistent mount."
-    exit 1
+    echo "⚠️  No UUID or LABEL found for $PARTITION — falling back to using device path in /etc/fstab."
+    device_ref="$PARTITION"
+else
+    if [[ -n "$uuid" ]]; then
+        device_ref="UUID=$uuid"
+    else
+        device_ref="LABEL=$label"
+    fi
 fi
 
-if [[ -n "$uuid" ]]; then
-    device_ref="UUID=$uuid"
-elif [[ -n "$label" ]]; then
-    device_ref="LABEL=$label"
-fi
-
+# Check if an fstab entry already exists
 if grep -Eq "^\s*($device_ref|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab; then
     echo "✅ Found existing fstab entry:"
     grep -E "^\s*($device_ref|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab

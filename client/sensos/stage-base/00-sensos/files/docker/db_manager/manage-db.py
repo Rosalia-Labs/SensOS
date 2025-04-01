@@ -66,9 +66,9 @@ def initialize_schema(conn):
             """
             CREATE TABLE IF NOT EXISTS sensos.merged_scores (
                 segment_id INTEGER REFERENCES sensos.merged_audio(segment_id) ON DELETE CASCADE,
-                species TEXT NOT NULL,
+                label TEXT NOT NULL,
                 score FLOAT NOT NULL,
-                PRIMARY KEY (segment_id, species)
+                PRIMARY KEY (segment_id, label)
             );
             """
         )
@@ -79,7 +79,7 @@ def find_mergeable_segments(conn):
         cur.execute(
             """
             SELECT
-                bs.species,
+                bs.label,
                 af.id AS file_id,
                 ag.channel,
                 ag.id AS segment_id,
@@ -92,7 +92,7 @@ def find_mergeable_segments(conn):
             JOIN sensos.audio_segments ag ON ra.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE ra.data IS NOT NULL
-            ORDER BY bs.species, af.id, ag.channel, ag.t_begin
+            ORDER BY bs.label, af.id, ag.channel, ag.t_begin
             """
         )
         return cur.fetchall()
@@ -100,8 +100,8 @@ def find_mergeable_segments(conn):
 
 def group_consecutive_segments(segments):
     grouped = []
-    for (species, file_id, channel), group in groupby(
-        segments, key=itemgetter("species", "file_id", "channel")
+    for (label, file_id, channel), group in groupby(
+        segments, key=itemgetter("label", "file_id", "channel")
     ):
         run = []
         last_end = None
@@ -111,15 +111,15 @@ def group_consecutive_segments(segments):
                 last_end = seg["t_end"]
             else:
                 if len(run) > 1:
-                    grouped.append((species, file_id, channel, run))
+                    grouped.append((label, file_id, channel, run))
                 run = [seg]
                 last_end = seg["t_end"]
         if len(run) > 1:
-            grouped.append((species, file_id, channel, run))
+            grouped.append((label, file_id, channel, run))
     return grouped
 
 
-def merge_and_store(conn, species, file_id, channel, run):
+def merge_and_store(conn, label, file_id, channel, run):
     sample_rate = 48000  # assumed fixed
     segment_length = 3.0  # seconds
     step_size = 1.0  # seconds
@@ -137,7 +137,7 @@ def merge_and_store(conn, species, file_id, channel, run):
         audio.append(samples)
 
     if not audio:
-        logger.warning(f"No audio to merge for species {species} — skipping.")
+        logger.warning(f"No audio to merge for label {label} — skipping.")
         return
 
     merged = np.concatenate(audio).astype(np.float32)
@@ -173,10 +173,10 @@ def merge_and_store(conn, species, file_id, channel, run):
         # Store merged score
         cur.execute(
             """
-            INSERT INTO sensos.merged_scores (segment_id, species, score)
+            INSERT INTO sensos.merged_scores (segment_id, label, score)
             VALUES (%s, %s, %s)
         """,
-            (merged_id, species, avg_score),
+            (merged_id, label, avg_score),
         )
 
         # Nullify raw audio from source segments
@@ -197,8 +197,8 @@ def find_human_vocal_segments(conn):
             JOIN sensos.raw_audio ra ON bs.segment_id = ra.segment_id
             JOIN sensos.audio_segments ag ON ra.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
-            WHERE bs.species = 'Human vocal'
-              AND af.path IS NOT NULL
+            WHERE bs.label = 'Human vocal'
+              AND af.file_path IS NOT NULL
             """
         )
         return cur.fetchall()
@@ -273,8 +273,8 @@ def main():
                     logger.info("No mergeable segments found.")
                 else:
                     runs = group_consecutive_segments(mergeables)
-                    for species, file_id, channel, run in runs:
-                        merge_and_store(conn, species, file_id, channel, run)
+                    for label, file_id, channel, run in runs:
+                        merge_and_store(conn, label, file_id, channel, run)
 
                 segments = find_human_vocal_segments(conn)
                 if segments:

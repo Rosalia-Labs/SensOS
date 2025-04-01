@@ -119,7 +119,8 @@ def initialize_schema():
     cursor.execute(
         f"ALTER DATABASE {os.environ['POSTGRES_DB']} SET search_path TO sensos, public;"
     )
-    # Updated audio_files table with storage_type column.
+
+    # Create tables
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.audio_files (
@@ -142,7 +143,6 @@ def initialize_schema():
         );
         """
     )
-    # Audio segments now reference audio_files.
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.audio_segments (
@@ -162,6 +162,12 @@ def initialize_schema():
         );
         """
     )
+
+    # Recommended indexes (auto-named)
+    cursor.execute("CREATE INDEX IF NOT EXISTS ON sensos.audio_files(file_path);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS ON sensos.audio_segments(file_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS ON sensos.audio_segments(t_begin);")
+
     conn.commit()
     logging.info("Database schema initialized.")
 
@@ -288,11 +294,13 @@ def process_directory():
             for file in files:
                 if not file.lower().endswith(accepted_extensions):
                     continue
+
                 file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, unprocessed_dir)
 
                 cursor.execute(
                     "SELECT id FROM sensos.audio_files WHERE file_path = %s",
-                    (file_path,),
+                    (rel_path,),
                 )
                 if cursor.fetchone() is not None:
                     logging.warning(f"File already processed: {file_path}")
@@ -327,7 +335,6 @@ def process_directory():
 
                 process_file(info, file_id)
 
-                rel_path = os.path.relpath(file_path, unprocessed_dir)
                 destination = os.path.join(processed_dir, rel_path)
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
                 try:
@@ -340,7 +347,7 @@ def process_directory():
                 try:
                     cursor.execute(
                         "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
-                        (destination, file_id),
+                        (rel_path, file_id),
                     )
                     conn.commit()
                     logging.info(
@@ -355,6 +362,69 @@ def process_directory():
         time.sleep(5)
 
 
+def restore_untracked_processed_files():
+    """
+    Scans the processed directory and moves any files that are not in the database
+    back into the unprocessed directory for reprocessing.
+    """
+    processed_dir = "/mnt/audio_recordings/processed"
+    unprocessed_dir = "/mnt/audio_recordings/unprocessed"
+    accepted_extensions = (".wav", ".mp3", ".flac", ".ogg")
+
+    logging.info("Scanning processed directory for untracked files...")
+
+    for root, dirs, files in os.walk(processed_dir):
+        for file in files:
+            if not file.lower().endswith(accepted_extensions):
+                continue
+
+            file_path = os.path.join(root, file)
+            rel_path = os.path.relpath(file_path, processed_dir)
+            dest_path = os.path.join(unprocessed_dir, rel_path)
+
+            cursor.execute(
+                "SELECT id FROM sensos.audio_files WHERE file_path = %s",
+                (rel_path,),
+            )
+
+            if cursor.fetchone() is None:
+                logging.warning(f"Restoring untracked file: {file_path}")
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                try:
+                    shutil.move(file_path, dest_path)
+                    logging.info(f"Moved {file_path} back to {dest_path}")
+                except Exception as e:
+                    logging.error(f"Failed to move {file_path} to {dest_path}: {e}")
+
+
+def convert_absolute_paths_to_relative():
+    """
+    Scans the sensos.audio_files table and converts absolute file paths under
+    /mnt/audio_recordings/processed to relative paths.
+    """
+    base_dir = os.path.abspath(PROCESSED_DIR)
+
+    cursor.execute("SELECT id, file_path FROM sensos.audio_files;")
+    updates = []
+    for row in cursor.fetchall():
+        file_id, file_path = row
+        if file_path.startswith(base_dir + os.sep):
+            rel_path = os.path.relpath(file_path, base_dir)
+            updates.append((rel_path, file_id))
+
+    for rel_path, file_id in updates:
+        cursor.execute(
+            "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s;",
+            (rel_path, file_id),
+        )
+
+    if updates:
+        conn.commit()
+        logging.info(f"Converted {len(updates)} file paths to relative.")
+    else:
+        logging.info("No file paths required conversion.")
+
+
 def cleanup():
     logging.info("Shutting down... Closing database connection.")
     cursor.close()
@@ -366,6 +436,8 @@ def cleanup():
 if __name__ == "__main__":
     logging.info("Starting file scanning mode.")
     try:
+        convert_absolute_paths_to_relative()
+        restore_untracked_processed_files()
         process_directory()
     except KeyboardInterrupt:
         cleanup()
