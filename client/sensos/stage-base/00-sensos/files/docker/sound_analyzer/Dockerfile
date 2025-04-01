@@ -1,41 +1,50 @@
 FROM debian:bookworm-slim
 
-ARG OFFLINE=false
-ENV OFFLINE=$OFFLINE
+ARG NO_LOCAL=false
+ENV NO_LOCAL=$NO_LOCAL
 
 WORKDIR /app
 
 # Set required DEBs
 ENV REQUIRED_DEBS="python3 python3-venv python3-pip libportaudio2 libpq5 libsndfile1 libopenblas0 ffmpeg"
 
+# Add offline .deb files if available
 COPY os_packages/ /os_packages/
+
 RUN set -ex; \
-    echo "📦 Attempting offline installation of packages from /os_packages..."; \
-    if [ -d /os_packages ] && ls /os_packages/*.deb >/dev/null 2>&1; then \
-    dpkg -i /os_packages/*.deb || true; \
-    dpkg --configure -a || true; \
-    else \
-    echo "🪹 No .deb files found in /os_packages or directory missing."; \
+    if [ "$NO_LOCAL" = "false" ] && [ -f /os_packages/Packages.gz ]; then \
+    echo "📦 Detected local APT repo in /os_packages, configuring..."; \
+    echo "deb [trusted=yes] file:/os_packages ./" > /etc/apt/sources.list.d/offline.list; \
     fi; \
-    if [ "$OFFLINE" = "false" ]; then \
-    echo "🌐 Not in offline mode. Ensuring required packages are installed..."; \
-    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
-    fi
+    echo "📦 Updating APT sources..."; \
+    apt-get update || true; \
+    echo "📦 Attempting standard package install..."; \
+    apt-get install -y --no-install-recommends $REQUIRED_DEBS || { \
+    echo '🧹 Primary install failed, attempting unjam sequence...'; \
+    dpkg --configure -a || true; \
+    apt-get install -f -y || true; \
+    apt-get -y --fix-broken install || true; \
+    apt-get install -y --no-install-recommends $REQUIRED_DEBS || true; \
+    }; \
+    rm -rf /var/lib/apt/lists/*
 
 # Set up virtual environment
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
-# Conditionally install Python dependencies
 COPY requirements.txt .
+
+# Conditionally copy wheels if local allowed
 COPY wheels/ /wheels/
+
 RUN set -ex; \
-    echo "📦 Attempting offline install of Python dependencies from /wheels..."; \
+    echo "📦 Installing Python dependencies..."; \
+    if [ "$NO_LOCAL" = "false" ]; then \
+    echo "📦 Trying offline wheel install from /wheels..."; \
     pip install --no-index --find-links=/wheels --prefer-binary -r requirements.txt || true; \
-    if [ "$OFFLINE" = "false" ]; then \
-    echo "🌐 Not in offline mode. Installing remaining Python dependencies from PyPI"; \
-    pip install -r requirements.txt; \
-    fi
+    fi; \
+    echo "🌐 Installing any remaining Python dependencies from PyPI..."; \
+    pip install -r requirements.txt
 
 COPY analyze-sound.py .
 CMD ["python", "analyze-sound.py"]

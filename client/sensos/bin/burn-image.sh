@@ -1,7 +1,29 @@
 #!/bin/bash
 set -euo pipefail
 
+# Default device (can be overridden with --device)
 DEVICE="/dev/rdisk4"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --device)
+        DEVICE="$2"
+        shift 2
+        ;;
+    *)
+        echo "❌ Unknown argument: $1"
+        exit 1
+        ;;
+    esac
+done
+
+# Safety check: refuse to write to main system disks
+if [[ "$DEVICE" =~ ^/dev/(sd[a]|disk0|rdisk0)$ ]]; then
+    echo "🚫 Refusing to write to system disk: $DEVICE"
+    exit 1
+fi
+
 SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PI_GEN_DIR="${SENSOS_DIR}/../pi-gen"
 DEPLOY_DIR="${PI_GEN_DIR}/deploy"
@@ -10,7 +32,10 @@ cd "$DEPLOY_DIR"
 
 # Step 1: List .img files
 echo "📂 Available images:"
-mapfile -t img_files < <(ls *.img 2>/dev/null || true)
+img_files=()
+while IFS= read -r f; do
+    img_files+=("$f")
+done < <(ls *.img 2>/dev/null || true)
 
 if [[ ${#img_files[@]} -eq 0 ]]; then
     echo "❌ No .img files found in $DEPLOY_DIR"

@@ -162,40 +162,43 @@ if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]
         # If not forcing and .deb files already exist, skip download.
         if [[ "$DOWNLOAD_OS_PACKAGES" != "force" && -n "$(find "$os_pkg_dir" -name '*.deb' 2>/dev/null)" ]]; then
             echo "✅ OS packages already exist in $os_pkg_dir, skipping download."
-            continue
+        else
+            echo "🔍 Scanning $dockerfile for APT packages..."
+            contents=$(awk '{ if (sub(/\\$/, "")) { line = line $0 } else { print line $0; line = "" } }' "$dockerfile")
+            APT_PACKAGES=()
+
+            matches=$(echo "$contents" | grep -E '^ENV[[:space:]]+REQUIRED_DEBS=')
+            while IFS= read -r line; do
+                pkgs=$(echo "$line" | sed -E 's/^ENV[[:space:]]+REQUIRED_DEBS="([^"]*)".*/\1/')
+                APT_PACKAGES+=($pkgs)
+            done <<<"$matches"
+
+            echo "⬇️ Downloading .deb packages with full dependencies to $os_pkg_dir..."
+
+            # Extract base image from the Dockerfile
+            BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' "$dockerfile")
+
+            if [[ -z "$BASE_IMAGE" ]]; then
+                echo "❌ Could not determine base image from $dockerfile"
+                continue
+            fi
+
+            docker run --rm --platform linux/arm64 \
+                -v "$os_pkg_dir":/debs \
+                "$BASE_IMAGE" bash -c "\
+                apt-get update && \
+                apt-get install --reinstall --download-only -y --no-install-recommends \
+                    apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
+                apt-get install --reinstall --download-only -y --no-install-recommends ${APT_PACKAGES[*]} && \
+                cp -a /var/cache/apt/archives/*.deb /debs"
         fi
 
-        echo "🔍 Scanning $dockerfile for APT packages..."
-        contents=$(awk '{ if (sub(/\\$/, "")) { line = line $0 } else { print line $0; line = "" } }' "$dockerfile")
-        APT_PACKAGES=()
-
-        matches=$(echo "$contents" | grep -E '^ENV[[:space:]]+REQUIRED_DEBS=')
-        while IFS= read -r line; do
-            pkgs=$(echo "$line" | sed -E 's/^ENV[[:space:]]+REQUIRED_DEBS="([^"]*)".*/\1/')
-            APT_PACKAGES+=($pkgs)
-        done <<<"$matches"
-
-        echo "⬇️ Downloading .deb packages with full dependencies to $os_pkg_dir..."
-
-        # Extract base image from the Dockerfile
-        BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' "$dockerfile")
-
-        if [[ -z "$BASE_IMAGE" ]]; then
-            echo "❌ Could not determine base image from $dockerfile"
-            continue
-        fi
-
-        docker run --rm --platform linux/arm64 \
-            -v "$os_pkg_dir":/debs \
-            "$BASE_IMAGE" bash -c "\
-        apt-get update && \
-        apt-get install --reinstall --download-only -y --no-install-recommends \
-            apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
-        apt-get install --reinstall --download-only -y --no-install-recommends ${APT_PACKAGES[*]} && \
-        cp -a /var/cache/apt/archives/*.deb /debs"
+        echo "📦 Generating local APT repo metadata in $os_pkg_dir..."
+        docker run --rm -v "$os_pkg_dir":/debs "$BASE_IMAGE" \
+            bash -c "apt-get update && apt-get install -y dpkg-dev && cd /debs && dpkg-scanpackages . /dev/null | gzip -c > Packages.gz"
 
     done
-    echo "✅ OS packages download complete."
+    echo "✅ OS packages download and repository generation complete."
 fi
 
 echo "Copying custom stage to pi-gen..."

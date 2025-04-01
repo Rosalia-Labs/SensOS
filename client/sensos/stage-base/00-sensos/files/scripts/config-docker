@@ -34,7 +34,7 @@ docker_compose_dir=$(get_default docker_compose_dir "/sensos/docker")
 arecord_conf=$(get_default arecord_conf "/sensos/etc/arecord.conf")
 enable_service=$(get_default enable_service "true")
 start_service=$(get_default start_service "true")
-offline=$(get_default offline "false")
+no_local=$(get_default no_local "false")
 
 usage() {
     cat <<EOF
@@ -51,7 +51,7 @@ Options:
   --audio-format <value>      Set ALSA audio format code
   --enable-service <true|false>  Enable sensos-docker.service (default: true)
   --start-service <true|false>   Start sensos-docker.service (default: true)
-  --offline                   Build without internet access (sets OFFLINE=true)
+  --no-local                   Build without internet access (sets NO_LOCAL=true)
   --help                      Show this help message
 EOF
 }
@@ -99,8 +99,8 @@ while [[ "$#" -gt 0 ]]; do
         start_service="$2"
         shift 2
         ;;
-    --offline | --no-internet)
-        offline="true"
+    --no-local)
+        no-local="true"
         shift
         ;;
     --help)
@@ -144,7 +144,7 @@ DB_PORT=${db_port}
 DB_DATA_PATH=${db_data_path}
 AUDIO_DIRECTORY=${audio_directory}
 AUDIO_FORMAT_CODE=${audio_format_code}
-OFFLINE=${offline}
+NO_LOCAL=${no_local}
 EOF
 
 echo ".env written to $env_file:"

@@ -1,7 +1,7 @@
 FROM postgres:17-bookworm
 
-ARG OFFLINE=false
-ENV OFFLINE=$OFFLINE
+ARG NO_LOCAL=false
+ENV NO_LOCAL=$NO_LOCAL
 
 WORKDIR /app
 
@@ -9,18 +9,23 @@ WORKDIR /app
 ENV REQUIRED_DEBS="postgresql-postgis postgresql-17-pgvector"
 
 COPY os_packages/ /os_packages/
+
 RUN set -ex; \
-    echo "📦 Attempting offline installation of packages from /os_packages..."; \
-    if [ -d /os_packages ] && ls /os_packages/*.deb >/dev/null 2>&1; then \
-    dpkg -i /os_packages/*.deb || true; \
-    dpkg --configure -a || true; \
-    else \
-    echo "🪹 No .deb files found in /os_packages or directory missing."; \
+    if [ "$NO_LOCAL" = "false" ] && [ -f /os_packages/Packages.gz ]; then \
+    echo "📦 Detected local APT repo in /os_packages, configuring..."; \
+    echo "deb [trusted=yes] file:/os_packages ./" > /etc/apt/sources.list.d/offline.list; \
     fi; \
-    if [ "$OFFLINE" = "false" ]; then \
-    echo "🌐 Not in offline mode. Ensuring required packages are installed..."; \
-    apt-get update && apt-get install -y --no-install-recommends $REQUIRED_DEBS && rm -rf /var/lib/apt/lists/*; \
-    fi
+    echo "📦 Updating APT sources..."; \
+    apt-get update || true; \
+    echo "📦 Attempting standard package install..."; \
+    apt-get install -y --no-install-recommends $REQUIRED_DEBS || { \
+    echo '🧹 Primary install failed, attempting unjam sequence...'; \
+    dpkg --configure -a || true; \
+    apt-get install -f -y || true; \
+    apt-get -y --fix-broken install || true; \
+    apt-get install -y --no-install-recommends $REQUIRED_DEBS || true; \
+    }; \
+    rm -rf /var/lib/apt/lists/*
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["postgres"]
