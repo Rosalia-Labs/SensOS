@@ -3,51 +3,33 @@
 # config-sensos-storage
 #
 # Mounts external storage to /sensos/data, with safeguards.
-#
-
-DATA_MOUNT="/sensos/data"
-PERMANENT=false
-DEVICE=""
-DEVICE_HINT=""
-SKIP_FSTAB=false
 
 script_name=$(basename "$0")
+DATA_MOUNT="/sensos/data"
 
-# Load from defaults.conf
-if [[ -f /sensos/lib/load-defaults.sh ]]; then
-    source /sensos/lib/load-defaults.sh
-    declare -A default_vars
-    load_defaults "$script_name" default_vars
-    DEVICE_HINT="${default_vars[device_hint]:-}"
-fi
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
 
-usage() {
-    cat <<EOF
-Usage: $0 [options]
+declare -A default_vars
+load_defaults "$script_name" default_vars
 
-Options:
-  --device <path>       Specify device manually (e.g., /dev/sda or /dev/nvme0n1)
-  --help                Show this help message
-EOF
-    exit 0
+get_default() {
+    local varname="$1"
+    local fallback="$2"
+    echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Parse command-line options
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --device)
-        DEVICE="$2"
-        shift 2
-        ;;
-    --help)
-        usage
-        ;;
-    *)
-        echo "Unknown option: $1" >&2
-        usage
-        ;;
-    esac
-done
+# Register configurable switches
+register_option --device "Block device to format/mount" "$(get_default device)"
+
+# Parse CLI
+parse_switches "$script_name" "$@"
+
+# Validate
+if [[ -z "$device" ]]; then
+    echo "❌ --device must be specified."
+    exit 1
+fi
 
 has_partition_table() {
     local device="$1"

@@ -6,142 +6,48 @@ config_dir="/sensos/etc"
 config_file="$config_dir/wifi_access_point.conf"
 log_dir="/sensos/log"
 
-# Load defaults if available
-if [[ -f /sensos/lib/load-defaults.sh ]]; then
-    source /sensos/lib/load-defaults.sh
-    declare -A default_vars
-    load_defaults "$script_name" default_vars
-fi
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
 
-# Helper to get override or fallback
+declare -A default_vars
+load_defaults "$script_name" default_vars
+
 get_default() {
     local varname="$1"
     local fallback="$2"
-    if [[ -n "${default_vars[$varname]:-}" ]]; then
-        echo "${default_vars[$varname]}"
-    else
-        echo "$fallback"
-    fi
+    echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Defaults (overridable)
-ssid=$(get_default ssid "")
-password=$(get_default password "")
-interface=$(get_default interface "")
-band=$(get_default band "")
-channel=$(get_default channel "")
-country_code=$(get_default country_code "")
-low_txpower=$(get_default low_txpower "false")
-power_save=$(get_default power_save "false")
-limit_width=$(get_default limit_width "false")
-beacon_interval=$(get_default beacon_interval "false")
-enable_service=$(get_default enable_service "true")
-start_service=$(get_default start_service "true")
+# Register options
+register_option --ssid "WiFi SSID (required)" "$(get_default ssid)"
+register_option --password "WiFi password (8–63 chars, required)" "$(get_default password)"
+register_option --interface "WiFi interface name" "$(get_default interface)"
+register_option --band "WiFi band (e.g., bg, a)" "$(get_default band)"
+register_option --channel "WiFi channel" "$(get_default channel)"
+register_option --country-code "ISO country code" "$(get_default country_code)"
+register_option --low-txpower "Reduce transmit power" "$(get_default low_txpower false)"
+register_option --power-save "Enable WiFi power management" "$(get_default power_save false)"
+register_option --limit-width "Limit channel width to 20MHz" "$(get_default limit_width false)"
+register_option --beacon-interval "Increase beacon interval" "$(get_default beacon_interval false)"
+register_option --enable-service "Enable wifi-access-point.service" "$(get_default enable_service true)"
+register_option --start-service "Start wifi-access-point.service" "$(get_default start_service false)"
 
-# Ensure necessary directories exist
-mkdir -p "$config_dir"
-mkdir -p "$log_dir"
+# Parse CLI
+parse_switches "$script_name" "$@"
 
-# Usage
-usage() {
-    cat <<EOF
-Usage: $0 --ssid SSID --password PASSWORD [options]
-
-Required options:
-  --ssid SSID                Set the WiFi SSID
-  --password PASSWORD        Set the WiFi password (8-63 chars)
-
-Optional network settings:
-  --interface IFACE          Set WiFi interface
-  --band BAND                Set WiFi band (e.g., bg, a)
-  --channel CHANNEL          Set channel
-  --country CODE             Set ISO country code
-
-Power-saving options:
-  --low-txpower              Reduce transmit power
-  --power-save               Enable WiFi power management
-  --limit-width              Limit channel width to 20MHz
-  --beacon-interval          Increase beacon interval
-
-Service options:
-  --enable-service true|false   Enable wifi-access-point.service (default: true)
-  --start-service true|false    Start wifi-access-point.service (default: true)
-
-Other:
-  --help                    Show this help message
-EOF
-    exit 1
-}
-
-# Parse CLI args
-while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-    --ssid)
-        ssid="$2"
-        shift 2
-        ;;
-    --password)
-        password="$2"
-        shift 2
-        ;;
-    --interface)
-        interface="$2"
-        shift 2
-        ;;
-    --band)
-        band="$2"
-        shift 2
-        ;;
-    --channel)
-        channel="$2"
-        shift 2
-        ;;
-    --country)
-        country_code="$2"
-        shift 2
-        ;;
-    --low-txpower)
-        low_txpower="true"
-        shift
-        ;;
-    --power-save)
-        power_save="true"
-        shift
-        ;;
-    --limit-width)
-        limit_width="true"
-        shift
-        ;;
-    --beacon-interval)
-        beacon_interval="true"
-        shift
-        ;;
-    --enable-service)
-        enable_service="$2"
-        shift 2
-        ;;
-    --start-service)
-        start_service="$2"
-        shift 2
-        ;;
-    --help) usage ;;
-    *)
-        echo "Unknown option: $1"
-        usage
-        ;;
-    esac
-done
-
-# Validate required arguments
+# Validate required args
 if [[ -z "$ssid" || -z "$password" ]]; then
     echo "ERROR: Both --ssid and --password are required."
-    usage
+    exit 1
 fi
 
 if [[ ${#password} -lt 8 || ${#password} -gt 63 ]]; then
     echo "ERROR: WPA2 password must be between 8 and 63 characters."
     exit 1
 fi
+
+# Ensure necessary directories exist
+mkdir -p "$config_dir" "$log_dir"
 
 # Write config file
 {
@@ -171,12 +77,13 @@ if [[ "$enable_service" == "true" ]]; then
     sudo systemctl disable --now auto-hotspot.service || true
     echo "Enabling wifi-access-point.service..."
     sudo systemctl enable wifi-access-point.service
+    echo "Enabling ssh.service..."
+    sudo systemctl enable ssh
 fi
 
 if [[ "$start_service" == "true" ]]; then
     echo "Starting wifi-access-point.service..."
     sudo systemctl restart wifi-access-point.service
     echo "Starting SSH service..."
-    sudo systemctl enable ssh
     sudo systemctl start ssh
 fi

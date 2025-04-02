@@ -3,130 +3,46 @@ set -e
 
 script_name=$(basename "$0")
 
-# Load default overrides
-if [[ -f /sensos/lib/load-defaults.sh ]]; then
-    source /sensos/lib/load-defaults.sh
-    declare -A default_vars
-    load_defaults "$script_name" default_vars
-fi
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
 
-# Helper to get value with optional override
+declare -A default_vars
+load_defaults "$script_name" default_vars
+
 get_default() {
     local varname="$1"
     local fallback="$2"
-    if [[ -n "${default_vars[$varname]:-}" ]]; then
-        echo "${default_vars[$varname]}"
-    else
-        echo "$fallback"
-    fi
+    echo "${default_vars[$varname]:-$fallback}"
 }
-
-# Defaults (overridable)
-postgres_db=$(get_default postgres_db "postgres")
-postgres_user=$(get_default postgres_user "postgres")
-postgres_password=$(get_default postgres_password "sensos")
-db_host=$(get_default db_host "sensos-client-database")
-db_port=$(get_default db_port "5432")
-db_data_path=$(get_default db_data_path "sensos-db-data")
-audio_directory=$(get_default audio_directory "")
-audio_format_code=$(get_default audio_format_code "")
-docker_compose_dir=$(get_default docker_compose_dir "/sensos/docker")
-arecord_conf=$(get_default arecord_conf "/sensos/etc/arecord.conf")
-enable_service=$(get_default enable_service "true")
-start_service=$(get_default start_service "true")
-no_local=$(get_default no_local "false")
-
-usage() {
-    cat <<EOF
-Usage: $0 [options]
-
-Options:
-  --postgres-db <value>       Set database name
-  --postgres-user <value>     Set database user
-  --postgres-password <value> Set database password
-  --db-host <value>           Set database host
-  --db-port <value>           Set database port
-  --db-data-path <value>      Set Docker volume path
-  --audio-directory <value>   Set path for audio files
-  --audio-format <value>      Set ALSA audio format code
-  --enable-service <true|false>  Enable sensos-docker.service (default: true)
-  --start-service <true|false>   Start sensos-docker.service (default: true)
-  --no-local                   Build without internet access (sets NO_LOCAL=true)
-  --help                      Show this help message
-EOF
-}
-
-# Parse CLI overrides
-while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-    --postgres-db)
-        postgres_db="$2"
-        shift 2
-        ;;
-    --postgres-user)
-        postgres_user="$2"
-        shift 2
-        ;;
-    --postgres-password)
-        postgres_password="$2"
-        shift 2
-        ;;
-    --db-host)
-        db_host="$2"
-        shift 2
-        ;;
-    --db-port)
-        db_port="$2"
-        shift 2
-        ;;
-    --db-data-path)
-        db_data_path="$2"
-        shift 2
-        ;;
-    --audio-directory)
-        audio_directory="$2"
-        shift 2
-        ;;
-    --audio-format)
-        audio_format_code="$2"
-        shift 2
-        ;;
-    --enable-service)
-        enable_service="$2"
-        shift 2
-        ;;
-    --start-service)
-        start_service="$2"
-        shift 2
-        ;;
-    --no-local)
-        no-local="true"
-        shift
-        ;;
-    --help)
-        usage
-        exit 0
-        ;;
-    *)
-        echo "Unknown option: $1"
-        usage
-        exit 1
-        ;;
-    esac
-done
 
 # Load values from arecord.conf if available
 if [[ -f "$arecord_conf" ]]; then
     echo "Reading config from $arecord_conf..."
-    [[ -z "$audio_directory" ]] && audio_directory=$(grep '^BASE_DIR=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
-    [[ -z "$audio_format_code" ]] && audio_format_code=$(grep '^FORMAT=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
+    audio_directory=$(grep '^BASE_DIR=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
+    audio_format_code=$(grep '^FORMAT=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
 fi
 
 # Final fallbacks
 audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
 audio_format_code="${audio_format_code:-S32_LE}"
 
+# Register expected options and help strings
+register_option --postgres-db "Set database name" "$(get_default postgres_db postgres)"
+register_option --postgres-user "Set database user" "$(get_default postgres_user postgres)"
+register_option --postgres-password "Set database password" "$(get_default postgres_password sensos)"
+register_option --db-host "Set database host" "$(get_default db_host sensos-client-database)"
+register_option --db-port "Set database port" "$(get_default db_port 5432)"
+register_option --db-data-path "Set Docker volume path" "$(get_default db_data_path /sensos/data/database)"
+register_option --audio-directory "Path for audio files" "$(get_default audio_directory)"
+register_option --audio-format "ALSA audio format code" "$(get_default audio_format_code)"
+register_option --enable-service "Enable systemd service" "$(get_default enable_service true)"
+register_option --start-service "Start systemd service" "$(get_default start_service false)"
+register_option --no-local "Build without internet" "$(get_default no_local false)"
+
+parse_switches "$script_name" "$@"
+
 # Ensure output directory exists
+docker_compose_dir=/sensos/docker
 mkdir -p "$docker_compose_dir"
 if [[ ! -w "$docker_compose_dir" ]]; then
     echo "ERROR: Cannot write to $docker_compose_dir"

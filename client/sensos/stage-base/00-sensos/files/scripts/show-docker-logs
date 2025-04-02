@@ -1,2 +1,4 @@
-#!/bin/bash -e
-sudo exec journalctl -u sensos-docker $@
+#!/bin/bash
+set -e
+
+exec sudo journalctl -u sensos-docker -f

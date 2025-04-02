@@ -199,11 +199,11 @@ if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]
                     apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
                 apt-get install --reinstall --download-only -y --no-install-recommends ${APT_PACKAGES[*]} && \
                 cp -a /var/cache/apt/archives/*.deb /debs"
-        fi
 
-        echo "📦 Generating local APT repo metadata in $os_pkg_dir..."
-        docker run --rm -v "$os_pkg_dir":/debs "$BASE_IMAGE" \
-            bash -c "apt-get update && apt-get install -y dpkg-dev && cd /debs && dpkg-scanpackages . /dev/null | gzip -c > Packages.gz"
+            echo "📦 Generating local APT repo metadata in $os_pkg_dir..."
+            docker run --rm -v "$os_pkg_dir":/debs "$BASE_IMAGE" \
+                bash -c "apt-get update && apt-get install -y dpkg-dev && cd /debs && dpkg-scanpackages . /dev/null | gzip -c > Packages.gz"
+        fi
 
     done
     echo "✅ OS packages download and repository generation complete."

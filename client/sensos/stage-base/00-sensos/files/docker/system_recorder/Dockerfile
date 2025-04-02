@@ -8,9 +8,6 @@ WORKDIR /app
 # Set required DEBs
 ENV REQUIRED_DEBS="python3 python3-venv python3-pip python3-psycopg"
 
-# Add offline .deb files if available
-COPY os_packages/ /os_packages/
-
 RUN set -ex; \
     if [ "$NO_LOCAL" = "false" ] && [ -f /os_packages/Packages.gz ]; then \
     echo "📦 Detected local APT repo in /os_packages, configuring..."; \
@@ -28,5 +25,6 @@ RUN set -ex; \
     }; \
     rm -rf /var/lib/apt/lists/*
 
+
 COPY system-recorder.py .
-CMD ["python", "capture-audio.py"]
+CMD ["python", "system-recorder.py"]

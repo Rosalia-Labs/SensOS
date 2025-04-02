@@ -7,9 +7,6 @@ WORKDIR /app
 
 ENV REQUIRED_DEBS="python3 python3-venv python3-pip libpq5 libsndfile1 libopenblas0 ffmpeg"
 
-# Add offline .deb files if available
-COPY os_packages/ /os_packages/
-
 RUN set -ex; \
     if [ "$NO_LOCAL" = "false" ] && [ -f /os_packages/Packages.gz ]; then \
     echo "📦 Detected local APT repo in /os_packages, configuring..."; \
@@ -33,12 +30,9 @@ ENV PATH="/app/venv/bin:$PATH"
 
 COPY requirements.txt .
 
-# Conditionally copy wheels if local allowed
-COPY wheels/ /wheels/
-
 RUN set -ex; \
     echo "📦 Installing Python dependencies..."; \
-    if [ "$NO_LOCAL" = "false" ]; then \
+    if [ "$NO_LOCAL" = "false" ] && [ -d /wheels ]; then \
     echo "📦 Trying offline wheel install from /wheels..."; \
     pip install --no-index --find-links=/wheels --prefer-binary -r requirements.txt || true; \
     fi; \

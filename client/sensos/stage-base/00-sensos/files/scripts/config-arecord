@@ -1,108 +1,34 @@
 #!/bin/bash
 # config-arecord.sh: Write arecord configuration to /sensos/etc
-
 set -e
 
 script_name=$(basename "$0")
 
-Usage() {
-    cat <<EOF
-Usage: $0 [options]
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
 
-Optional (interactive if omitted):
-  --device DEVICE         Recording device string (e.g., plughw:1,0)
-  --use-plughw BOOL       Use plughw instead of hw (default: true)
-  --channels CHANNELS     Channel count (e.g., 2)
-  --max-time SECONDS      Max duration per file (default: 900)
-  --format FORMAT         Recording format (e.g., S16_LE)
-  --rate RATE             Sample rate in Hz (default: 48000)
-  --no-enable-service     Do not enable the systemd service (implies --no-start-service)
-  --no-start-service      Do not start the systemd service
-  --base-dir DIR          Base directory for sound files (default: /sensos/data/audio_recordings/)
-  --help                  Show this help message
-EOF
+declare -A default_vars
+load_defaults "$script_name" default_vars
+
+get_default() {
+    local varname="$1"
+    local fallback="$2"
+    echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Built-in defaults
-device=""
-format=""
-channels=""
-rate=""
-max_time="900"
-base_dir="/sensos/data/audio_recordings/"
-enable_service="true"
-start_service="true"
-use_plughw="true"
+# Register CLI options
+register_option --device "Recording device string (e.g., plughw:1,0)" "$(get_default device)"
+register_option --use-plughw "Use plughw instead of hw" "$(get_default use_plughw true)"
+register_option --channels "Channel count (e.g., 2)" "$(get_default channels)"
+register_option --max-time "Max duration per file" "$(get_default max_time 900)"
+register_option --format "Recording format (e.g., S16_LE)" "$(get_default format)"
+register_option --rate "Sample rate in Hz" "$(get_default rate 48000)"
+register_option --base-dir "Base directory for sound files" "$(get_default base_dir /sensos/data/audio_recordings/)"
+register_option --enable-service "Enable systemd service" "$(get_default enable_service true)"
+register_option --start-service "Start systemd service" "$(get_default start_service false)"
 
-# Parse command-line arguments
-TEMP=$(getopt -o "" \
-    --long device:,format:,channels:,rate:,max-time:,base-dir:,no-enable-service,no-start-service,use-plughw:,help \
-    -n 'config-arecord.sh' -- "$@")
-if [ $? != 0 ]; then
-    Usage
-    exit 1
-fi
-eval set -- "$TEMP"
-
-while true; do
-    case "$1" in
-    --device)
-        device="$2"
-        shift 2
-        ;;
-    --format)
-        format="$2"
-        shift 2
-        ;;
-    --channels)
-        channels="$2"
-        shift 2
-        ;;
-    --rate)
-        rate="$2"
-        shift 2
-        ;;
-    --max-time)
-        max_time="$2"
-        shift 2
-        ;;
-    --base-dir)
-        base_dir="$2"
-        shift 2
-        ;;
-    --no-enable-service)
-        enable_service="false"
-        start_service="false"
-        shift
-        ;;
-    --no-start-service)
-        start_service="false"
-        shift
-        ;;
-    --use-plughw)
-        use_plughw="$2"
-        shift 2
-        ;;
-    --help)
-        Usage
-        exit 0
-        ;;
-    --)
-        shift
-        break
-        ;;
-    *)
-        echo "Unknown option: $1"
-        Usage
-        exit 1
-        ;;
-    esac
-done
-
-if [ -f /sensos/lib/load-defaults.sh ]; then
-    source /sensos/lib/load-defaults.sh
-    load_defaults /sensos/etc/defaults.conf "$script_name"
-fi
+# Parse args
+parse_switches "$script_name" "$@"
 
 get_hw_params() {
     local device="$1"

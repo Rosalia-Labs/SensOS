@@ -5,88 +5,39 @@ script_name=$(basename "$0")
 config_dir="/sensos/etc"
 config_file="$config_dir/sensos_modem.conf"
 
-# Load default overrides
-if [[ -f /sensos/lib/load-defaults.sh ]]; then
-    source /sensos/lib/load-defaults.sh
-    declare -A default_vars
-    load_defaults "$script_name" default_vars
-fi
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
 
-# Helper: get value with optional fallback
+declare -A default_vars
+load_defaults "$script_name" default_vars
+
 get_default() {
     local varname="$1"
     local fallback="$2"
-    if [[ -n "${default_vars[$varname]:-}" ]]; then
-        echo "${default_vars[$varname]}"
-    else
-        echo "$fallback"
-    fi
+    echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Defaults (overridable via config or CLI)
-service=""
-modem_iface=$(get_default modem_iface "wwan0")
-modem_internal_name=$(get_default modem_internal_name "cdc-wdm0")
-enable_service=$(get_default enable_service "true")
-start_service=$(get_default start_service "true")
+# Register options
+register_option --service "Modem service name (required, e.g. 1nce)" "$(get_default service)"
+register_option --modem-iface "Modem network interface" "$(get_default modem_iface wwan0)"
+register_option --modem-internal-name "Internal modem name" "$(get_default modem_internal_name cdc-wdm0)"
+register_option --enable-service "Enable sensos-modem.service" "$(get_default enable_service true)"
+register_option --start-service "Start sensos-modem.service" "$(get_default start_service false)"
 
-usage() {
-    cat <<EOF
-Usage: $0 --service <1nce|...> [options]
-
-Options:
-  --service <name>              Required modem service name (e.g., 1nce)
-  --modem-iface <iface>         Modem network interface (default: wwan0)
-  --modem-internal-name <name>  Internal modem name (default: cdc-wdm0)
-  --enable-service <true|false> Whether to enable sensos-modem.service (default: true)
-  --start-service <true|false>  Whether to start sensos-modem.service (default: true)
-  --help                        Show this help message
-EOF
-    exit 1
-}
-
-# Parse CLI arguments
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --service)
-        service="$2"
-        shift 2
-        ;;
-    --modem-iface)
-        modem_iface="$2"
-        shift 2
-        ;;
-    --modem-internal-name)
-        modem_internal_name="$2"
-        shift 2
-        ;;
-    --enable-service)
-        enable_service="$2"
-        shift 2
-        ;;
-    --start-service)
-        start_service="$2"
-        shift 2
-        ;;
-    --help) usage ;;
-    *)
-        echo "Unknown option: $1"
-        usage
-        ;;
-    esac
-done
+# Parse CLI
+parse_switches "$script_name" "$@"
 
 # Validate required argument
 if [[ -z "$service" ]]; then
-    echo "Error: --service must be specified."
-    usage
+    echo "ERROR: --service must be specified."
+    exit 1
 fi
 
 # Map service to APN
 case "$service" in
 1nce) apn="iot.1nce.net" ;;
 *)
-    echo "Error: Unsupported service '$service'"
+    echo "ERROR: Unsupported service '$service'"
     exit 1
     ;;
 esac

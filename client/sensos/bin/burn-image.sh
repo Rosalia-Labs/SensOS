@@ -71,7 +71,7 @@ echo "📤 Unmounting $DEVICE..."
 diskutil unmountDisk "$DEVICE"
 
 echo "📝 Writing $IMAGE to $DEVICE..."
-sudo dd if="$IMAGE" of="$DEVICE" bs=1G status=progress conv=sync
+sudo dd if="$IMAGE" of="$DEVICE" bs=4m status=progress conv=sync
 
 echo "💿 Ejecting $DEVICE..."
 diskutil eject "$DEVICE"

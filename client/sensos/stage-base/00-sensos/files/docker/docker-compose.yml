@@ -13,6 +13,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ${DB_DATA_PATH}:/var/lib/postgresql/data
+      - os_packages:/os_packages
+      - wheels:/wheels
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -38,6 +40,8 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - os_packages:/os_packages
+      - wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -60,6 +64,9 @@ services:
       AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+    volumes:
+      - os_packages:/os_packages
+      - wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -82,6 +89,9 @@ services:
       AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+    volumes:
+      - os_packages:/os_packages
+      - wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -106,6 +116,8 @@ services:
       AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - os_packages:/os_packages
+      - wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -134,6 +146,8 @@ services:
       - /sys:/host/sys:ro
       - /:/host/rootfs:ro
       - /sensos/data:/sensos/data:ro
+      - os_packages:/os_packages
+      - wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
