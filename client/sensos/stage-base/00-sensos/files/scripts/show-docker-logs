@@ -1,3 +1,2 @@
 #!/bin/bash -e
-cd /sensos/docker
-docker compose logs -f $@
+sudo exec journalctl -u sensos-docker $@

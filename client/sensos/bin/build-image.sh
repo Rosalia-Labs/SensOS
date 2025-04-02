@@ -121,14 +121,18 @@ if [ "$CLEAN_OS_PACKAGES" = true ]; then
     find "$STAGE_SRC/files/docker" -type f -name '*.deb' -exec rm -f {} +
 fi
 
-if [ "$DOWNLOAD_WHEELS" = "true" ] || [ "$DOWNLOAD_WHEELS" = "force" ]; then
-    echo "Finding all requirements.txt files..."
-    REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
+echo "Finding all requirements.txt files..."
+REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
+for req in $REQUIREMENTS_LIST; do
+    req_dir=$(dirname "$req")
+    wheels_dir="$req_dir/wheels"
+    mkdir -p "$wheels_dir"
+done
 
+if [ "$DOWNLOAD_WHEELS" = "true" ] || [ "$DOWNLOAD_WHEELS" = "force" ]; then
     for req in $REQUIREMENTS_LIST; do
         req_dir=$(dirname "$req")
         wheels_dir="$req_dir/wheels"
-        mkdir -p "$wheels_dir"
         rel_path="${req#$SENSOS_DIR/}"
         echo "📦 Checking wheels for: $rel_path → $wheels_dir"
 
@@ -149,14 +153,18 @@ if [ "$DOWNLOAD_WHEELS" = "true" ] || [ "$DOWNLOAD_WHEELS" = "force" ]; then
     echo "✅ All wheels downloaded."
 fi
 
-if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]; then
-    echo "Finding all Dockerfiles..."
-    DOCKERFILES=$(find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -name 'Dockerfile')
+echo "Finding all Dockerfiles..."
+DOCKERFILES=$(find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -name 'Dockerfile')
+for dockerfile in $DOCKERFILES; do
+    pkg_dir=$(dirname "$dockerfile")
+    os_pkg_dir="$pkg_dir/os_packages"
+    mkdir -p "$os_pkg_dir"
+done
 
+if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]; then
     for dockerfile in $DOCKERFILES; do
         pkg_dir=$(dirname "$dockerfile")
         os_pkg_dir="$pkg_dir/os_packages"
-        mkdir -p "$os_pkg_dir"
         echo "Processing OS packages for directory: $pkg_dir"
 
         # If not forcing and .deb files already exist, skip download.

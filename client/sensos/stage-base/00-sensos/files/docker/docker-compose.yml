@@ -113,7 +113,7 @@ services:
 
   sensos-system-recorder:
     build:
-      context: ./system-recorder
+      context: ./system_recorder
       platforms: [linux/arm64]
       args:
         NO_LOCAL: ${NO_LOCAL:-false}
