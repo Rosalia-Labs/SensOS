@@ -164,9 +164,15 @@ def initialize_schema():
     )
 
     # Recommended indexes (auto-named)
-    cursor.execute("CREATE INDEX IF NOT EXISTS ON sensos.audio_files(file_path);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS ON sensos.audio_segments(file_id);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS ON sensos.audio_segments(t_begin);")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS audio_files_file_path_index ON sensos.audio_files(file_path);"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS audio_segments_file_id_index ON sensos.audio_segments(file_id);"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS audio_segments_t_begin_index ON sensos.audio_segments(t_begin);"
+    )
 
     conn.commit()
     logging.info("Database schema initialized.")
