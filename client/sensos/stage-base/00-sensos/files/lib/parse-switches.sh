@@ -17,7 +17,9 @@ register_option() {
     __cli_options_defaults["$varname"]="$default"
 
     # Set initial value
-    declare -g "$varname=$default"
+    declare -g "$varname"
+    eval "$varname=\"\$val\""
+
 }
 
 parse_switches() {
