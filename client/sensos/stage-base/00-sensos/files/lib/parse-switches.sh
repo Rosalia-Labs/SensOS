@@ -19,7 +19,6 @@ register_option() {
     # Set initial value
     declare -g "$varname"
     eval "$varname=\"\$val\""
-
 }
 
 parse_switches() {
