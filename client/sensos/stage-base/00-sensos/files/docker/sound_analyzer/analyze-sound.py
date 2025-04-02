@@ -167,12 +167,14 @@ def format_audio_data(audio_bytes, storage_type):
 
 
 def get_unprocessed_segments(conn):
-    logger.debug("Querying unprocessed segments from database...")
+    logger.debug("Streaming unprocessed segments from database...")
     if MOCK_DATA:
         logger.info("MOCK_DATA enabled: generating 3 fake segments.")
-        # Fake segments: segment_id values 1,2,3; audio_bytes is None; storage_type is set to 'int16'
-        return [(i, None, "int16") for i in range(1, 4)]
-    with conn.cursor() as cur:
+        for i in range(1, 4):
+            yield (i, None, "int16")
+        return
+
+    with conn.cursor(name="segment_cursor") as cur:
         cur.execute(
             """
             SELECT ra.segment_id, ra.data, af.storage_type
@@ -183,9 +185,8 @@ def get_unprocessed_segments(conn):
             WHERE ss.segment_id IS NULL;
             """
         )
-        results = cur.fetchall()
-    logger.info(f"Retrieved {len(results)} unprocessed segments.")
-    return results
+        for row in cur:
+            yield row
 
 
 def store_sound_statistics(
@@ -269,17 +270,14 @@ def main():
 
     while True:
         print("🔎 Checking for new raw audio segments to analyze...")
-        segments = get_unprocessed_segments(conn)
+        found = False
 
-        if not segments:
-            print("😴 No new segments found. Sleeping for 5 seconds...")
-            time.sleep(5)
-            continue
-
-        for segment_id, audio_bytes, stored_dtype in segments:
+        for segment_id, audio_bytes, stored_dtype in get_unprocessed_segments(conn):
+            found = True
             logger.info(
                 f"Processing segment {segment_id} (storage_type: {stored_dtype})"
             )
+
             if MOCK_DATA:
                 # Generate fake audio data
                 audio_np = np.random.uniform(-1, 1, size=SEGMENT_SIZE).astype(
@@ -306,9 +304,13 @@ def main():
                 bioacoustic_spectrum,
             )
 
-        print("✅ Batch complete. Sleeping for 5 seconds...")
-        logger.info("Batch complete. Sleeping...")
-        time.sleep(5)
+        if not found:
+            print("😴 No new segments found. Sleeping for 5 seconds...")
+            time.sleep(5)
+        else:
+            print("✅ Batch complete. Sleeping for 5 seconds...")
+            logger.info("Batch complete. Sleeping...")
+            time.sleep(5)
 
 
 if __name__ == "__main__":

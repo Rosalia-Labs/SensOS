@@ -74,8 +74,8 @@ def initialize_schema(conn):
         )
 
 
-def find_mergeable_segments(conn):
-    with conn.cursor() as cur:
+def find_mergeable_groups(conn):
+    with conn.cursor(name="mergeable_cursor") as cur:
         cur.execute(
             """
             SELECT
@@ -85,17 +85,27 @@ def find_mergeable_segments(conn):
                 ag.id AS segment_id,
                 ag.t_begin,
                 ag.t_end,
-                ra.data,
                 bs.score
             FROM sensos.birdnet_scores bs
-            JOIN sensos.raw_audio ra ON bs.segment_id = ra.segment_id
-            JOIN sensos.audio_segments ag ON ra.segment_id = ag.id
+            JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
-            WHERE ra.data IS NOT NULL
+            WHERE EXISTS (
+                SELECT 1 FROM sensos.raw_audio ra WHERE ra.segment_id = ag.id AND ra.data IS NOT NULL
+            )
             ORDER BY bs.label, af.id, ag.channel, ag.t_begin
             """
         )
-        return cur.fetchall()
+        current_group = []
+        last_key = None
+        for row in cur:
+            key = (row["label"], row["file_id"], row["channel"])
+            if key != last_key and current_group:
+                yield last_key, current_group
+                current_group = []
+            current_group.append(row)
+            last_key = key
+        if current_group:
+            yield last_key, current_group
 
 
 def group_consecutive_segments(segments):
@@ -120,24 +130,35 @@ def group_consecutive_segments(segments):
 
 
 def merge_and_store(conn, label, file_id, channel, run):
-    sample_rate = 48000  # assumed fixed
-    segment_length = 3.0  # seconds
-    step_size = 1.0  # seconds
-    overlap = segment_length - step_size  # 2.0 seconds
+    segment_ids = [seg["segment_id"] for seg in run]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT segment_id, data FROM sensos.raw_audio WHERE segment_id = ANY(%s)",
+            (segment_ids,),
+        )
+        data_map = {row["segment_id"]: row["data"] for row in cur.fetchall()}
+
+    sample_rate = 48000
+    segment_length = 3.0
+    step_size = 1.0
+    overlap = segment_length - step_size
     overlap_frames = int(overlap * sample_rate)
 
     audio = []
-    segment_ids = []
-
     for i, seg in enumerate(run):
-        segment_ids.append(seg["segment_id"])
-        samples = np.frombuffer(seg["data"], dtype=np.float32)
+        raw = data_map.get(seg["segment_id"])
+        if raw is None:
+            logger.warning(
+                f"Missing audio for segment {seg['segment_id']} — skipping run."
+            )
+            return
+        samples = np.frombuffer(raw, dtype=np.float32)
         if i > 0:
-            samples = samples[overlap_frames:]  # drop overlapping head
+            samples = samples[overlap_frames:]
         audio.append(samples)
 
     if not audio:
-        logger.warning(f"No audio to merge for label {label} — skipping.")
         return
 
     merged = np.concatenate(audio).astype(np.float32)
@@ -147,43 +168,32 @@ def merge_and_store(conn, label, file_id, channel, run):
     t_end = run[-1]["t_end"]
 
     with conn.cursor() as cur:
-        # Create merged segment entry
         cur.execute(
             """
             INSERT INTO sensos.merged_segments (file_id, t_begin, t_end, channel)
             VALUES (%s, %s, %s, %s)
             RETURNING id
-        """,
+            """,
             (file_id, t_begin, t_end, channel),
         )
         merged_id = cur.fetchone()[0]
 
-        # Insert audio
         cur.execute(
-            """
-            INSERT INTO sensos.merged_audio (segment_id, data)
-            VALUES (%s, %s)
-        """,
+            "INSERT INTO sensos.merged_audio (segment_id, data) VALUES (%s, %s)",
             (merged_id, merged_bytes),
         )
 
-        # Compute average score across segments
         avg_score = sum(seg["score"] for seg in run) / len(run)
-
-        # Store merged score
         cur.execute(
-            """
-            INSERT INTO sensos.merged_scores (segment_id, label, score)
-            VALUES (%s, %s, %s)
-        """,
+            "INSERT INTO sensos.merged_scores (segment_id, label, score) VALUES (%s, %s, %s)",
             (merged_id, label, avg_score),
         )
 
-        # Nullify raw audio from source segments
         cur.execute(
             "UPDATE sensos.raw_audio SET data = NULL WHERE segment_id = ANY(%s)",
             (segment_ids,),
         )
+
         conn.commit()
         logger.info(f"Merged {len(run)} segments into merged_segment {merged_id}")
 
@@ -267,14 +277,14 @@ def main():
                     time.sleep(60)
                     continue
 
-                mergeables = find_mergeable_segments(conn)
-
-                if not mergeables:
-                    logger.info("No mergeable segments found.")
-                else:
-                    runs = group_consecutive_segments(mergeables)
-                    for label, file_id, channel, run in runs:
+                any_found = False
+                for (label, file_id, channel), group in find_mergeable_groups(conn):
+                    runs = group_consecutive_segments(group)
+                    for run in runs:
                         merge_and_store(conn, label, file_id, channel, run)
+                        any_found = True
+                if not any_found:
+                    logger.info("No mergeable segments found.")
 
                 segments = find_human_vocal_segments(conn)
                 if segments:

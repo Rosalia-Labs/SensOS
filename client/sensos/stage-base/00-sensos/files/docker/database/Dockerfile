@@ -27,5 +27,7 @@ RUN set -ex; \
     }; \
     rm -rf /var/lib/apt/lists/*
 
+COPY postgres.conf /etc/postgresql/postgresql.conf
+
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["postgres"]
