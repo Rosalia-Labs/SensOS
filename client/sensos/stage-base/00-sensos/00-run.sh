@@ -11,6 +11,11 @@ mkdir -p "$SENSOS_DIR/log" "$SENSOS_DIR/data/audio_recordings" "$SENSOS_DIR/data
 # Enable nullglob so globs return empty instead of literal pattern
 shopt -s nullglob
 
+if [ -d "${FILES_DIR}/keys" ]; then
+    find "${FILES_DIR}/keys" -type f -exec chmod 600 {} +
+    find "${FILES_DIR}/keys" -type d -exec chmod 700 {} +
+fi
+
 # Install to /usr/local/bin
 for f in "${FILES_DIR}/scripts/"* "${FILES_DIR}/service_scripts/"*; do
     [[ -f "$f" ]] && install -m 755 "$f" "$BIN_DIR"

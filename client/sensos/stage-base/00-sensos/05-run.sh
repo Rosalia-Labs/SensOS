@@ -1,4 +1,7 @@
 on_chroot <<EOF
+[ -f /sensos/keys/api_password ] && \
+  install -m 0600 -o sensos-admin -g sensos-data "/sensos/keys/api_password" "/sensos/.sensos_api_password"
+
 # Remove keys dir as we're done with it
 rm -rf /sensos/keys || true
 

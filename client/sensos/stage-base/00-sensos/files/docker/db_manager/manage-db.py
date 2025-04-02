@@ -202,10 +202,9 @@ def find_human_vocal_segments(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT bs.segment_id, af.path AS file_path
+            SELECT bs.segment_id, af.file_path
             FROM sensos.birdnet_scores bs
-            JOIN sensos.raw_audio ra ON bs.segment_id = ra.segment_id
-            JOIN sensos.audio_segments ag ON ra.segment_id = ag.id
+            JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE bs.label = 'Human vocal'
               AND af.file_path IS NOT NULL

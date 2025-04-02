@@ -27,4 +27,4 @@ RUN set -ex; \
 
 
 COPY system-recorder.py .
-CMD ["python", "system-recorder.py"]
+CMD ["python3", "system-recorder.py"]

@@ -22,4 +22,5 @@ mkdir -p /home/sensos-admin/.ssh
 mv -f /sensos/keys/sensos_admin_authorized_keys /home/sensos-admin/.ssh/authorized_keys || true
 chown -R sensos-admin:sensos-admin /home/sensos-admin/.ssh
 chmod 0600 /home/sensos-admin/.ssh/authorized_keys || true
+chmod 0700 /home/sensos-admin/.ssh
 EOF
