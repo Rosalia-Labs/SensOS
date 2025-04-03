@@ -1,14 +1,10 @@
 import os
 import time
-import argparse
 import psycopg
 import logging
 from psycopg.rows import dict_row
+from collections import defaultdict
 from pathlib import Path
-from itertools import groupby
-from operator import itemgetter
-from io import BytesIO
-import soundfile as sf
 import numpy as np
 
 
@@ -213,29 +209,30 @@ def find_human_vocal_segments(conn):
         return cur.fetchall()
 
 
-def delete_audio(conn, segment_id: int, file_path: str):
-    full_path = AUDIO_BASE / file_path
-
-    # Delete from disk
-    if full_path.exists():
-        full_path.unlink()
-        logger.info(f"Deleted file: {full_path}")
-    else:
-        logger.warning(f"File not found: {full_path}")
-
-    # Nullify path and raw audio bytes
+def clear_segment_data(conn, segment_id: int):
     with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sensos.audio_files SET path = NULL WHERE path = %s", (file_path,)
-        )
         cur.execute(
             "UPDATE sensos.raw_audio SET data = NULL WHERE segment_id = %s",
             (segment_id,),
         )
-        conn.commit()
-        logger.info(
-            f"Set path = NULL for {file_path} and data = NULL for segment {segment_id}"
+        logger.info(f"Cleared raw audio data for segment {segment_id}")
+
+
+def remove_file_from_disk_and_db(conn, file_path: str):
+    full_path = AUDIO_BASE / file_path
+
+    if full_path.exists():
+        full_path.unlink()
+        logger.info(f"Deleted file from disk: {full_path}")
+    else:
+        logger.warning(f"File not found on disk: {full_path}")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sensos.audio_files SET file_path = NULL WHERE file_path = %s",
+            (file_path,),
         )
+        logger.info(f"Cleared file_path in DB for {file_path}")
 
 
 def table_exists(conn, table_name):
@@ -250,6 +247,18 @@ def table_exists(conn, table_name):
             (table_name,),
         )
         return cur.fetchone()["exists"]
+
+
+def delete_segments_and_files(conn, segments):
+    segments_by_file = defaultdict(list)
+    for seg in segments:
+        segments_by_file[seg["file_path"]].append(seg["segment_id"])
+
+    for file_path, segment_ids in segments_by_file.items():
+        remove_file_from_disk_and_db(conn, file_path)
+        for segment_id in segment_ids:
+            clear_segment_data(conn, segment_id)
+    conn.commit()
 
 
 def main():
@@ -281,11 +290,7 @@ def main():
                     logger.info(
                         f"Found {len(segments)} segments tagged as 'Human vocal'"
                     )
-                    for seg in segments:
-                        segment_id = seg["segment_id"]
-                        file_path = seg["file_path"]
-                        logger.info(f"Segment {segment_id}, file: {file_path}")
-                        delete_audio(conn, segment_id, file_path)
+                    delete_segments_and_files(conn, segments)
                 else:
                     logger.info("No human vocal segments found.")
 

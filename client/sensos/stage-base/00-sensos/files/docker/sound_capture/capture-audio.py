@@ -282,18 +282,72 @@ def process_file(info, file_id):
             block_index += 1
 
 
+def move_and_update_path(old_path, new_path, file_id):
+    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+    try:
+        shutil.move(old_path, new_path)
+        logging.info(f"Moved {old_path} to {new_path}")
+        new_rel_path = os.path.relpath(new_path, "/mnt/audio_recordings")
+        cursor.execute(
+            "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
+            (new_rel_path, file_id),
+        )
+        conn.commit()
+        logging.info(f"Updated DB path for file {file_id} to {new_rel_path}")
+    except Exception as e:
+        logging.error(f"Error moving/updating path: {e}")
+        conn.rollback()
+
+
+def clean_unprocessed_db_entries():
+    recordings_root = "/mnt/audio_recordings"
+    unprocessed_dir = os.path.join(recordings_root, "unprocessed")
+    processed_dir = os.path.join(recordings_root, "processed")
+
+    cursor.execute(
+        "SELECT id, file_path FROM sensos.audio_files WHERE file_path LIKE 'unprocessed/%'"
+    )
+    for file_id, rel_path in cursor.fetchall():
+        unprocessed_path = os.path.join(recordings_root, rel_path)
+        rel_under_unprocessed = rel_path.replace("unprocessed/", "", 1)
+        processed_path = os.path.join(processed_dir, rel_under_unprocessed)
+        processed_rel_path = os.path.relpath(processed_path, recordings_root)
+
+        if os.path.exists(processed_path):
+            if os.path.exists(unprocessed_path):
+                logging.warning(f"Deleting stale unprocessed file: {unprocessed_path}")
+                try:
+                    os.remove(unprocessed_path)
+                except Exception as e:
+                    logging.error(f"Failed to delete {unprocessed_path}: {e}")
+            logging.info(f"Removing stale DB record: {rel_path}")
+            cursor.execute("DELETE FROM sensos.audio_files WHERE id = %s", (file_id,))
+            conn.commit()
+        elif not os.path.exists(unprocessed_path):
+            logging.warning(f"Removing missing DB record: {rel_path}")
+            cursor.execute("DELETE FROM sensos.audio_files WHERE id = %s", (file_id,))
+            conn.commit()
+        else:
+            logging.info(
+                f"Deleting DB entry for file about to be re-processed: {rel_path}"
+            )
+            cursor.execute("DELETE FROM sensos.audio_files WHERE id = %s", (file_id,))
+            conn.commit()
+
+
 def process_directory():
     """
     Continuously scan the unprocessed directory for new sound files,
     record file-level metadata, process each file into segments,
-    update its processing status, and move it to a processed directory.
+    and move it to the processed directory, updating the database path.
     """
+    recordings_root = "/mnt/audio_recordings"
+    unprocessed_dir = os.path.join(recordings_root, "unprocessed")
+    processed_dir = os.path.join(recordings_root, "processed")
     file_stable_threshold = 30
-    processed_dir = "/mnt/audio_recordings/processed"
-    unprocessed_dir = "/mnt/audio_recordings/unprocessed"
-    logging.info(f"Scanning directory for sound files: {unprocessed_dir}")
-
     accepted_extensions = (".wav", ".mp3", ".flac", ".ogg")
+
+    logging.info(f"Scanning directory for sound files: {unprocessed_dir}")
 
     while True:
         for root, dirs, files in os.walk(unprocessed_dir):
@@ -302,15 +356,6 @@ def process_directory():
                     continue
 
                 file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, unprocessed_dir)
-
-                cursor.execute(
-                    "SELECT id FROM sensos.audio_files WHERE file_path = %s",
-                    (rel_path,),
-                )
-                if cursor.fetchone() is not None:
-                    logging.warning(f"File already processed: {file_path}")
-                    continue
 
                 try:
                     mod_time = os.path.getmtime(file_path)
@@ -318,7 +363,7 @@ def process_directory():
                     logging.error(
                         f"Could not get modification time for {file_path}: {e}"
                     )
-                    sys.exit(1)
+                    continue
 
                 now = time.time()
                 if now - mod_time < file_stable_threshold:
@@ -336,43 +381,28 @@ def process_directory():
                     logging.error(f"Error reading file info for {file_path}: {e}")
                     continue
 
+                # Record metadata in DB
                 file_id = record_file_info(info, recording_timestamp)
-                logging.info(f"Created file recording record {file_id} for {file_path}")
 
+                # Process segments into DB
                 process_file(info, file_id)
 
-                destination = os.path.join(processed_dir, rel_path)
-                os.makedirs(os.path.dirname(destination), exist_ok=True)
-                try:
-                    shutil.move(file_path, destination)
-                    logging.info(f"Moved {file_path} to {destination}")
-                except Exception as e:
-                    logging.error(f"Error moving {file_path} to {destination}: {e}")
-                    continue
+                # Construct new destination path in "processed/" dir
+                rel_under_unprocessed = os.path.relpath(file_path, unprocessed_dir)
+                destination_path = os.path.join(processed_dir, rel_under_unprocessed)
 
-                try:
-                    cursor.execute(
-                        "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
-                        (rel_path, file_id),
-                    )
-                    conn.commit()
-                    logging.info(
-                        f"Updated file recording record {file_id} with new path: {destination}"
-                    )
-                except Exception as e:
-                    logging.error(
-                        f"Error updating file recording record for {file_path}: {e}"
-                    )
-                    conn.rollback()
+                # Move file and update DB path
+                move_and_update_path(file_path, destination_path, file_id)
 
 
 def restore_untracked_processed_files():
     """
     Scans the processed directory and moves any files that are not in the database
-    back into the unprocessed directory for reprocessing.
+    back into the unprocessed directory for reprocessing. Updates the file path.
     """
-    processed_dir = "/mnt/audio_recordings/processed"
-    unprocessed_dir = "/mnt/audio_recordings/unprocessed"
+    recordings_root = "/mnt/audio_recordings"
+    processed_dir = os.path.join(recordings_root, "processed")
+    unprocessed_dir = os.path.join(recordings_root, "unprocessed")
     accepted_extensions = (".wav", ".mp3", ".flac", ".ogg")
 
     logging.info("Scanning processed directory for untracked files...")
@@ -383,36 +413,52 @@ def restore_untracked_processed_files():
                 continue
 
             file_path = os.path.join(root, file)
-            rel_path = os.path.relpath(file_path, processed_dir)
-            dest_path = os.path.join(unprocessed_dir, rel_path)
+            rel_path = os.path.relpath(
+                file_path, recordings_root
+            )  # includes 'processed/...'
+            rel_under_processed = os.path.relpath(file_path, processed_dir)
+            dest_path = os.path.join(unprocessed_dir, rel_under_processed)
+            new_rel_path = os.path.relpath(
+                dest_path, recordings_root
+            )  # includes 'unprocessed/...'
 
             cursor.execute(
                 "SELECT id FROM sensos.audio_files WHERE file_path = %s",
                 (rel_path,),
             )
 
-            if cursor.fetchone() is None:
-                logging.warning(f"Restoring untracked file: {file_path}")
+            row = cursor.fetchone()
+            if row is not None:
+                file_id = row[0]
+                logging.warning(f"Restoring file to unprocessed directory: {file_path}")
                 os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                 try:
                     shutil.move(file_path, dest_path)
                     logging.info(f"Moved {file_path} back to {dest_path}")
+
+                    cursor.execute(
+                        "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
+                        (new_rel_path, file_id),
+                    )
+                    conn.commit()
+                    logging.info(f"Updated DB path: {rel_path} → {new_rel_path}")
                 except Exception as e:
-                    logging.error(f"Failed to move {file_path} to {dest_path}: {e}")
+                    logging.error(f"Failed to move/update {file_path}: {e}")
+                    conn.rollback()
 
 
 def convert_absolute_paths_to_relative():
     """
     Scans the sensos.audio_files table and converts absolute file paths under
-    /mnt/audio_recordings/processed to relative paths.
+    /mnt/audio_recordings to paths relative to that root. The result will include
+    'processed/', 'unprocessed/', etc., as part of the relative path.
     """
-    base_dir = os.path.abspath("/mnt/audio_recordings/processed")
+    base_dir = os.path.abspath("/mnt/audio_recordings")
 
     cursor.execute("SELECT id, file_path FROM sensos.audio_files;")
     updates = []
-    for row in cursor.fetchall():
-        file_id, file_path = row
-        if file_path.startswith(base_dir + os.sep):
+    for file_id, file_path in cursor.fetchall():
+        if os.path.isabs(file_path) and file_path.startswith(base_dir + os.sep):
             rel_path = os.path.relpath(file_path, base_dir)
             updates.append((rel_path, file_id))
 
@@ -424,7 +470,9 @@ def convert_absolute_paths_to_relative():
 
     if updates:
         conn.commit()
-        logging.info(f"Converted {len(updates)} file paths to relative.")
+        logging.info(
+            f"Converted {len(updates)} file paths to relative under recordings root."
+        )
     else:
         logging.info("No file paths required conversion.")
 
