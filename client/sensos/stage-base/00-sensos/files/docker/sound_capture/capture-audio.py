@@ -258,12 +258,10 @@ def process_file(info, file_id):
     ovlp = SEGMENT_SIZE - STEP_SIZE_FRAMES
     read_dtype = get_storage_type(info.subtype)
 
-    buf = np.empty((SEGMENT_SIZE, info.channels), dtype=read_dtype)
-
     with sf.SoundFile(file_path) as f:
         block_index = 0
         for block in f.blocks(
-            frames=blksz, overlap=ovlp, dtype=read_dtype, fill_value=0, out=buf
+            frames=blksz, overlap=ovlp, dtype=read_dtype, fill_value=0
         ):
             start_frame = block_index * STEP_SIZE_FRAMES
             end_frame = start_frame + SEGMENT_SIZE
