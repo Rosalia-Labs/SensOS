@@ -35,7 +35,11 @@ SEGMENT_SIZE = SAMPLE_RATE * SEGMENT_DURATION
 
 LABELS_PATH = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 with open(LABELS_PATH, "r") as f:
-    LABELS = [line.strip() for line in f.readlines()]
+    LABELS = [
+        f"{common} ({sci})" if "_" in line else line.strip()
+        for line in f.readlines()
+        for sci, common in [line.strip().split("_", 1)]
+    ]
 
 MOCK_DATA = os.getenv("MOCK_DATA", "").lower() in ("1", "true", "yes")
 

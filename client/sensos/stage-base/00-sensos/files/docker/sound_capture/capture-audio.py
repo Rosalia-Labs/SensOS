@@ -323,7 +323,7 @@ def process_directory():
                 now = time.time()
                 if now - mod_time < file_stable_threshold:
                     logging.info(f"Skipping file (recently modified): {file_path}")
-                    time.sleep(5)
+                    time.sleep(60)
                     continue
 
                 recording_timestamp = extract_timestamp_from_filename(file_path)
@@ -364,8 +364,6 @@ def process_directory():
                         f"Error updating file recording record for {file_path}: {e}"
                     )
                     conn.rollback()
-
-        time.sleep(60)
 
 
 def restore_untracked_processed_files():

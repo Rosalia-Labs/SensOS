@@ -206,7 +206,7 @@ def find_human_vocal_segments(conn):
             FROM sensos.birdnet_scores bs
             JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
-            WHERE bs.label = 'Human vocal'
+            WHERE bs.label ILIKE '%Human vocal%'
               AND af.file_path IS NOT NULL
             """
         )
