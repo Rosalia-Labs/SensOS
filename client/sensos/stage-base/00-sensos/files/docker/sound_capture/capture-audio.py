@@ -365,7 +365,7 @@ def process_directory():
                     )
                     conn.rollback()
 
-        time.sleep(5)
+        time.sleep(60)
 
 
 def restore_untracked_processed_files():

@@ -177,7 +177,7 @@ def get_unprocessed_audio():
                 WHERE NOT EXISTS (
                     SELECT 1 FROM sensos.birdnet_scores bs WHERE bs.segment_id = ra.segment_id
                 )
-                LIMIT 5;
+                LIMIT 8;
                 """
             )
             rows = cur.fetchall()
@@ -288,8 +288,7 @@ def main():
             embeddings, scores = invoke_interpreter(audio_np)
             store_results(segment_id, embeddings, scores)
 
-        logger.info("Processing complete. Sleeping...")
-        time.sleep(60)
+        logger.info("Segments completed.")
 
 
 if __name__ == "__main__":

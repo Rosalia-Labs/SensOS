@@ -253,15 +253,6 @@ def table_exists(conn, table_name):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--delete", action="store_true", help="Delete audio files (not a dry run)"
-    )
-    args = parser.parse_args()
-
-    mode = "DELETION" if args.delete else "DRY RUN"
-    logger.info(f"Running in {mode} mode. Polling every {SLEEP_SECONDS} seconds.")
-
     while True:
         time.sleep(SLEEP_SECONDS)
         try:
@@ -294,8 +285,7 @@ def main():
                         segment_id = seg["segment_id"]
                         file_path = seg["file_path"]
                         logger.info(f"Segment {segment_id}, file: {file_path}")
-                        if args.delete:
-                            delete_audio(conn, segment_id, file_path)
+                        delete_audio(conn, segment_id, file_path)
                 else:
                     logger.info("No human vocal segments found.")
 

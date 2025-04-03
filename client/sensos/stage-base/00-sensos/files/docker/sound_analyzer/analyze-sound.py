@@ -82,7 +82,6 @@ def create_sound_statistics_table(conn):
             """
         )
         conn.commit()
-    print("Sound statistics and spectrum tables are ready.")
     logger.info("Sound statistics and spectrum tables created or already exist.")
 
 
@@ -183,7 +182,7 @@ def get_unprocessed_segments(conn):
             JOIN sensos.audio_files af ON r.file_id = af.id
             LEFT JOIN sensos.sound_statistics ss ON ra.segment_id = ss.segment_id
             WHERE ss.segment_id IS NULL
-            LIMIT 5;
+            LIMIT 8;
             """
         )
         for row in cur:
@@ -223,7 +222,6 @@ def store_sound_statistics(
             (segment_id, json.dumps(bioacoustic_spectrum)),
         )
         conn.commit()
-    print(f"Stored sound statistics for segment {segment_id}.")
     logger.info(f"Committed statistics for segment {segment_id}.")
 
 
@@ -243,16 +241,11 @@ def wait_for_schema(retries=30, delay=5):
                     )
                     exists = cur.fetchone()[0]
                     if exists:
-                        print("✅ Required schema and tables detected.")
                         logger.info("Schema check passed.")
                         return
                     else:
-                        print(
-                            f"⏳ Schema or tables not yet ready (attempt {attempt+1}/{retries})."
-                        )
                         logger.debug(f"Schema check attempt {attempt+1} failed.")
         except Exception as e:
-            print(f"⚠️ Database connection issue (attempt {attempt+1}/{retries}): {e}")
             logger.warning(f"Connection issue on attempt {attempt+1}: {e}")
         time.sleep(delay)
     logger.error("Schema check failed after max retries.")
@@ -260,17 +253,14 @@ def wait_for_schema(retries=30, delay=5):
 
 
 def main():
-    print("🔄 Waiting for schema and tables to be ready...")
     wait_for_schema()
 
     # Always create a connection so results are written even if MOCK_DATA is enabled.
     conn = psycopg.connect(**DB_PARAMS)
-    print("✅ Connected to the database for sound analysis.")
     logger.info("Connected to database.")
     create_sound_statistics_table(conn)
 
     while True:
-        print("🔎 Checking for new raw audio segments to analyze...")
         found = False
 
         for segment_id, audio_bytes, stored_dtype in get_unprocessed_segments(conn):
@@ -306,12 +296,10 @@ def main():
             )
 
         if not found:
-            print("😴 No new segments found. Sleeping for 60 seconds...")
+            logger.info("😴 No new segments found. Sleeping for 60 seconds...")
             time.sleep(60)
         else:
-            print("✅ Batch complete. Sleeping for 60 seconds...")
-            logger.info("Batch complete. Sleeping...")
-            time.sleep(60)
+            logger.info("Batch complete.")
 
 
 if __name__ == "__main__":
