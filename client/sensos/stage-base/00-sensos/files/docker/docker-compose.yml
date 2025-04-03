@@ -13,8 +13,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ${DB_DATA_PATH}:/var/lib/postgresql/data
-      - os_packages:/os_packages
-      - wheels:/wheels
+      - ./database/os_packages:/os_packages
+      - ./database/wheels:/wheels
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -40,8 +40,8 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
-      - os_packages:/os_packages
-      - wheels:/wheels
+      - ./sound_capture/os_packages:/os_packages
+      - ./sound_capture/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -65,8 +65,9 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - os_packages:/os_packages
-      - wheels:/wheels
+      - ./birdnet/model:/model
+      - ./birdnet/os_packages:/os_packages
+      - ./birdnet/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -90,8 +91,8 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - os_packages:/os_packages
-      - wheels:/wheels
+      - ./sound_analyzer/os_packages:/os_packages
+      - ./sound_analyzer/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -116,8 +117,8 @@ services:
       AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
-      - os_packages:/os_packages
-      - wheels:/wheels
+      - ./db_manager/os_packages:/os_packages
+      - ./db_manager/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
@@ -146,12 +147,9 @@ services:
       - /sys:/host/sys:ro
       - /:/host/rootfs:ro
       - /sensos/data:/sensos/data:ro
-      - os_packages:/os_packages
-      - wheels:/wheels
+      - ./system_recorder/os_packages:/os_packages
+      - ./system_recorder/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
         max_attempts: 3
-
-volumes:
-  sensos-db-data:

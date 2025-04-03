@@ -182,7 +182,8 @@ def get_unprocessed_segments(conn):
             JOIN sensos.audio_segments r ON ra.segment_id = r.id
             JOIN sensos.audio_files af ON r.file_id = af.id
             LEFT JOIN sensos.sound_statistics ss ON ra.segment_id = ss.segment_id
-            WHERE ss.segment_id IS NULL;
+            WHERE ss.segment_id IS NULL
+            LIMIT 5;
             """
         )
         for row in cur:
@@ -305,12 +306,12 @@ def main():
             )
 
         if not found:
-            print("😴 No new segments found. Sleeping for 5 seconds...")
-            time.sleep(5)
+            print("😴 No new segments found. Sleeping for 60 seconds...")
+            time.sleep(60)
         else:
-            print("✅ Batch complete. Sleeping for 5 seconds...")
+            print("✅ Batch complete. Sleeping for 60 seconds...")
             logger.info("Batch complete. Sleeping...")
-            time.sleep(5)
+            time.sleep(60)
 
 
 if __name__ == "__main__":

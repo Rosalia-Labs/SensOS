@@ -408,7 +408,7 @@ def convert_absolute_paths_to_relative():
     Scans the sensos.audio_files table and converts absolute file paths under
     /mnt/audio_recordings/processed to relative paths.
     """
-    base_dir = os.path.abspath(PROCESSED_DIR)
+    base_dir = os.path.abspath("/mnt/audio_recordings/processed")
 
     cursor.execute("SELECT id, file_path FROM sensos.audio_files;")
     updates = []

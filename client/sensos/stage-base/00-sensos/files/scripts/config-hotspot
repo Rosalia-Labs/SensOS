@@ -18,19 +18,18 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Register options
-register_option --ssid "WiFi SSID (required)" "$(get_default ssid)"
-register_option --password "WiFi password (8–63 chars, required)" "$(get_default password)"
-register_option --interface "WiFi interface name" "$(get_default interface)"
-register_option --band "WiFi band (e.g., bg, a)" "$(get_default band)"
-register_option --channel "WiFi channel" "$(get_default channel)"
-register_option --country-code "ISO country code" "$(get_default country_code)"
-register_option --low-txpower "Reduce transmit power" "$(get_default low_txpower false)"
-register_option --power-save "Enable WiFi power management" "$(get_default power_save false)"
-register_option --limit-width "Limit channel width to 20MHz" "$(get_default limit_width false)"
-register_option --beacon-interval "Increase beacon interval" "$(get_default beacon_interval false)"
-register_option --enable-service "Enable wifi-access-point.service" "$(get_default enable_service true)"
-register_option --start-service "Start wifi-access-point.service" "$(get_default start_service false)"
+register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid)"
+register_option --password password "WiFi password (8–63 chars, required)" "$(get_default password)"
+register_option --interface interface "WiFi interface name" "$(get_default interface)"
+register_option --band band "WiFi band (e.g., bg, a)" "$(get_default band)"
+register_option --channel channel "WiFi channel" "$(get_default channel)"
+register_option --country-code country_code "ISO country code" "$(get_default country_code)"
+register_option --low-txpower low_txpower "Reduce transmit power" "$(get_default low_txpower false)"
+register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
+register_option --limit-width limit_width "Limit channel width to 20MHz" "$(get_default limit_width false)"
+register_option --beacon-interval beacon_interval "Increase beacon interval" "$(get_default beacon_interval false)"
+register_option --enable-service enable_service "Enable wifi-access-point.service" "$(get_default enable_service true)"
+register_option --start-service start_service "Start wifi-access-point.service" "$(get_default start_service false)"
 
 # Parse CLI
 parse_switches "$script_name" "$@"

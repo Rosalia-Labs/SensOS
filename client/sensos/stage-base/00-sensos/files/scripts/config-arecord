@@ -16,16 +16,15 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Register CLI options
-register_option --device "Recording device string (e.g., plughw:1,0)" "$(get_default device)"
-register_option --use-plughw "Use plughw instead of hw" "$(get_default use_plughw true)"
-register_option --channels "Channel count (e.g., 2)" "$(get_default channels)"
-register_option --max-time "Max duration per file" "$(get_default max_time 900)"
-register_option --format "Recording format (e.g., S16_LE)" "$(get_default format)"
-register_option --rate "Sample rate in Hz" "$(get_default rate 48000)"
-register_option --base-dir "Base directory for sound files" "$(get_default base_dir /sensos/data/audio_recordings/)"
-register_option --enable-service "Enable systemd service" "$(get_default enable_service true)"
-register_option --start-service "Start systemd service" "$(get_default start_service false)"
+register_option --device device "Recording device string (e.g., plughw:1,0)" "$(get_default device)"
+register_option --use-plughw use_plughw "Use plughw instead of hw" "$(get_default use_plughw true)"
+register_option --channels channels "Channel count (e.g., 2)" "$(get_default channels)"
+register_option --max-time max_time "Max duration per file" "$(get_default max_time 900)"
+register_option --format format "Recording format (e.g., S16_LE)" "$(get_default format)"
+register_option --rate rate "Sample rate in Hz" "$(get_default rate 48000)"
+register_option --base-dir base_dir "Base directory for sound files" "$(get_default base_dir /sensos/data/audio_recordings/)"
+register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
+register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
 
 # Parse args
 parse_switches "$script_name" "$@"

@@ -39,7 +39,6 @@ RUN set -ex; \
     echo "🌐 Installing any remaining Python dependencies from PyPI..."; \
     pip install -r requirements.txt
 
-COPY model/ model/
 COPY birdnet-analyze.py .
 
 CMD ["python", "birdnet-analyze.py"]

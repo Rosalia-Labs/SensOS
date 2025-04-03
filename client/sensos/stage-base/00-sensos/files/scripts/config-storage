@@ -19,8 +19,7 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Register configurable switches
-register_option --device "Block device to format/mount" "$(get_default device)"
+register_option --device device "Block device to format/mount" "$(get_default device)"
 
 # Parse CLI
 parse_switches "$script_name" "$@"
@@ -94,27 +93,27 @@ prompt_for_filesystem_type() {
     MAKE_FS=true
 }
 
-if [[ -z "$DEVICE" ]]; then
+if [[ -z "$device" ]]; then
     echo "❌ --device must be specified."
     exit 1
 fi
 
-if ! [[ -b "$DEVICE" ]]; then
-    echo "❌ $DEVICE is not a block device."
+if ! [[ -b "$device" ]]; then
+    echo "❌ $device is not a block device."
     exit 1
 fi
 
-if [[ "$(is_device_mounted "$DEVICE")" == "true" ]]; then
-    echo "⚠️  Device $DEVICE is currently mounted."
+if [[ "$(is_device_mounted "$device")" == "true" ]]; then
+    echo "⚠️  Device $device is currently mounted."
 
-    read -p "❓ Unmount $DEVICE before proceeding? [y/N] " confirm
+    read -p "❓ Unmount $device before proceeding? [y/N] " confirm
     if [[ "$confirm" == [yY] ]]; then
-        echo "🔧 Unmounting $DEVICE..."
-        if sudo umount "$DEVICE"; then
+        echo "🔧 Unmounting $device..."
+        if sudo umount "$device"; then
             echo "✅ Unmounted"
         else
-            echo "❌ Failed to unmount $DEVICE — it may be busy."
-            echo "   Tip: Run \`lsof +f -- $DEVICE\` or \`mount | grep $DEVICE\` to investigate."
+            echo "❌ Failed to unmount $device — it may be busy."
+            echo "   Tip: Run \`lsof +f -- $device\` or \`mount | grep $device\` to investigate."
             exit 1
         fi
     else
@@ -124,13 +123,13 @@ if [[ "$(is_device_mounted "$DEVICE")" == "true" ]]; then
 fi
 
 # PARTITION TABLE LOGIC
-if has_partition_table "$DEVICE"; then
-    echo "✅ Partition table found on $DEVICE"
+if has_partition_table "$device"; then
+    echo "✅ Partition table found on $device"
 
     echo "📄 Current partition table:"
-    sudo lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT "$DEVICE"
+    sudo lsblk -o NAME,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT "$device"
 
-    read -p "❓ Overwrite existing partition table on $DEVICE with a new GPT table? This will erase all data. [y/N] " confirm
+    read -p "❓ Overwrite existing partition table on $device with a new GPT table? This will erase all data. [y/N] " confirm
     if [[ "$confirm" == [yY] ]]; then
         create_table=true
     else
@@ -138,9 +137,9 @@ if has_partition_table "$DEVICE"; then
         create_table=false
     fi
 else
-    echo "⚠️  No partition table found on $DEVICE"
+    echo "⚠️  No partition table found on $device"
 
-    read -p "❓ Create a new GPT partition table on $DEVICE? This will erase all data. [Y/n] " confirm
+    read -p "❓ Create a new GPT partition table on $device? This will erase all data. [Y/n] " confirm
     if [[ "$confirm" == [nN] ]]; then
         echo "❌ Aborting. No changes made."
         exit 1
@@ -150,19 +149,19 @@ fi
 
 if [[ "$create_table" == true ]]; then
     echo "🛠️  Creating GPT partition table and a single primary partition..."
-    sudo parted -s "$DEVICE" mklabel gpt
-    sudo parted -s -a optimal "$DEVICE" mkpart primary 0% 100%
+    sudo parted -s "$device" mklabel gpt
+    sudo parted -s -a optimal "$device" mkpart primary 0% 100%
     sync
     echo "✅ Partition table is ready"
     echo "🌀 Informing kernel of partition changes..."
-    sudo partprobe "$DEVICE" || sudo udevadm settle
+    sudo partprobe "$device" || sudo udevadm settle
     sleep 1
 fi
 
 # Wait for partition
-PARTITION=$(wait_for_partition "$DEVICE")
+PARTITION=$(wait_for_partition "$device")
 if [[ -z "$PARTITION" ]]; then
-    echo "❌ Could not find partition on $DEVICE"
+    echo "❌ Could not find partition on $device"
     exit 1
 fi
 

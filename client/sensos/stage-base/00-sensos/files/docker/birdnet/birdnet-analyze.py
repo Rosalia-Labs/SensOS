@@ -22,7 +22,7 @@ DB_PARAMS = (
 )
 
 # BirdNET model
-MODEL_PATH = "/app/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
+MODEL_PATH = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
 interpreter = tflite.Interpreter(model_path=MODEL_PATH)
 interpreter.allocate_tensors()
 
@@ -33,7 +33,7 @@ SAMPLE_RATE = 48000
 SEGMENT_DURATION = 3
 SEGMENT_SIZE = SAMPLE_RATE * SEGMENT_DURATION
 
-LABELS_PATH = "/app/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
+LABELS_PATH = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 with open(LABELS_PATH, "r") as f:
     LABELS = [line.strip() for line in f.readlines()]
 
@@ -273,7 +273,7 @@ def main():
         segments = get_unprocessed_audio()
         if not segments:
             logger.info("No new segments found. Sleeping...")
-            time.sleep(5)
+            time.sleep(60)
             continue
 
         for segment in segments:
@@ -289,7 +289,7 @@ def main():
             store_results(segment_id, embeddings, scores)
 
         logger.info("Processing complete. Sleeping...")
-        time.sleep(5)
+        time.sleep(60)
 
 
 if __name__ == "__main__":

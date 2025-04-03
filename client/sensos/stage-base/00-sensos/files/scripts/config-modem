@@ -17,12 +17,11 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Register options
-register_option --service "Modem service name (required, e.g. 1nce)" "$(get_default service)"
-register_option --modem-iface "Modem network interface" "$(get_default modem_iface wwan0)"
-register_option --modem-internal-name "Internal modem name" "$(get_default modem_internal_name cdc-wdm0)"
-register_option --enable-service "Enable sensos-modem.service" "$(get_default enable_service true)"
-register_option --start-service "Start sensos-modem.service" "$(get_default start_service false)"
+register_option --service service "Modem service name (required, e.g. 1nce)" "$(get_default service)"
+register_option --modem-iface modem_iface "Modem network interface" "$(get_default modem_iface wwan0)"
+register_option --modem-internal-name modem_internal_name "Internal modem name" "$(get_default modem_internal_name cdc-wdm0)"
+register_option --enable-service enable_service "Enable sensos-modem.service" "$(get_default enable_service true)"
+register_option --start-service start_service "Start sensos-modem.service" "$(get_default start_service false)"
 
 # Parse CLI
 parse_switches "$script_name" "$@"

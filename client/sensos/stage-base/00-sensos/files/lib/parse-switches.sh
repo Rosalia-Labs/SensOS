@@ -9,16 +9,20 @@ declare -A __cli_options_defaults
 
 register_option() {
     local opt="$1"
-    local help="$2"
-    local default="${3:-}"
+    local varname="$2"
+    local help="$3"
+    local default="$4"
 
-    local varname=${opt#--}
+    # Replace dashes with underscores
+    local safe_varname="${varname//-/_}"
+
     __cli_options_help["$opt"]="$help"
-    __cli_options_defaults["$varname"]="$default"
+    __cli_options_defaults["$safe_varname"]="$default"
 
-    # Set initial value
-    declare -g "$varname"
-    eval "$varname=\"\$val\""
+    # Export the default value if not already set
+    if [[ -z "${!safe_varname+x}" ]]; then
+        declare -g "$safe_varname=$default"
+    fi
 }
 
 parse_switches() {
@@ -48,8 +52,10 @@ parse_switches() {
         esac
 
         varname="${opt#--}"
+        safe_varname="${varname//-/_}"
         if [[ -v __cli_options_help["$opt"] ]]; then
-            declare -g "$varname=$val"
+            declare -g "$safe_varname=\"$val\""
+            eval "$safe_varname=\"\$val\""
         else
             echo "Unknown option: $opt"
             show_usage "$script_name"
@@ -66,7 +72,8 @@ show_usage() {
     echo "Options:"
     for opt in "${!__cli_options_help[@]}"; do
         local varname="${opt#--}"
-        local default="${__cli_options_defaults[$varname]}"
+        local safe_varname="${varname//-/_}"
+        local default="${__cli_options_defaults[$safe_varname]}"
         local help="${__cli_options_help[$opt]}"
         printf "  %-25s %-40s %s\n" "$opt <value>" "$help" "(default: $default)"
     done
