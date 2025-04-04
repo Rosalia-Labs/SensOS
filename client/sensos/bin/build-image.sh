@@ -191,6 +191,27 @@ if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]
                 continue
             fi
 
+            base_image_basename="$(echo "$BASE_IMAGE" | sed 's#[/:]#_#g')"
+            gzip_available=false
+            if command -v gzip >/dev/null 2>&1; then
+                gzip_available=true
+                base_image_tarball="$pkg_dir/${base_image_basename}.tar.gz"
+            else
+                base_image_tarball="$pkg_dir/${base_image_basename}.tar"
+            fi
+
+            if [ ! -f "$base_image_tarball" ]; then
+                echo "💾 Saving base image $BASE_IMAGE to $base_image_tarball..."
+                docker pull "$BASE_IMAGE"
+                if [ "$gzip_available" = true ]; then
+                    docker save "$BASE_IMAGE" | gzip -c >"$base_image_tarball"
+                else
+                    docker save "$BASE_IMAGE" -o "$base_image_tarball"
+                fi
+            else
+                echo "✅ Base image tarball already exists: $base_image_tarball"
+            fi
+
             docker run --rm --platform linux/arm64 \
                 -v "$os_pkg_dir":/debs \
                 "$BASE_IMAGE" bash -c "\
@@ -203,11 +224,44 @@ if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]
             echo "📦 Generating local APT repo metadata in $os_pkg_dir..."
             docker run --rm -v "$os_pkg_dir":/debs "$BASE_IMAGE" \
                 bash -c "apt-get update && apt-get install -y dpkg-dev && cd /debs && dpkg-scanpackages . /dev/null | gzip -c > Packages.gz"
+
         fi
 
     done
     echo "✅ OS packages download and repository generation complete."
 fi
+
+# Get Git metadata
+GIT_COMMIT=$(git -C "$SENSOS_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_BRANCH=$(git -C "$SENSOS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+GIT_TAG=$(git -C "$SENSOS_DIR" describe --tags --always 2>/dev/null || echo "unknown")
+GIT_DIRTY=$(test -n "$(git -C "$SENSOS_DIR" status --porcelain 2>/dev/null)" && echo "true" || echo "false")
+
+# Get VERSION file data
+VERSION_FILE="$SENSOS_DIR/../VERSION"
+if [ -f "$VERSION_FILE" ]; then
+    VERSION_MAJOR=$(awk -F' = ' '/^major/ {print $2}' "$VERSION_FILE")
+    VERSION_MINOR=$(awk -F' = ' '/^minor/ {print $2}' "$VERSION_FILE")
+    VERSION_PATCH=$(awk -F' = ' '/^patch/ {print $2}' "$VERSION_FILE")
+    VERSION_SUFFIX=$(awk -F' = ' '/^suffix/ {print $2}' "$VERSION_FILE")
+else
+    VERSION_MAJOR="unknown"
+    VERSION_MINOR="unknown"
+    VERSION_PATCH="unknown"
+    VERSION_SUFFIX=""
+fi
+
+VERSION_FILE_PATH="${STAGE_SRC}/files/etc/sensos-version"
+mkdir -p "$(dirname "$VERSION_FILE_PATH")"
+
+cat >"$VERSION_FILE_PATH" <<EOF
+VERSION=${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}
+GIT_COMMIT=$GIT_COMMIT
+GIT_BRANCH=$GIT_BRANCH
+GIT_TAG=$GIT_TAG
+GIT_DIRTY=$GIT_DIRTY
+BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+EOF
 
 echo "Copying custom stage to pi-gen..."
 try_rm_rf "$STAGE_DST"

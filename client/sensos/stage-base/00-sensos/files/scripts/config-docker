@@ -26,6 +26,8 @@ fi
 audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
 audio_format_code="${audio_format_code:-S32_LE}"
 
+# Possible values: offline, fallback, prefer-cache, force-download
+register_option --download-mode download_mode "Set download mode (offline, fallback, prefer-cache, force-download)" "$(get_default download_mode fallback)"
 register_option --postgres-db postgres_db "Set database name" "$(get_default postgres_db postgres)"
 register_option --postgres-user postgres_user "Set database user" "$(get_default postgres_user postgres)"
 register_option --postgres-password postgres_password "Set database password" "$(get_default postgres_password sensos)"
@@ -36,9 +38,36 @@ register_option --audio-directory audio_directory "Path for audio files" "$(get_
 register_option --audio-format audio_format_code "ALSA audio format code" "$(get_default audio_format_code)"
 register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
 register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
-register_option --no-local no_local "Build without internet" "$(get_default no_local false)"
 
 parse_switches "$script_name" "$@"
+
+# Handle download mode logic
+case "$download_mode" in
+offline)
+    ENABLE_DOWNLOADS=false
+    REQUIRE_CACHE=true
+    CLEAR_CACHE_FIRST=false
+    ;;
+fallback)
+    ENABLE_DOWNLOADS=true
+    REQUIRE_CACHE=false
+    CLEAR_CACHE_FIRST=false
+    ;;
+prefer-cache)
+    ENABLE_DOWNLOADS=false
+    REQUIRE_CACHE=false
+    CLEAR_CACHE_FIRST=false
+    ;;
+force-download)
+    ENABLE_DOWNLOADS=true
+    REQUIRE_CACHE=false
+    CLEAR_CACHE_FIRST=true
+    ;;
+*)
+    echo "❌ Invalid download_mode: $download_mode"
+    exit 1
+    ;;
+esac
 
 # Ensure output directory exists
 docker_compose_dir=/sensos/docker
@@ -46,6 +75,44 @@ mkdir -p "$docker_compose_dir"
 if [[ ! -w "$docker_compose_dir" ]]; then
     echo "ERROR: Cannot write to $docker_compose_dir"
     exit 1
+fi
+
+# Load Docker image tarballs (always allowed)
+echo "🔍 Scanning for Docker base images to load from cache..."
+dockerfile_dirs=$(find "$docker_compose_dir" -type f -name 'Dockerfile' -exec dirname {} \;)
+found_any=false
+
+while IFS= read -r dir; do
+    for tarball in "$dir"/*.tar "$dir"/*.tar.gz; do
+        [[ -f "$tarball" ]] || continue
+        case "$tarball" in
+        *.tar.gz)
+            echo "💾 Loading compressed Docker image from $tarball..."
+            if gunzip -t "$tarball" 2>/dev/null; then
+                gunzip -c "$tarball" | docker load
+                found_any=true
+            else
+                echo "❌ Invalid gzip file: $tarball — skipping."
+            fi
+            ;;
+        *.tar)
+            echo "💾 Loading uncompressed Docker image from $tarball..."
+            docker load -i "$tarball"
+            found_any=true
+            ;;
+        esac
+    done
+done <<<"$dockerfile_dirs"
+
+if [[ "$found_any" == "false" ]]; then
+    if [[ "$REQUIRE_CACHE" == "true" ]]; then
+        echo "❌ No cached Docker images found, and download_mode=offline requires them."
+        exit 1
+    else
+        echo "⚠️  No Docker base images loaded from local tarballs."
+    fi
+else
+    echo "✅ All available Docker base images loaded successfully."
 fi
 
 # Write .env file
@@ -59,19 +126,22 @@ DB_PORT=${db_port}
 DB_DATA_PATH=${db_data_path}
 AUDIO_DIRECTORY=${audio_directory}
 AUDIO_FORMAT_CODE=${audio_format_code}
-NO_LOCAL=${no_local}
+DOWNLOAD_MODE=${download_mode}
 EOF
 
 echo ".env written to $env_file:"
 cat "$env_file"
 
+# Enable and optionally start service
+echo "Reloading systemd..."
+sudo systemctl daemon-reload
+
 if [[ "$enable_service" == "true" ]]; then
-    echo "Reloading systemd..."
-    sudo systemctl daemon-reload
     echo "Enabling sensos-docker.service..."
     sudo systemctl enable sensos-docker.service
-    if [[ "$start_service" == "true" ]]; then
-        echo "Starting sensos-docker.service..."
-        sudo systemctl start sensos-docker.service
-    fi
+fi
+
+if [[ "$start_service" == "true" ]]; then
+    echo "Starting sensos-docker.service..."
+    sudo systemctl start sensos-docker.service
 fi
