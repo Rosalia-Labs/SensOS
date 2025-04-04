@@ -7,8 +7,8 @@ Requires=NetworkManager.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/start-wifi-access-point.sh
-ExecStop=/bin/bash -c 'sudo nmcli connection down accesspoint || true'
+ExecStart=/usr/local/bin/start-hotspot.sh
+ExecStop=/bin/bash -c 'sudo nmcli connection down Hotspot || true'
 User=sensos-runner
 Restart=on-failure
 RestartSec=10

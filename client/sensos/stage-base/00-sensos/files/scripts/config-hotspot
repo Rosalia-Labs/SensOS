@@ -3,7 +3,7 @@ set -e
 
 script_name=$(basename "$0")
 config_dir="/sensos/etc"
-config_file="$config_dir/wifi_access_point.conf"
+config_file="$config_dir/access_point.conf"
 log_dir="/sensos/log"
 
 source /sensos/lib/load-defaults.sh
@@ -18,18 +18,12 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid)"
+default_ssid=$(hostname | sed 's/-/_/g')
+register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid "$default_ssid")"
 register_option --password password "WiFi password (8–63 chars, required)" "$(get_default password)"
-register_option --interface interface "WiFi interface name" "$(get_default interface)"
-register_option --band band "WiFi band (e.g., bg, a)" "$(get_default band)"
-register_option --channel channel "WiFi channel" "$(get_default channel)"
-register_option --country-code country_code "ISO country code" "$(get_default country_code)"
-register_option --low-txpower low_txpower "Reduce transmit power" "$(get_default low_txpower false)"
 register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
-register_option --limit-width limit_width "Limit channel width to 20MHz" "$(get_default limit_width false)"
-register_option --beacon-interval beacon_interval "Increase beacon interval" "$(get_default beacon_interval false)"
-register_option --enable-service enable_service "Enable wifi-access-point.service" "$(get_default enable_service true)"
-register_option --start-service start_service "Start wifi-access-point.service" "$(get_default start_service false)"
+register_option --enable-service enable_service "Enable sensos-hotspot.service" "$(get_default enable_service true)"
+register_option --start-service start_service "Start sensos-hotspot.service" "$(get_default start_service false)"
 
 # Parse CLI
 parse_switches "$script_name" "$@"
@@ -48,41 +42,49 @@ fi
 # Ensure necessary directories exist
 mkdir -p "$config_dir" "$log_dir"
 
-# Write config file
+# Write config file for start-hotspot.sh
 {
-    echo "[WiFi]"
     echo "ssid = $ssid"
     echo "password = $password"
-    [[ -n "$interface" ]] && echo "interface = $interface"
-    [[ -n "$band" ]] && echo "band = $band"
-    [[ -n "$channel" ]] && echo "channel = $channel"
-    [[ -n "$country_code" ]] && echo "country = $country_code"
-    echo ""
-    echo "[PowerSaving]"
-    echo "low_txpower = $low_txpower"
     echo "power_save = $power_save"
-    echo "limit_width = $limit_width"
-    echo "beacon_interval = $beacon_interval"
 } >"$config_file"
 
-echo "WiFi Access Point configuration saved to $config_file."
-
-# Reload and manage systemd service
-echo "Reloading systemd..."
-sudo systemctl daemon-reload
+echo "✅ WiFi access point config written to $config_file."
 
 if [[ "$enable_service" == "true" ]]; then
-    echo "Disabling auto-hotspot.service..."
-    sudo systemctl disable --now auto-hotspot.service || true
-    echo "Enabling wifi-access-point.service..."
-    sudo systemctl enable wifi-access-point.service
+    echo "Enabling sensos-hotspot.service..."
+    sudo systemctl enable sensos-hotspot.service
+
+    echo "Disabling auto-hotspot.service (will stay active until stopped)..."
+    sudo systemctl disable auto-hotspot.service || true
+
     echo "Enabling ssh.service..."
     sudo systemctl enable ssh
+
+    echo "ℹ️  auto-hotspot.service is still running for now and will be stopped after the switch."
 fi
 
 if [[ "$start_service" == "true" ]]; then
-    echo "Starting wifi-access-point.service..."
-    sudo systemctl restart wifi-access-point.service
-    echo "Starting SSH service..."
-    sudo systemctl start ssh
+    echo "⚠️  The device is about to switch WiFi networks."
+    echo "📶 A new access point with SSID '$ssid' will be enabled."
+    echo "💡 Please log out now and reconnect to the new network once it appears."
+    echo "⏳ Waiting 10 seconds before switching..."
+
+    (
+        sleep 10
+        echo "🔄 Reloading systemd before switching..." | tee -a "$LOG_FILE"
+        sudo systemctl daemon-reexec
+        sudo systemctl daemon-reload
+
+        echo "🔌 Stopping auto-hotspot.service..." | tee -a "$LOG_FILE"
+        sudo systemctl stop auto-hotspot.service
+
+        echo "🚀 Starting sensos-hotspot.service..." | tee -a "$LOG_FILE"
+        sudo systemctl start sensos-hotspot.service
+
+        echo "🔐 Starting ssh.service..." | tee -a "$LOG_FILE"
+        sudo systemctl start ssh
+
+        echo "✅ Access point switch complete." | tee -a "$LOG_FILE"
+    ) &
 fi
