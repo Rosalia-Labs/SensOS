@@ -178,7 +178,7 @@ def compute_next_ip(
     base_bytes[2] = subnet_offset
     base_bytes[3] = 0
     subnet_base = ipaddress.IPv4Address(bytes(base_bytes))
-    subnet = ipaddress.ip_network(f"{subnet_base}/{ip_range.prefixlen}", strict=True)
+    subnet = ipaddress.ip_network(f"{subnet_base}/{ip_range.prefixlen}", strict=False)
 
     if last_ip is None or last_ip not in subnet:
         next_ip = subnet.network_address + 1
