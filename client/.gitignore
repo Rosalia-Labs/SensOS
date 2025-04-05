@@ -2,3 +2,5 @@ pi-gen/config
 pi-gen/stage2/04-sensos
 wheels
 os_packages
+sensos/stage-base/00-sensos/files/docker/**/[^/]*.tar
+sensos/stage-base/00-sensos/files/docker/**/[^/]*.tar.gz
