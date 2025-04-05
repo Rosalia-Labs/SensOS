@@ -16,7 +16,7 @@ from fastapi import FastAPI, Depends, HTTPException, Form, BackgroundTasks
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, JSONResponse
 from psycopg.errors import UniqueViolation
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from pydantic import BaseModel, IPvAnyAddress
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -157,7 +157,7 @@ def get_network_details(network_name):
             return cur.fetchone()
 
 
-def get_last_assigned_ip(network_id: int) -> Optional[str]:
+def get_last_assigned_ip(network_id: int) -> Optional[ipaddress.IPv4Address]:
     """Fetch the highest assigned IP address for the given network."""
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -166,34 +166,26 @@ def get_last_assigned_ip(network_id: int) -> Optional[str]:
                 (network_id,),
             )
             result = cur.fetchone()
-            return result[0] if result else None
+            return ipaddress.ip_address(result[0]) if result else None
 
 
-def compute_next_ip(ip_range, last_ip, subnet_offset=0):
-    """Compute the next available IP address in a specified subnetwork."""
-    network = ipaddress.ip_network(ip_range, strict=False)
+def compute_next_ip(
+    ip_range: ipaddress.IPv4Network,
+    last_ip: Optional[ipaddress.IPv4Address] = None,
+    subnet_offset: int = 0,
+) -> Optional[ipaddress.IPv4Address]:
+    base_bytes = bytearray(ip_range.network_address.packed)
+    base_bytes[2] = subnet_offset
+    base_bytes[3] = 0
+    subnet_base = ipaddress.IPv4Address(bytes(base_bytes))
+    subnet = ipaddress.ip_network(f"{subnet_base}/{ip_range.prefixlen}", strict=True)
 
-    # Compute the base IP for this subnetwork (x.x.<subnet_offset>.1)
-    base_ip_parts = list(map(int, str(network.network_address).split(".")))
-    base_ip_parts[2] = subnet_offset  # Set the third octet to the desired subnetwork
-    base_ip_parts[3] = 1  # Start from x.x.<subnet_offset>.1
-
-    # If no last IP, return the first address in the subnetwork
-    if not last_ip:
-        return ".".join(map(str, base_ip_parts))
-
-    # Increment the last assigned IP
-    last_ip_parts = list(map(int, str(last_ip).split(".")))
-
-    if last_ip_parts[2] == subnet_offset and last_ip_parts[3] < 254:
-        last_ip_parts[3] += 1
-    elif last_ip_parts[2] < subnet_offset:
-        last_ip_parts[2] = subnet_offset
-        last_ip_parts[3] = 1
+    if last_ip is None or last_ip not in subnet:
+        next_ip = subnet.network_address + 1
     else:
-        return None  # No more available IPs in this subnet
+        next_ip = last_ip + 1
 
-    return ".".join(map(str, last_ip_parts))
+    return next_ip if next_ip < subnet.broadcast_address else None
 
 
 def extract_server_config(wg_config_path):
