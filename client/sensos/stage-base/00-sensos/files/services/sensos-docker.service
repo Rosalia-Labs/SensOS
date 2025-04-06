@@ -7,8 +7,8 @@ Requires=docker.service
 User=sensos-runner
 Environment=HOME=/tmp
 WorkingDirectory=/sensos/docker
-ExecStart=/usr/bin/docker compose up
-ExecStop=/usr/bin/docker compose down
+ExecStart=/usr/bin/docker compose --project-name sensos up --no-build
+ExecStop=/usr/bin/docker compose --project-name sensos down
 Restart=always
 
 [Install]

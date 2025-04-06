@@ -1,5 +1,6 @@
 services:
   sensos-client-database:
+    image: sensos-client-database
     container_name: sensos-client-database
     restart: always
     environment:
@@ -15,6 +16,7 @@ services:
       retries: 5
 
   sensos-client-sound-capture:
+    image: sensos-client-sound-capture
     container_name: sensos-client-sound-capture
     restart: always
     depends_on:
@@ -34,6 +36,7 @@ services:
         max_attempts: 3
 
   sensos-client-birdnet:
+    image: sensos-client-birdnet
     container_name: sensos-client-birdnet
     restart: always
     depends_on:
@@ -53,6 +56,7 @@ services:
         max_attempts: 3
 
   sensos-sound-analyzer:
+    image: sensos-client-sound-analyzer
     container_name: sensos-client-sound-analyzer
     restart: always
     depends_on:
@@ -70,6 +74,7 @@ services:
         max_attempts: 3
 
   sensos-client-db-manager:
+    image: sensos-client-db-manager
     container_name: sensos-client-db-manager
     restart: always
     depends_on:
@@ -89,6 +94,7 @@ services:
         max_attempts: 3
 
   sensos-system-recorder:
+    image: sensos-client-system-recorder
     container_name: sensos-client-system-recorder
     restart: always
     depends_on:

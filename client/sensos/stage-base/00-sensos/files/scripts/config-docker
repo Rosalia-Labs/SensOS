@@ -6,6 +6,8 @@ script_name=$(basename "$0")
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
 
+arecord_conf=/sensos/etc/arecord.conf
+
 declare -A default_vars
 load_defaults "$script_name" default_vars
 
@@ -14,8 +16,6 @@ get_default() {
     local fallback="$2"
     echo "${default_vars[$varname]:-$fallback}"
 }
-
-arecord_conf=/sensos/etc/arecord.conf
 
 # Load values from arecord.conf if available
 if [[ -f "$arecord_conf" ]]; then
@@ -60,18 +60,9 @@ for dir in $dockerfile_dirs; do
     tarball_gz="$dir/${image_tag}.tar.gz"
     tarball_plain="$dir/${image_tag}.tar"
 
-    already_loaded=$(docker image inspect "$image_tag" >/dev/null 2>&1 && echo "yes" || echo "no")
-
-    if [[ "$already_loaded" == "yes" && "$FORCE_BUILD" != "true" ]]; then
-        echo "✅ Image $image_tag already loaded — skipping."
-        continue
-    fi
-
     if [[ "$force_build" == "true" ]]; then
         echo "🔁 Forcing rebuild of $image_tag..."
-        docker buildx build --platform linux/arm64 -t "$image_tag" --load "$dir"
-        echo "📦 Saving to $tarball_gz..."
-        docker save "$image_tag" | gzip >"$tarball_gz"
+        docker build -t "$image_tag" "$dir"
         continue
     fi
 
@@ -83,13 +74,32 @@ for dir in $dockerfile_dirs; do
         docker load -i "$tarball_plain"
     elif [[ "$build_missing" == "true" ]]; then
         echo "🛠️ Building $image_tag from $dir (missing tarball)..."
-        docker buildx build --platform linux/arm64 -t "$image_tag" --load "$dir"
-        echo "📦 Saving to $tarball_gz..."
-        docker save "$image_tag" | gzip >"$tarball_gz"
+        docker build -t "$image_tag" "$dir"
     else
         echo "⚠️  No image or tarball found for $image_tag — skipping (use --build or --force to build)."
     fi
 done
+
+echo "🔍 Verifying that all required Docker images are present..."
+missing_images=()
+
+for dir in $dockerfile_dirs; do
+    image_tag="sensos-$(basename "$dir" | tr '_' '-')"
+    if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
+        missing_images+=("$image_tag")
+    fi
+done
+
+if [[ "${#missing_images[@]}" -gt 0 ]]; then
+    echo "❌ The following images are missing and required for systemd to run with --no-build:"
+    for img in "${missing_images[@]}"; do
+        echo "   - $img"
+    done
+    echo "💡 Rerun this script with --build or --force to fix."
+    exit 1
+else
+    echo "✅ All required images are available."
+fi
 
 # Write .env file
 env_file="$docker_compose_dir/.env"
