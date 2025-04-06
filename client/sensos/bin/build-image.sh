@@ -1,7 +1,7 @@
 #!/bin/bash
-
 set -e
 
+# Set directories
 SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PI_GEN_DIR="${SENSOS_DIR}/../pi-gen"
 CONFIG_FILE="${PI_GEN_DIR}/config"
@@ -9,39 +9,15 @@ CONFIG_FILE="${PI_GEN_DIR}/config"
 STAGE_SRC="${SENSOS_DIR}/stage-base/00-sensos"
 STAGE_DST="${PI_GEN_DIR}/stage2/04-sensos"
 
+# Build control flags
 CONTINUE_BUILD=false
-
 REMOVE_DEPLOY=false
-DOWNLOAD_WHEELS=false
-DOWNLOAD_OS_PACKAGES=
-CLEAN_WHEELS=false
-CLEAN_OS_PACKAGES=false
-SAVE_BASE_IMAGES=false
-CLEAN_BASE_IMAGES=false
-
-try_rm_rf() {
-    local target="$1"
-    rm -rf "$target" 2>/dev/null || sudo rm -rf "$target" 2>/dev/null
-}
-
-try_rm_rf_contents() {
-    local target="$1"
-    if [ -d "$target" ]; then
-        rm -rf "${target:?}/"* 2>/dev/null || sudo rm -rf "${target:?}/"* 2>/dev/null
-    fi
-}
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
     echo
     echo "Options:"
     echo "  --remove-existing-images       Delete the 'deploy' directory before building"
-    echo "  --download-wheels[=force]      Download Python wheels for offline install"
-    echo "  --download-os-packages[=force] Download OS-level .deb packages used in Dockerfiles"
-    echo "  --save-base-images             Save base Docker images used in each Dockerfile to .tar[.gz]"
-    echo "  --clean-os-packages            Remove downloaded debian packages from repository"
-    echo "  --clean-wheels                 Remove downloaded python wheels from repository"
-    echo "  --clean                        Same as --remove-existing-images --clean-wheels --clean-os-packages"
     echo "  --continue                     Continue from a previously interrupted build"
     echo "  -h, --help                     Show this help message and exit"
     echo
@@ -55,45 +31,8 @@ while [[ $# -gt 0 ]]; do
         REMOVE_DEPLOY=true
         shift
         ;;
-    --download-wheels)
-        if [[ -n "$2" && "$2" != --* ]]; then
-            DOWNLOAD_WHEELS="$2"
-            shift 2
-        else
-            DOWNLOAD_WHEELS="true"
-            shift
-        fi
-        ;;
-    --download-os-packages)
-        if [[ -n "$2" && "$2" != --* ]]; then
-            DOWNLOAD_OS_PACKAGES="$2"
-            shift 2
-        else
-            DOWNLOAD_OS_PACKAGES="true"
-            shift
-        fi
-        ;;
-    --save-base-images)
-        SAVE_BASE_IMAGES=true
-        shift
-        ;;
-    --clean-wheels)
-        CLEAN_WHEELS=true
-        shift
-        ;;
-    --clean-os-packages)
-        CLEAN_OS_PACKAGES=true
-        shift
-        ;;
     --continue)
         CONTINUE_BUILD=true
-        shift
-        ;;
-    --clean)
-        REMOVE_DEPLOY=true
-        CLEAN_WHEELS=true
-        CLEAN_OS_PACKAGES=true
-        CLEAN_BASE_IMAGES=true
         shift
         ;;
     -h | --help)
@@ -118,173 +57,13 @@ echo "Building image using config:"
 cat "$CONFIG_FILE"
 echo
 
-# 🧼 Clean early
-if [ "$CLEAN_WHEELS" = true ]; then
-    echo "🧹 Cleaning downloaded Python wheels..."
-    find "$STAGE_SRC/files/docker" -type f -name '*.whl' -exec rm -f {} +
-fi
-
-if [ "$CLEAN_OS_PACKAGES" = true ]; then
-    echo "🧹 Cleaning downloaded OS .deb packages..."
-    find "$STAGE_SRC/files/docker" -type f -name '*.deb' -exec rm -f {} +
-fi
-
-if [ "$CLEAN_BASE_IMAGES" = true ]; then
-    echo "🧹 Cleaning saved base image tarballs..."
-    find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -type f \( -name '*.tar' -o -name '*.tar.gz' \) -exec rm -f {} +
-fi
-
-echo "Finding all requirements.txt files..."
-REQUIREMENTS_LIST=$(find "$SENSOS_DIR" -name 'requirements.txt')
-for req in $REQUIREMENTS_LIST; do
-    req_dir=$(dirname "$req")
-    wheels_dir="$req_dir/wheels"
-    mkdir -p "$wheels_dir"
-done
-
-if [ "$DOWNLOAD_WHEELS" = "true" ] || [ "$DOWNLOAD_WHEELS" = "force" ]; then
-    for req in $REQUIREMENTS_LIST; do
-        req_dir=$(dirname "$req")
-        wheels_dir="$req_dir/wheels"
-        rel_path="${req#$SENSOS_DIR/}"
-        echo "📦 Checking wheels for: $rel_path → $wheels_dir"
-
-        wheel_count=$(ls "$wheels_dir"/*.whl 2>/dev/null | wc -l)
-        if [[ "$DOWNLOAD_WHEELS" != "force" && "$wheel_count" -gt 0 ]]; then
-            echo "✅ Wheels already exist in $wheels_dir, skipping."
-            continue
-        fi
-
-        echo "⬇️ Downloading wheels..."
-        docker run --rm \
-            -v "$wheels_dir":/out \
-            -v "$req_dir":/src \
-            arm64v8/python:3.11-slim \
-            sh -c "pip install --upgrade pip && pip download -d /out -r /src/$(basename "$req")"
-    done
-
-    echo "✅ All wheels downloaded."
-fi
-
-echo "Finding all Dockerfiles..."
-DOCKERFILES=$(find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -name 'Dockerfile')
-for dockerfile in $DOCKERFILES; do
-    pkg_dir=$(dirname "$dockerfile")
-    os_pkg_dir="$pkg_dir/os_packages"
-    mkdir -p "$os_pkg_dir"
-done
-
-if [ "$SAVE_BASE_IMAGES" = true ]; then
-    for dockerfile in $DOCKERFILES; do
-        pkg_dir=$(dirname "$dockerfile")
-
-        BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' "$dockerfile")
-        if [[ -z "$BASE_IMAGE" ]]; then
-            echo "❌ Could not determine base image from $dockerfile"
-            continue
-        fi
-
-        base_image_basename="$(echo "$BASE_IMAGE" | sed 's#[/:]#_#g')"
-        gzip_available=false
-        if command -v gzip >/dev/null 2>&1; then
-            gzip_available=true
-            base_image_tarball="$pkg_dir/${base_image_basename}.tar.gz"
-        else
-            base_image_tarball="$pkg_dir/${base_image_basename}.tar"
-        fi
-
-        if [ ! -f "$base_image_tarball" ]; then
-            echo "💾 Saving base image $BASE_IMAGE to $base_image_tarball..."
-            docker pull "$BASE_IMAGE"
-            if [ "$gzip_available" = true ]; then
-                docker save "$BASE_IMAGE" | gzip -c >"$base_image_tarball"
-            else
-                docker save "$BASE_IMAGE" -o "$base_image_tarball"
-            fi
-        else
-            echo "✅ Base image tarball already exists: $base_image_tarball"
-        fi
-    done
-    echo "✅ All base images saved."
-fi
-
-if [ "$DOWNLOAD_OS_PACKAGES" = "true" ] || [ "$DOWNLOAD_OS_PACKAGES" = "force" ]; then
-    for dockerfile in $DOCKERFILES; do
-        pkg_dir=$(dirname "$dockerfile")
-        os_pkg_dir="$pkg_dir/os_packages"
-        echo "Processing OS packages for directory: $pkg_dir"
-
-        # If not forcing and .deb files already exist, skip download.
-        if [[ "$DOWNLOAD_OS_PACKAGES" != "force" && -n "$(find "$os_pkg_dir" -name '*.deb' 2>/dev/null)" ]]; then
-            echo "✅ OS packages already exist in $os_pkg_dir, skipping download."
-        else
-            echo "🔍 Scanning $dockerfile for APT packages..."
-            contents=$(awk '{ if (sub(/\\$/, "")) { line = line $0 } else { print line $0; line = "" } }' "$dockerfile")
-            APT_PACKAGES=()
-
-            matches=$(echo "$contents" | grep -E '^ENV[[:space:]]+REQUIRED_DEBS=')
-            while IFS= read -r line; do
-                pkgs=$(echo "$line" | sed -E 's/^ENV[[:space:]]+REQUIRED_DEBS="([^"]*)".*/\1/')
-                APT_PACKAGES+=($pkgs)
-            done <<<"$matches"
-
-            echo "⬇️ Downloading .deb packages with full dependencies to $os_pkg_dir..."
-
-            # Extract base image from the Dockerfile
-            BASE_IMAGE=$(awk '/^FROM / { print $2; exit }' "$dockerfile")
-
-            if [[ -z "$BASE_IMAGE" ]]; then
-                echo "❌ Could not determine base image from $dockerfile"
-                continue
-            fi
-
-            base_image_basename="$(echo "$BASE_IMAGE" | sed 's#[/:]#_#g')"
-            gzip_available=false
-            if command -v gzip >/dev/null 2>&1; then
-                gzip_available=true
-                base_image_tarball="$pkg_dir/${base_image_basename}.tar.gz"
-            else
-                base_image_tarball="$pkg_dir/${base_image_basename}.tar"
-            fi
-
-            if [ ! -f "$base_image_tarball" ]; then
-                echo "💾 Saving base image $BASE_IMAGE to $base_image_tarball..."
-                docker pull "$BASE_IMAGE"
-                if [ "$gzip_available" = true ]; then
-                    docker save "$BASE_IMAGE" | gzip -c >"$base_image_tarball"
-                else
-                    docker save "$BASE_IMAGE" -o "$base_image_tarball"
-                fi
-            else
-                echo "✅ Base image tarball already exists: $base_image_tarball"
-            fi
-
-            docker run --rm --platform linux/arm64 \
-                -v "$os_pkg_dir":/debs \
-                "$BASE_IMAGE" bash -c "\
-                apt-get update && \
-                apt-get install --reinstall --download-only -y --no-install-recommends \
-                    apt-utils apt-file wget gnupg apt-transport-https ca-certificates && \
-                apt-get install --reinstall --download-only -y --no-install-recommends ${APT_PACKAGES[*]} && \
-                cp -a /var/cache/apt/archives/*.deb /debs"
-
-            echo "📦 Generating local APT repo metadata in $os_pkg_dir..."
-            docker run --rm -v "$os_pkg_dir":/debs "$BASE_IMAGE" \
-                bash -c "apt-get update && apt-get install -y dpkg-dev && cd /debs && dpkg-scanpackages . /dev/null | gzip -c > Packages.gz"
-
-        fi
-
-    done
-    echo "✅ OS packages download and repository generation complete."
-fi
-
 # Get Git metadata
 GIT_COMMIT=$(git -C "$SENSOS_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
 GIT_BRANCH=$(git -C "$SENSOS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 GIT_TAG=$(git -C "$SENSOS_DIR" describe --tags --always 2>/dev/null || echo "unknown")
 GIT_DIRTY=$(test -n "$(git -C "$SENSOS_DIR" status --porcelain 2>/dev/null)" && echo "true" || echo "false")
 
-# Get VERSION file data
+# Get version information from VERSION file
 VERSION_FILE="$SENSOS_DIR/../VERSION"
 if [ -f "$VERSION_FILE" ]; then
     VERSION_MAJOR=$(awk -F' = ' '/^major/ {print $2}' "$VERSION_FILE")
@@ -298,9 +77,9 @@ else
     VERSION_SUFFIX=""
 fi
 
+# Write version metadata into the custom stage
 VERSION_FILE_PATH="${STAGE_SRC}/files/etc/sensos-version"
 mkdir -p "$(dirname "$VERSION_FILE_PATH")"
-
 cat >"$VERSION_FILE_PATH" <<EOF
 VERSION=${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}
 GIT_COMMIT=$GIT_COMMIT
@@ -309,6 +88,19 @@ GIT_TAG=$GIT_TAG
 GIT_DIRTY=$GIT_DIRTY
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
+
+# Helper functions for cleanup
+try_rm_rf() {
+    local target="$1"
+    rm -rf "$target" 2>/dev/null || sudo rm -rf "$target" 2>/dev/null
+}
+
+try_rm_rf_contents() {
+    local target="$1"
+    if [ -d "$target" ]; then
+        rm -rf "${target:?}/"* 2>/dev/null || sudo rm -rf "${target:?}/"* 2>/dev/null
+    fi
+}
 
 echo "Copying custom stage to pi-gen..."
 try_rm_rf "$STAGE_DST"
@@ -321,6 +113,30 @@ if [ "$REMOVE_DEPLOY" = true ]; then
     try_rm_rf_contents ./deploy
 fi
 
+# -----------------------------------------------------------------------------
+# Build images from each Dockerfile in the custom stage 'files' tree.
+# -----------------------------------------------------------------------------
+
+# Define target platform for the Pi (adjust if your Pi uses a different ARM variant)
+TARGET_PLATFORM="linux/arm64"
+
+echo "Finding all Dockerfiles..."
+DOCKERFILES=$(find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -name 'Dockerfile')
+for dockerfile in $DOCKERFILES; do
+    context_dir=$(dirname "$dockerfile")
+    # Generate an image tag from the directory name
+    image_tag="sensos-$(basename "$context_dir" | tr '_' '-')"
+
+    echo "Building image for Dockerfile at $dockerfile with tag $image_tag..."
+    # Build the image for the Pi (ARM) platform using Docker Buildx
+    docker buildx build --platform linux/arm64 -t $image_tag --load "$context_dir"
+
+    # Save the built image as a gzip-compressed tarball in the same directory
+    output_tarball="$context_dir/${image_tag}.tar.gz"
+    echo "Saving image $image_tag to $output_tarball..."
+    docker save $image_tag | gzip >"$output_tarball"
+done
+
 # Build image
 if [ "$CONTINUE_BUILD" = true ]; then
     echo "Continuing previous build..."
@@ -331,9 +147,11 @@ else
     ./build-docker.sh
 fi
 
-# Cleanup
+# -----------------------------------------------------------------------------
+# Cleanup copied stage
+# -----------------------------------------------------------------------------
 echo "Cleaning up copied stage..."
 try_rm_rf "$STAGE_DST"
 
-echo "Build complete."
+echo "Build complete. All images have been built and saved as tar.gz files alongside their Dockerfiles."
 exit 0
