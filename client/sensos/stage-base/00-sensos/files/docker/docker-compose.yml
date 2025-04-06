@@ -1,10 +1,5 @@
 services:
   sensos-client-database:
-    build:
-      context: ./database
-      platforms: [linux/arm64]
-      args:
-        NO_LOCAL: ${NO_LOCAL:-false}
     container_name: sensos-client-database
     restart: always
     environment:
@@ -13,8 +8,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - ${DB_DATA_PATH}:/var/lib/postgresql/data
-      - ./database/os_packages:/os_packages
-      - ./database/wheels:/wheels
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -22,11 +15,6 @@ services:
       retries: 5
 
   sensos-client-sound-capture:
-    build:
-      context: ./sound_capture
-      platforms: [linux/arm64]
-      args:
-        NO_LOCAL: ${NO_LOCAL:-false}
     container_name: sensos-client-sound-capture
     restart: always
     depends_on:
@@ -40,19 +28,12 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
-      - ./sound_capture/os_packages:/os_packages
-      - ./sound_capture/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
         max_attempts: 3
 
   sensos-client-birdnet:
-    build:
-      context: ./birdnet
-      platforms: [linux/arm64]
-      args:
-        NO_LOCAL: ${NO_LOCAL:-false}
     container_name: sensos-client-birdnet
     restart: always
     depends_on:
@@ -66,19 +47,12 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - ./birdnet/model:/model
-      - ./birdnet/os_packages:/os_packages
-      - ./birdnet/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
         max_attempts: 3
 
   sensos-sound-analyzer:
-    build:
-      context: ./sound_analyzer
-      platforms: [linux/arm64]
-      args:
-        NO_LOCAL: ${NO_LOCAL:-false}
     container_name: sensos-client-sound-analyzer
     restart: always
     depends_on:
@@ -90,20 +64,12 @@ services:
       AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
-    volumes:
-      - ./sound_analyzer/os_packages:/os_packages
-      - ./sound_analyzer/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
         max_attempts: 3
 
   sensos-client-db-manager:
-    build:
-      context: ./db_manager
-      platforms: [linux/arm64]
-      args:
-        NO_LOCAL: ${NO_LOCAL:-false}
     container_name: sensos-client-db-manager
     restart: always
     depends_on:
@@ -117,19 +83,12 @@ services:
       AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
     volumes:
       - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
-      - ./db_manager/os_packages:/os_packages
-      - ./db_manager/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
         max_attempts: 3
 
   sensos-system-recorder:
-    build:
-      context: ./system_recorder
-      platforms: [linux/arm64]
-      args:
-        NO_LOCAL: ${NO_LOCAL:-false}
     container_name: sensos-client-system-recorder
     restart: always
     depends_on:
@@ -147,8 +106,6 @@ services:
       - /sys:/host/sys:ro
       - /:/host/rootfs:ro
       - /sensos/data:/sensos/data:ro
-      - ./system_recorder/os_packages:/os_packages
-      - ./system_recorder/wheels:/wheels
     deploy:
       restart_policy:
         condition: on-failure
