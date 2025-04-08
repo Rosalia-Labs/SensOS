@@ -49,9 +49,8 @@ while true; do
     if [[ "$STATUS" == "connected" ]]; then
         echo "LTE connection is up." | tee -a "$LOG_FILE"
     else
-        sudo restart_lte
+        restart_lte
     fi
 
-    # Sleep for 30 seconds before checking again
-    sleep 30
+    sleep 300
 done

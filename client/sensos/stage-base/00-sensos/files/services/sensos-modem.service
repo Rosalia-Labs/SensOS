@@ -8,7 +8,7 @@ Requires=NetworkManager.service
 Type=simple
 Restart=always
 RestartSec=10
-ExecStart=/usr/local/bin/start-sensos-modem.sh
+ExecStart=/usr/local/bin/start-modem.sh
 User=sensos-runner
 
 [Install]
