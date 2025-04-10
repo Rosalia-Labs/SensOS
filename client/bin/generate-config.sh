@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../sensos" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/../pi-gen/config"
 
 # Default settings

@@ -24,7 +24,7 @@ if [[ "$DEVICE" =~ ^/dev/(sd[a]|disk0|rdisk0)$ ]]; then
     exit 1
 fi
 
-SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../sensos" && pwd)"
 PI_GEN_DIR="${SENSOS_DIR}/../pi-gen"
 DEPLOY_DIR="${PI_GEN_DIR}/deploy"
 

@@ -2,7 +2,7 @@
 set -e
 
 # Set directories
-SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../sensos" && pwd)"
 PI_GEN_DIR="${SENSOS_DIR}/../pi-gen"
 CONFIG_FILE="${PI_GEN_DIR}/config"
 BUILD_DOCKER_IMAGES=false
