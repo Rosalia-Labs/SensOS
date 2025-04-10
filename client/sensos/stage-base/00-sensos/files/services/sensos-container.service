@@ -6,6 +6,7 @@ Requires=docker.service
 [Service]
 Type=simple
 User=sensos-runner
+Environment=HOME=/tmp
 ExecStart=/usr/local/bin/start-containers.sh
 ExecStop=/usr/local/bin/stop-containers.sh
 Restart=on-failure
