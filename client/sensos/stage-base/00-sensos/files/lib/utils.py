@@ -308,3 +308,31 @@ def get_registry_password_from_info(registry_info):
         file=sys.stderr,
     )
     return None
+
+def enable_service(service_name, start=False):
+    """Enable and optionally start the specified systemd service using sudo."""
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
+        if start:
+            subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
+            print(f"✅ Service {service_name} enabled and started.")
+        else:
+            print(f"✅ Service {service_name} enabled.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
+
+
+def safe_cmd_output(cmd, try_sudo=False):
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True).strip()
+    except subprocess.CalledProcessError as e:
+        if not try_sudo:
+            return safe_cmd_output(f"sudo {cmd}", try_sudo=True)
+        else:
+            return f"ERROR: {e}"

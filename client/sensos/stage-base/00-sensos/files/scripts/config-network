@@ -87,10 +87,18 @@ def parse_args():
             },
         ),
         (
+            ["--connectivity-profile"],
+            {
+                "help": "Connectivity profile: unrestricted, restricted, or offline (offline implies --no-connectivity-checks)",
+                "choices": ["unrestricted", "restricted", "offline"],
+                "dest": "connectivity_profile",
+            },
+        ),
+        (
             ["--no-connectivity-checks"],
             {
                 "action": "store_true",
-                "help": "Indicate device has no networking; skip connectivity check service",
+                "help": "Skip connectivity check service",
                 "dest": "no_connectivity_checks",
             },
         ),
@@ -122,31 +130,31 @@ def enable_wireguard(netname: str):
 
 def enable_ssh(passwords: bool = False):
     """Enable SSH and configure password authentication based on the `passwords` flag."""
-    sshd_config = "/etc/ssh/sshd_config"
-    backup_config = "/etc/ssh/sshd_config.bak"
-
-    # Backup before modifying
-    run_command(f"sudo cp -a {sshd_config} {backup_config}")
-
-    # Set password authentication based on flag
+    sshd_dir = "/etc/ssh/sshd_config.d"
+    custom_conf = os.path.join(sshd_dir, "sensos.conf")
     password_setting = "yes" if passwords else "no"
-    run_command(
-        f"sudo sed -i 's/^#?PasswordAuthentication .*/PasswordAuthentication {password_setting}/' {sshd_config}"
-    )
 
-    print(f"✅ SSH passwords are {'enabled' if passwords else 'disabled'}.")
+    # Make sure directory exists
+    run_command(f"sudo mkdir -p {sshd_dir}")
 
-    # Ensure public key authentication is enabled
-    run_command(
-        f"sudo sed -i 's/^#?PubkeyAuthentication .*/PubkeyAuthentication yes/' {sshd_config}"
+    # Write settings to our override file
+    config = f"""\
+# Set by SensOS
+PasswordAuthentication {password_setting}
+PubkeyAuthentication yes
+"""
+    run_command(f"echo '{config}' | sudo tee {custom_conf} > /dev/null")
+
+    print(
+        f"✅ SSH passwords are {'enabled' if passwords else 'disabled'} in {custom_conf}."
     )
 
     # Enable and start SSH service
     run_command("sudo systemctl enable ssh")
-    run_command("sudo systemctl start ssh")
+    run_command("sudo systemctl restart ssh")
 
-    print("✅ SSH service enabled and started.")
-    print("🔄 A reboot is required for changes to fully take effect.")
+    print("✅ SSH service enabled and restarted.")
+    print("🔄 A reboot is still recommended to ensure all changes take full effect.")
 
 
 def generate_wireguard_keys(network_name, force):
@@ -736,6 +744,8 @@ def write_client_settings(args, server_wg_ip):
     content = (
         f"SERVER_IP={server_wg_ip}\nSERVER_PORT=8000\nNETWORK_NAME={args.network}\n"
     )
+    if args.connectivity_profile:
+        content += f"CONNECTIVITY_PROFILE={args.connectivity_profile}\n"
 
     with open(settings_file, "w") as f:
         f.write(content)
@@ -745,39 +755,15 @@ def write_client_settings(args, server_wg_ip):
     print(f"✅ Client settings written to {settings_file}")
 
 
-def enable_service(service_name, start=False):
-    """Enable and optionally start the specified systemd service using sudo."""
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
-        if start:
-            subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
-            print(f"✅ Service {service_name} enabled and started.")
-        else:
-            print(f"✅ Service {service_name} enabled.")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
-
-
-def safe_cmd_output(cmd, try_sudo=False):
-    try:
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
-    except subprocess.CalledProcessError as e:
-        if not try_sudo:
-            return safe_cmd_output(f"sudo {cmd}", try_sudo=True)
-        else:
-            return f"ERROR: {e}"
-
-
 def main():
     setup_logging()
 
     args = parse_args()
+
+    if args.connectivity_profile == "offline":
+        args.no_connectivity_checks = True
+    if args.connectivity_profile:
+        print(f"📡 Connectivity profile: {args.connectivity_profile}")
 
     print("🚀 Starting device configuration...")
     api_password = get_api_password(args.config_server, args.port)

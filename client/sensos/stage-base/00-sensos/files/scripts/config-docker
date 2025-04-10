@@ -8,6 +8,7 @@ source /sensos/lib/parse-switches.sh
 source /sensos/lib/docker-utils.sh
 
 arecord_conf=/sensos/etc/arecord.conf
+network_conf=/sensos/etc/network.conf
 
 declare -A default_vars
 load_defaults "$script_name" default_vars
@@ -23,11 +24,22 @@ if [[ -f "$arecord_conf" ]]; then
     echo "Reading config from $arecord_conf..."
     audio_directory=$(grep '^BASE_DIR=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
     audio_format_code=$(grep '^FORMAT=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
+else
+    echo "Warning: arecord is not yet configured. Using default values."
+fi
+
+# Load connectivity profile from network.conf if available
+if [[ -f "$network_conf" ]]; then
+    echo "Reading connectivity profile from $network_conf..."
+    connectivity_profile=$(grep '^CONNECTIVITY_PROFILE=' "$network_conf" | cut -d= -f2- | tr -d '"')
+else
+    echo "Warning: networking has not yet been configured. Using default values."
 fi
 
 # Final fallbacks
 audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
 audio_format_code="${audio_format_code:-S32_LE}"
+connectivity_profile="${connectivity_profile:-unrestricted}"
 
 register_option --postgres-db postgres_db "Set database name" "$(get_default postgres_db postgres)"
 register_option --postgres-user postgres_user "Set database user" "$(get_default postgres_user postgres)"
@@ -64,6 +76,7 @@ DB_PORT=${db_port}
 DB_DATA_PATH=${db_data_path}
 AUDIO_DIRECTORY=${audio_directory}
 AUDIO_FORMAT_CODE=${audio_format_code}
+CONNECTIVITY_PROFILE=${connectivity_profile}
 EOF
 
 echo ".env written to $env_file:"
