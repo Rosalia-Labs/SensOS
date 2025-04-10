@@ -1,0 +1,16 @@
+[Unit]
+Description=Start SensOS Docker Containers
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=sensos-runner
+Environment=HOME=/tmp
+ExecStart=/usr/local/bin/start-containers.sh
+ExecStop=/usr/local/bin/stop-containers.sh
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target

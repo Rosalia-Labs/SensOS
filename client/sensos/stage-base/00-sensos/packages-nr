@@ -9,5 +9,8 @@ gpsd
 gpsd-clients
 sox
 i2c-tools
+lsof
+chrony
+
 
 

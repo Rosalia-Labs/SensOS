@@ -8,7 +8,7 @@ Type=simple
 ExecStart=/usr/local/bin/check-location.py
 User=root
 Restart=always
-RestartSec=30
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target
