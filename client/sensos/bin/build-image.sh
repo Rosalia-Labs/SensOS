@@ -5,6 +5,7 @@ set -e
 SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PI_GEN_DIR="${SENSOS_DIR}/../pi-gen"
 CONFIG_FILE="${PI_GEN_DIR}/config"
+BUILD_DOCKER_IMAGES=false
 
 STAGE_SRC="${SENSOS_DIR}/stage-base/00-sensos"
 STAGE_DST="${PI_GEN_DIR}/stage2/04-sensos"
@@ -18,6 +19,7 @@ usage() {
     echo
     echo "Options:"
     echo "  --remove-existing-images       Delete the 'deploy' directory before building"
+    echo "  --build-docker-images          Build and store docker images for offline use"
     echo "  --continue                     Continue from a previously interrupted build"
     echo "  -h, --help                     Show this help message and exit"
     echo
@@ -29,6 +31,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
     --remove-existing-images)
         REMOVE_DEPLOY=true
+        shift
+        ;;
+    --build-docker-images)
+        BUILD_DOCKER_IMAGES=true
         shift
         ;;
     --continue)
@@ -120,22 +126,26 @@ fi
 # Define target platform for the Pi (adjust if your Pi uses a different ARM variant)
 TARGET_PLATFORM="linux/arm64"
 
-echo "Finding all Dockerfiles..."
-DOCKERFILES=$(find "$SENSOS_DIR/stage-base/00-sensos/files/docker" -name 'Dockerfile')
-for dockerfile in $DOCKERFILES; do
-    context_dir=$(dirname "$dockerfile")
-    # Generate an image tag from the directory name
-    image_tag="sensos-$(basename "$context_dir" | tr '_' '-')"
+if [ "$BUILD_DOCKER_IMAGES" = true ]; then
+    echo "Finding all Dockerfiles..."
+    DOCKERFILES=$(find "./stage2/04-sensos/files/docker" -name 'Dockerfile')
+    for dockerfile in $DOCKERFILES; do
+        context_dir=$(dirname "$dockerfile")
+        # Generate an image tag from the directory name
+        image_tag="sensos-client-$(basename "$context_dir" | tr '_' '-')"
 
-    echo "Building image for Dockerfile at $dockerfile with tag $image_tag..."
-    # Build the image for the Pi (ARM) platform using Docker Buildx
-    docker buildx build --platform linux/arm64 -t $image_tag --load "$context_dir"
+        echo "Building image for Dockerfile at $dockerfile with tag $image_tag..."
+        # Build the image for the Pi (ARM) platform using Docker Buildx
+        docker buildx build --platform linux/arm64 -t $image_tag --load "$context_dir"
 
-    # Save the built image as a gzip-compressed tarball in the same directory
-    output_tarball="$context_dir/${image_tag}.tar.gz"
-    echo "Saving image $image_tag to $output_tarball..."
-    docker save $image_tag | gzip >"$output_tarball"
-done
+        # Save the built image as a gzip-compressed tarball in the same directory
+        output_tarball="$context_dir/${image_tag}.tar.gz"
+        echo "Saving image $image_tag to $output_tarball..."
+        docker save $image_tag | gzip >"$output_tarball"
+    done
+else
+    echo "[INFO] Skipping Docker image build as requested (--skip-build-images)"
+fi
 
 # Build image
 if [ "$CONTINUE_BUILD" = true ]; then

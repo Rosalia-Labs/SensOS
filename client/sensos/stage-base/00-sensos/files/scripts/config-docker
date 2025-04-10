@@ -5,6 +5,7 @@ script_name=$(basename "$0")
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
+source /sensos/lib/docker-utils.sh
 
 arecord_conf=/sensos/etc/arecord.conf
 
@@ -28,8 +29,6 @@ fi
 audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
 audio_format_code="${audio_format_code:-S32_LE}"
 
-register_option --build build_missing "Build images if no tarball is found" "$(get_default build_missing false)"
-register_option --force force_build "Force rebuild of all images" "$(get_default force_build false)"
 register_option --postgres-db postgres_db "Set database name" "$(get_default postgres_db postgres)"
 register_option --postgres-user postgres_user "Set database user" "$(get_default postgres_user postgres)"
 register_option --postgres-password postgres_password "Set database password" "$(get_default postgres_password sensos)"
@@ -51,55 +50,8 @@ if [[ ! -w "$docker_compose_dir" ]]; then
     exit 1
 fi
 
-# Load or build Docker images
-echo "🔍 Checking Docker images in $docker_compose_dir..."
-dockerfile_dirs=$(find "$docker_compose_dir" -type f -name 'Dockerfile' -exec dirname {} \;)
-
-for dir in $dockerfile_dirs; do
-    image_tag="sensos-$(basename "$dir" | tr '_' '-')"
-    tarball_gz="$dir/${image_tag}.tar.gz"
-    tarball_plain="$dir/${image_tag}.tar"
-
-    if [[ "$force_build" == "true" ]]; then
-        echo "🔁 Forcing rebuild of $image_tag..."
-        docker build -t "$image_tag" "$dir"
-        continue
-    fi
-
-    if [[ -f "$tarball_gz" ]]; then
-        echo "💾 Loading $image_tag from $tarball_gz..."
-        gunzip -c "$tarball_gz" | docker load
-    elif [[ -f "$tarball_plain" ]]; then
-        echo "💾 Loading $image_tag from $tarball_plain..."
-        docker load -i "$tarball_plain"
-    elif [[ "$build_missing" == "true" ]]; then
-        echo "🛠️ Building $image_tag from $dir (missing tarball)..."
-        docker build -t "$image_tag" "$dir"
-    else
-        echo "⚠️  No image or tarball found for $image_tag — skipping (use --build or --force to build)."
-    fi
-done
-
-echo "🔍 Verifying that all required Docker images are present..."
-missing_images=()
-
-for dir in $dockerfile_dirs; do
-    image_tag="sensos-$(basename "$dir" | tr '_' '-')"
-    if ! docker image inspect "$image_tag" >/dev/null 2>&1; then
-        missing_images+=("$image_tag")
-    fi
-done
-
-if [[ "${#missing_images[@]}" -gt 0 ]]; then
-    echo "❌ The following images are missing and required for systemd to run with --no-build:"
-    for img in "${missing_images[@]}"; do
-        echo "   - $img"
-    done
-    echo "💡 Rerun this script with --build or --force to fix."
-    exit 1
-else
-    echo "✅ All required images are available."
-fi
+echo "[INFO] Preloading images from disk..."
+load_missing_images_from_disk
 
 # Write .env file
 env_file="$docker_compose_dir/.env"
@@ -119,13 +71,13 @@ cat "$env_file"
 
 # Enable/start service
 if [[ "$enable_service" == "true" ]]; then
-    echo "Enabling sensos-docker.service..."
+    echo "Enabling sensos-container.service..."
     sudo systemctl daemon-reload
-    sudo systemctl enable sensos-docker.service
+    sudo systemctl enable sensos-container.service
 fi
 
 if [[ "$start_service" == "true" ]]; then
-    echo "Starting sensos-docker.service..."
+    echo "Starting sensos-container.service..."
     sudo systemctl daemon-reload
-    sudo systemctl start sensos-docker.service
+    sudo systemctl start sensos-container.service
 fi

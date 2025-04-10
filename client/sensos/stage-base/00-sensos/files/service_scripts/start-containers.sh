@@ -1,22 +1,11 @@
 #!/bin/bash
 set -e
 
-# Load defaults
-if [[ -f /sensos/lib/load-defaults.sh ]]; then
-    source /sensos/lib/load-defaults.sh
-    load_defaults /sensos/etc/defaults.conf "$(basename "$0")"
-else
-    echo "Error: /sensos/lib/load-defaults.sh not found." >&2
-    exit 1
-fi
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
+source /sensos/lib/docker-utils.sh
 
-# Load CLI parser
-if [[ -f /sensos/lib/parse-switches.sh ]]; then
-    source /sensos/lib/parse-switches.sh
-else
-    echo "Error: /sensos/lib/parse-switches.sh not found." >&2
-    exit 1
-fi
+load_defaults /sensos/etc/defaults.conf "$(basename "$0")"
 
 # Register options
 register_option "--offline" "OFFLINE_MODE" "Force offline mode (disables pulls)" "false"
@@ -46,44 +35,6 @@ esac
 if [[ "$OFFLINE_MODE" == true ]]; then
     OFFLINE=true
 fi
-
-# Load Docker images from tarballs
-load_missing_images_from_disk() {
-    local base_dir="/sensos/docker"
-    echo "[INFO] Searching for Docker image tarballs under $base_dir..."
-
-    while IFS= read -r docker_dir; do
-        image_name="sensos-$(basename "$docker_dir" | tr '_' '-')"
-
-        tarball=""
-        if [[ -f "$docker_dir/${image_name}.tar.gz" ]]; then
-            tarball="$docker_dir/${image_name}.tar.gz"
-        elif [[ -f "$docker_dir/${image_name}.tar" ]]; then
-            tarball="$docker_dir/${image_name}.tar"
-        fi
-
-        if [[ -n "$tarball" ]]; then
-            echo "[INFO] Force loading image '$image_name' from $tarball..."
-            if [[ "$tarball" == *.gz ]]; then
-                if gunzip -c "$tarball" | docker load; then
-                    echo "[INFO] Load succeeded. Deleting $tarball"
-                    rm -f "$tarball"
-                else
-                    echo "[ERROR] Failed to load image from $tarball"
-                fi
-            else
-                if docker load <"$tarball"; then
-                    echo "[INFO] Load succeeded. Deleting $tarball"
-                    rm -f "$tarball"
-                else
-                    echo "[ERROR] Failed to load image from $tarball"
-                fi
-            fi
-        else
-            echo "[INFO] No tarball found for image '$image_name' in $docker_dir"
-        fi
-    done < <(find "$base_dir" -type f -name 'Dockerfile' -exec dirname {} \;)
-}
 
 echo "[INFO] Preloading images from disk..."
 load_missing_images_from_disk
