@@ -2,7 +2,7 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-ENV REQUIRED_DEBS="python3 python3-venv python3-pip python3-psycopg libpq5 libsndfile1 libopenblas0 ffmpeg"
+ENV REQUIRED_DEBS="python3 python3-venv python3-pip libpq5 libsndfile1 libopenblas0 ffmpeg"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends $REQUIRED_DEBS && \
