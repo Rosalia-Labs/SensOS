@@ -46,19 +46,15 @@ def ensure_schema(cursor):
         CREATE TABLE IF NOT EXISTS sensos.audio_files (
             id SERIAL PRIMARY KEY,
             file_path TEXT,
-            file_mod_time TIMESTAMPTZ,
-            sample_rate INT,
-            channel_count INT,
-            duration DOUBLE PRECISION,
             processed_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
-    """
+        """
     )
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS audio_files_file_path_index
         ON sensos.audio_files(file_path);
-    """
+        """
     )
 
 
@@ -78,15 +74,11 @@ def convert_to_flac(src_path: Path, dest_path: Path):
 
 def process_file(cursor, path: Path):
     rel_input = path.relative_to(UNPROCESSED)
-    timestamp = extract_timestamp(path)
+    output_name = path.stem + ".flac"
+    new_path = PROCESSED / rel_input.parent / output_name
+    new_rel = new_path.relative_to(ROOT).as_posix()
 
     try:
-        info = sf.info(path)
-        output_name = path.stem + ".flac"
-        new_path = PROCESSED / rel_input.parent / output_name
-        new_rel = new_path.relative_to(ROOT).as_posix()
-
-        # Convert safely (always overwrite)
         tmp_path = new_path.with_suffix(".tmp")
         data, sr = sf.read(path, always_2d=True)
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,21 +87,13 @@ def process_file(cursor, path: Path):
 
         os.remove(path)
 
-        # Insert or update DB
+        # Only insert file_path
         cursor.execute(
             """
-            INSERT INTO sensos.audio_files
-                (file_path, file_mod_time, sample_rate, channel_count, duration)
-            VALUES (%s, to_timestamp(%s), %s, %s, %s)
-            ON CONFLICT (file_path)
-            DO UPDATE SET
-                file_mod_time = EXCLUDED.file_mod_time,
-                sample_rate = EXCLUDED.sample_rate,
-                channel_count = EXCLUDED.channel_count,
-                duration = EXCLUDED.duration,
-                processed_time = NOW();
+            INSERT INTO sensos.audio_files (file_path)
+            VALUES (%s);
             """,
-            (new_rel, timestamp, info.samplerate, info.channels, info.duration),
+            (new_rel,),
         )
         logging.info(f"Processed and recorded {new_rel}")
 
