@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+
+import os
+import time
+import shutil
+import logging
+import datetime
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+import psycopg
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+
+ROOT = Path("/mnt/audio_recordings")
+UNPROCESSED = ROOT / "unprocessed"
+PROCESSED = ROOT / "processed"
+EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
+
+DB_PARAMS = (
+    f"dbname={os.environ['POSTGRES_DB']} "
+    f"user={os.environ['POSTGRES_USER']} "
+    f"password={os.environ['POSTGRES_PASSWORD']} "
+    f"host={os.environ['DB_HOST']} "
+    f"port={os.environ['DB_PORT']}"
+)
+
+
+def extract_timestamp(path: Path) -> float:
+    name = path.name
+    if name.startswith("sensos_"):
+        try:
+            stamp = name[len("sensos_") :].split(".")[0]
+            dt = datetime.datetime.strptime(stamp, "%Y%m%dT%H%M%S")
+            return dt.timestamp()
+        except Exception as e:
+            logging.warning(f"Timestamp parse failed for {name}: {e}")
+    return path.stat().st_mtime
+
+
+def ensure_schema(cursor):
+    cursor.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sensos.audio_files (
+            id SERIAL PRIMARY KEY,
+            file_path TEXT,
+            file_mod_time TIMESTAMPTZ,
+            sample_rate INT,
+            channel_count INT,
+            duration DOUBLE PRECISION,
+            processed_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+    """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS audio_files_file_path_index
+        ON sensos.audio_files(file_path);
+    """
+    )
+
+
+def already_in_db(cursor, rel_path: str) -> bool:
+    cursor.execute("SELECT 1 FROM sensos.audio_files WHERE file_path = %s", (rel_path,))
+    return cursor.fetchone() is not None
+
+
+def convert_to_flac(src_path: Path, dest_path: Path):
+    tmp_path = dest_path.with_suffix(".tmp")
+    data, sr = sf.read(src_path, always_2d=True)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(tmp_path, data, sr, format="FLAC")
+    tmp_path.rename(dest_path)
+    logging.info(f"Safely converted to FLAC: {src_path} → {dest_path}")
+
+
+def process_file(cursor, path: Path):
+    rel_input = path.relative_to(UNPROCESSED)
+    timestamp = extract_timestamp(path)
+
+    try:
+        info = sf.info(path)
+        output_name = path.stem + ".flac"
+        new_path = PROCESSED / rel_input.parent / output_name
+        new_rel = new_path.relative_to(ROOT).as_posix()
+
+        # Convert safely (always overwrite)
+        tmp_path = new_path.with_suffix(".tmp")
+        data, sr = sf.read(path, always_2d=True)
+        tmp_path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(tmp_path, data, sr, format="FLAC")
+        tmp_path.replace(new_path)  # atomic move/overwrite
+
+        os.remove(path)
+
+        # Insert or update DB
+        cursor.execute(
+            """
+            INSERT INTO sensos.audio_files
+                (file_path, file_mod_time, sample_rate, channel_count, duration)
+            VALUES (%s, to_timestamp(%s), %s, %s, %s)
+            ON CONFLICT (file_path)
+            DO UPDATE SET
+                file_mod_time = EXCLUDED.file_mod_time,
+                sample_rate = EXCLUDED.sample_rate,
+                channel_count = EXCLUDED.channel_count,
+                duration = EXCLUDED.duration,
+                processed_time = NOW();
+            """,
+            (new_rel, timestamp, info.samplerate, info.channels, info.duration),
+        )
+        logging.info(f"Processed and recorded {new_rel}")
+
+    except Exception as e:
+        logging.error(f"Failed processing {path}: {e}")
+        if "tmp_path" in locals() and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+        cursor.connection.rollback()
+
+
+def restore_untracked_processed_files(cursor):
+    restored = 0
+    deleted = 0
+
+    for path in PROCESSED.rglob("*"):
+        if not path.is_file():
+            continue
+
+        if path.suffix.lower() not in EXTENSIONS:
+            logging.warning(f"Non-soundfile {path} found in audio directory.")
+            continue
+
+        rel_path = path.relative_to(ROOT).as_posix()
+
+        # Check if it's already in the database
+        cursor.execute(
+            "SELECT 1 FROM sensos.audio_files WHERE file_path = %s", (rel_path,)
+        )
+        if cursor.fetchone():
+            continue  # Already recorded
+
+        # Check for matching file in unprocessed dir (any extension)
+        has_unprocessed = any(
+            (UNPROCESSED / path.relative_to(PROCESSED)).with_suffix(ext).exists()
+            for ext in EXTENSIONS
+        )
+
+        if has_unprocessed:
+            try:
+                path.unlink()
+                logging.warning(
+                    f"Deleted {rel_path} due to unprocessed version existing"
+                )
+                deleted += 1
+            except Exception as e:
+                logging.error(f"Failed to delete {rel_path}: {e}")
+        else:
+            dest_path = UNPROCESSED / path.relative_to(PROCESSED)
+            try:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(path, dest_path)
+                logging.warning(f"Moved untracked file back to unprocessed: {rel_path}")
+                restored += 1
+            except Exception as e:
+                logging.error(f"Failed to restore {rel_path}: {e}")
+
+    if restored or deleted:
+        logging.info(f"Restored {restored} and deleted {deleted} files from processed/")
+
+
+def main():
+    with psycopg.connect(DB_PARAMS) as conn:
+        with conn.cursor() as cur:
+            ensure_schema(cur)
+            restore_untracked_processed_files(cur)
+            conn.commit()
+
+        while True:
+            count = 0
+            with conn.cursor() as cur:
+                for path in UNPROCESSED.rglob("*"):
+                    if path.is_file() and path.suffix.lower() in EXTENSIONS:
+                        try:
+                            process_file(cur, path)
+                            count += 1
+                        except Exception as e:
+                            logging.error(f"Unhandled error processing {path}: {e}")
+                            conn.rollback()
+                conn.commit()
+            if count == 0:
+                logging.info("No new files found. Sleeping 60s.")
+                time.sleep(60)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        logging.info("Interrupted. Exiting.")

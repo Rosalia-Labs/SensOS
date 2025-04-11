@@ -15,9 +15,9 @@ services:
       timeout: 5s
       retries: 5
 
-  sensos-client-sound-capture:
-    image: sensos-client-sound-capture
-    container_name: sensos-client-sound-capture
+  sensos-client-scan-files:
+    image: sensos-client-scan-files
+    container_name: sensos-client-scan-files
     restart: always
     depends_on:
       - sensos-client-database

@@ -7,6 +7,7 @@ import tflite_runtime.interpreter as tflite
 import librosa
 import logging
 import sys
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -41,62 +42,8 @@ with open(LABELS_PATH, "r") as f:
         for sci, common in [line.strip().split("_", 1)]
     ]
 
-MOCK_DATA = os.getenv("MOCK_DATA", "").lower() in ("1", "true", "yes")
-
-
-def rescale(data, subtype: str) -> np.ndarray:
-    """
-    Given a NumPy array of raw audio data and the soundfile subtype string,
-    apply an affine transformation (subtract an offset and divide by a scale)
-    to convert the raw data to float32 values in the range [-1, 1].
-
-    The mapping (offset, scale) is defined for each subtype:
-      - For signed types (e.g., "PCM_16"), no offset is applied.
-      - For unsigned types (e.g., "PCM_U8"), an offset is subtracted before scaling.
-      - For floating point types ("FLOAT", "DOUBLE"), no scaling is applied.
-
-    Returns:
-      A NumPy array of type float32 with values normalized to [-1, 1].
-    """
-    subtype_up = subtype.upper()
-    mapping = {
-        "PCM_S8": (0, 128),
-        "PCM_16": (0, 32768),
-        "PCM_24": (0, 8388608),
-        "PCM_32": (0, 2147483648),
-        "PCM_U8": (128, 128),
-        "FLOAT": (0, 1.0),
-        "DOUBLE": (0, 1.0),
-        "ULAW": (0, 128),
-        "ALAW": (0, 128),
-        "IMA_ADPCM": (0, 32768),
-        "MS_ADPCM": (0, 32768),
-        "GSM610": (0, 128),
-        "VOX_ADPCM": (0, 128),
-        "NMS_ADPCM_16": (0, 32768),
-        "NMS_ADPCM_24": (0, 8388608),
-        "NMS_ADPCM_32": (0, 2147483648),
-        "G721_32": (0, 2147483648),
-        "G723_24": (0, 8388608),
-        "G723_40": (0, 2147483648),
-        "DWVW_12": (0, 2048),
-        "DWVW_16": (0, 32768),
-        "DWVW_24": (0, 8388608),
-        "DWVW_N": (0, 32768),
-        "DPCM_8": (0, 128),
-        "DPCM_16": (0, 32768),
-        "VORBIS": (0, 1.0),
-        "OPUS": (0, 1.0),
-        "ALAC_16": (0, 32768),
-        "ALAC_20": (0, 524288),
-        "ALAC_24": (0, 8388608),
-        "ALAC_32": (0, 2147483648),
-        "MPEG_LAYER_I": (0, 2147483648),
-        "MPEG_LAYER_II": (0, 2147483648),
-        "MPEG_LAYER_III": (0, 2147483648),
-    }
-    offset, scale = mapping.get(subtype_up, (0, 1.0))
-    return (data.astype(np.float32) - offset) / scale
+ROOT = Path("/mnt/audio_recordings")
+PROCESSED = ROOT / "processed"
 
 
 def wait_for_schema():
@@ -125,110 +72,60 @@ def initialize_schema():
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
-                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
-                    vector vector(1024) NOT NULL
+                    file_path TEXT NOT NULL REFERENCES sensos.audio_files(file_path) ON DELETE CASCADE,
+                    channel INT NOT NULL,
+                    start_frame BIGINT NOT NULL,
+                    vector vector(1024) NOT NULL,
+                    PRIMARY KEY (file_path, channel, start_frame)
                 );
-                """
+            """
             )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
-                    segment_id INTEGER REFERENCES sensos.raw_audio(segment_id) ON DELETE CASCADE,
+                    file_path TEXT NOT NULL REFERENCES sensos.audio_files(file_path) ON DELETE CASCADE,
+                    channel INT NOT NULL,
+                    start_frame BIGINT NOT NULL,
                     label TEXT NOT NULL,
                     score FLOAT NOT NULL,
-                    PRIMARY KEY (segment_id, label)
+                    PRIMARY KEY (file_path, channel, start_frame, label)
                 );
-                """
-            )
-            cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_birdnet_scores_segment_id ON sensos.birdnet_scores(segment_id);
-                """
+            """
             )
             conn.commit()
     logger.info("Database schema verified.")
 
 
 def get_unprocessed_audio():
-    """
-    Query the database to retrieve unprocessed audio segments.
-    Each segment object includes:
-      - segment_id
-      - data (raw audio bytes)
-      - subtype (e.g. "PCM_16", "PCM_24", "FLOAT", etc.)
-      - storage_type (a string representing the NumPy type used, e.g. "int16", "int32", or "float32")
-    """
-    if MOCK_DATA:
-        logger.info("MOCK_DATA enabled: generating 3 fake segments.")
-        return [
-            {
-                "segment_id": i,
-                "data": None,
-                "subtype": "PCM_16",
-                "storage_type": "int16",
-            }
-            for i in range(1, 4)
-        ]
-
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT ra.segment_id, ra.data, af.subtype, af.storage_type
-                FROM sensos.raw_audio ra
-                JOIN sensos.audio_segments r ON ra.segment_id = r.id
-                JOIN sensos.audio_files af ON r.file_id = af.id
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM sensos.birdnet_scores bs WHERE bs.segment_id = ra.segment_id
-                )
-                LIMIT 8;
-                """
+                SELECT file_path, channel_count, duration FROM sensos.audio_files
+                WHERE file_path NOT IN (
+                    SELECT DISTINCT file_path FROM sensos.birdnet_embeddings
+                );
+            """
             )
             rows = cur.fetchall()
 
     segments = []
-    for row in rows:
-        segment = {
-            "segment_id": row[0],
-            "data": row[1],
-            "subtype": row[2],
-            "storage_type": row[3],
-        }
-        segments.append(segment)
+    for file_path, channels, duration in rows:
+        abs_path = PROCESSED / Path(file_path).relative_to("processed")
+        total_frames = int(duration * SAMPLE_RATE)
+        step = SAMPLE_RATE  # 1s step
+        seg_size = SEGMENT_SIZE  # 3s window
+        for start in range(0, total_frames - seg_size + 1, step):
+            for ch in range(channels):
+                segments.append(
+                    {
+                        "file_path": file_path,
+                        "abs_path": abs_path,
+                        "channel": ch,
+                        "start_frame": start,
+                    }
+                )
     return segments
-
-
-def format_audio_data(audio_bytes, storage_type: str, subtype: str):
-    """
-    Process an audio segment based on the given storage_type and subtype.
-
-    - Converts the raw bytes to a NumPy array using the dtype specified by storage_type.
-    - Uses rescale(data, subtype) to perform an affine transformation to normalize the data
-      to the [-1, 1] range.
-
-    Returns:
-      A NumPy array of type float32 of length SEGMENT_SIZE with values scaled to [-1, 1].
-    """
-    if MOCK_DATA:
-        return np.random.uniform(-1, 1, SEGMENT_SIZE).astype(np.float32)
-
-    logger.info(
-        f"Processing segment with storage type {storage_type} and subtype {subtype}"
-    )
-    try:
-        audio_np = np.frombuffer(audio_bytes, dtype=np.dtype(storage_type))
-        audio_np = rescale(audio_np, subtype)
-
-        if len(audio_np) != SEGMENT_SIZE:
-            logger.error(
-                f"Segment length mismatch: expected {SEGMENT_SIZE}, got {len(audio_np)}"
-            )
-            sys.exit(1)
-
-        return audio_np
-    except Exception as e:
-        logger.error(f"Audio processing error: {e}")
-        sys.exit(1)
 
 
 def flat_sigmoid(x, sensitivity=-1, bias=1.0):
@@ -239,35 +136,40 @@ def flat_sigmoid(x, sensitivity=-1, bias=1.0):
 def invoke_interpreter(audio_segment):
     input_data = np.expand_dims(audio_segment, axis=0).astype(np.float32)
     interpreter.set_tensor(input_details[0]["index"], input_data)
-
     interpreter.invoke()
     scores = interpreter.get_tensor(output_details[0]["index"])
     embedding = interpreter.get_tensor(output_details[0]["index"] - 1)
-
     scores_flat = flat_sigmoid(scores.flatten())
     embedding_flat = embedding.flatten()
-
     species_scores = {LABELS[i]: scores_flat[i] for i in range(len(scores_flat))}
     return embedding_flat, species_scores
 
 
-def store_results(segment_id, embeddings, scores, top_n=5):
+def store_results(file_path, channel, start_frame, embeddings, scores, top_n=5):
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
             if embeddings is not None:
                 cur.execute(
-                    "INSERT INTO sensos.birdnet_embeddings (segment_id, vector) VALUES (%s, %s);",
-                    (segment_id, embeddings.tolist()),
+                    """
+                    INSERT INTO sensos.birdnet_embeddings (file_path, channel, start_frame, vector)
+                    VALUES (%s, %s, %s, %s);
+                """,
+                    (file_path, channel, start_frame, embeddings.tolist()),
                 )
             for label, score in sorted(
                 scores.items(), key=lambda x: x[1], reverse=True
             )[:top_n]:
                 cur.execute(
-                    "INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES (%s, %s, %s);",
-                    (segment_id, label, score),
+                    """
+                    INSERT INTO sensos.birdnet_scores (file_path, channel, start_frame, label, score)
+                    VALUES (%s, %s, %s, %s, %s);
+                """,
+                    (file_path, channel, start_frame, label, score),
                 )
             conn.commit()
-    logger.info(f"Stored embeddings and scores for segment {segment_id}.")
+    logger.info(
+        f"Stored embeddings and scores for {file_path}, ch {channel}, frame {start_frame}."
+    )
 
 
 def main():
@@ -280,17 +182,38 @@ def main():
             time.sleep(60)
             continue
 
-        for segment in segments:
-            segment_id = segment["segment_id"]
-            audio_bytes = segment["data"]
-            subtype = segment["subtype"]
-            storage_type = segment["storage_type"]
-            logger.info(
-                f"Processing segment {segment_id} (storage type: {storage_type}, subtype: {subtype})"
-            )
-            audio_np = format_audio_data(audio_bytes, storage_type, subtype)
-            embeddings, scores = invoke_interpreter(audio_np)
-            store_results(segment_id, embeddings, scores)
+        for seg in segments:
+            file_path = seg["file_path"]
+            abs_path = seg["abs_path"]
+            channel = seg["channel"]
+            start_frame = seg["start_frame"]
+            logger.info(f"Processing {file_path}, ch {channel}, frame {start_frame}")
+
+            try:
+                y, sr = librosa.load(
+                    abs_path.as_posix(),
+                    sr=SAMPLE_RATE,
+                    mono=False,
+                    offset=start_frame / SAMPLE_RATE,
+                    duration=SEGMENT_DURATION,
+                )
+                if y.ndim == 1:
+                    if channel != 0:
+                        continue
+                    audio_segment = y
+                else:
+                    if channel >= y.shape[0]:
+                        continue
+                    audio_segment = y[channel]
+
+                if len(audio_segment) != SEGMENT_SIZE:
+                    continue
+
+                embeddings, scores = invoke_interpreter(audio_segment)
+                store_results(file_path, channel, start_frame, embeddings, scores)
+
+            except Exception as e:
+                logger.error(f"Failed to process {file_path}: {e}")
 
         logger.info("Segments completed.")
 
