@@ -14,8 +14,8 @@ import psycopg
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
 ROOT = Path("/mnt/audio_recordings")
-UNPROCESSED = ROOT / "unprocessed"
-PROCESSED = ROOT / "processed"
+QUEUED = ROOT / "queued"
+CATALOGED = ROOT / "cataloged"
 EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
 
 DB_PARAMS = (
@@ -73,9 +73,9 @@ def convert_to_flac(src_path: Path, dest_path: Path):
 
 
 def process_file(cursor, path: Path):
-    rel_input = path.relative_to(UNPROCESSED)
+    rel_input = path.relative_to(QUEUED)
     output_name = path.stem + ".flac"
-    new_path = PROCESSED / rel_input.parent / output_name
+    new_path = CATALOGED / rel_input.parent / output_name
     new_rel = new_path.relative_to(ROOT).as_posix()
 
     try:
@@ -111,7 +111,7 @@ def restore_untracked_processed_files(cursor):
     restored = 0
     deleted = 0
 
-    for path in PROCESSED.rglob("*"):
+    for path in CATALOGED.rglob("*"):
         if not path.is_file():
             continue
 
@@ -128,33 +128,31 @@ def restore_untracked_processed_files(cursor):
         if cursor.fetchone():
             continue  # Already recorded
 
-        # Check for matching file in unprocessed dir (any extension)
-        has_unprocessed = any(
-            (UNPROCESSED / path.relative_to(PROCESSED)).with_suffix(ext).exists()
+        # Check for matching file in queued dir (any extension)
+        already_queued = any(
+            (QUEUED / path.relative_to(CATALOGED)).with_suffix(ext).exists()
             for ext in EXTENSIONS
         )
 
-        if has_unprocessed:
+        if already_queued:
             try:
                 path.unlink()
-                logging.warning(
-                    f"Deleted {rel_path} due to unprocessed version existing"
-                )
+                logging.warning(f"Deleted {rel_path} due to queued version existing")
                 deleted += 1
             except Exception as e:
                 logging.error(f"Failed to delete {rel_path}: {e}")
         else:
-            dest_path = UNPROCESSED / path.relative_to(PROCESSED)
+            dest_path = QUEUED / path.relative_to(CATALOGED)
             try:
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(path, dest_path)
-                logging.warning(f"Moved untracked file back to unprocessed: {rel_path}")
+                logging.warning(f"Moved untracked file back to queued: {rel_path}")
                 restored += 1
             except Exception as e:
                 logging.error(f"Failed to restore {rel_path}: {e}")
 
     if restored or deleted:
-        logging.info(f"Restored {restored} and deleted {deleted} files from processed/")
+        logging.info(f"Restored {restored} and deleted {deleted} files from cataloged/")
 
 
 def main():
@@ -167,7 +165,7 @@ def main():
         while True:
             count = 0
             with conn.cursor() as cur:
-                for path in UNPROCESSED.rglob("*"):
+                for path in QUEUED.rglob("*"):
                     if path.is_file() and path.suffix.lower() in EXTENSIONS:
                         try:
                             process_file(cur, path)

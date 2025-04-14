@@ -96,7 +96,7 @@ def initialize_schema():
     logger.info("Database schema verified.")
 
 
-def get_unprocessed_audio():
+def get_cataloged_audio():
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -176,7 +176,7 @@ def main():
     initialize_schema()
     while True:
         logger.info("Checking for new audio segments...")
-        segments = get_unprocessed_audio()
+        segments = get_cataloged_audio()
         if not segments:
             logger.info("No new segments found. Sleeping...")
             time.sleep(60)
