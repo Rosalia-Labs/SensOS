@@ -35,6 +35,7 @@ fi
 # Map service to APN
 case "$service" in
 1nce) apn="iot.1nce.net" ;;
+Soracom) apn="soracom.io" ;;
 *)
     echo "ERROR: Unsupported service '$service'"
     exit 1
