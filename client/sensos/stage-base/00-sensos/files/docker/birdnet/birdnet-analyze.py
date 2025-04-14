@@ -43,7 +43,7 @@ with open(LABELS_PATH, "r") as f:
     ]
 
 ROOT = Path("/mnt/audio_recordings")
-PROCESSED = ROOT / "processed"
+CATALOGED = ROOT / "cataloged"
 
 
 def wait_for_schema():
@@ -111,7 +111,7 @@ def get_cataloged_audio():
 
     segments = []
     for file_path, channels, duration in rows:
-        abs_path = PROCESSED / Path(file_path).relative_to("processed")
+        abs_path = CATALOGED / Path(file_path).relative_to("cataloged")
         total_frames = int(duration * SAMPLE_RATE)
         step = SAMPLE_RATE  # 1s step
         seg_size = SEGMENT_SIZE  # 3s window
