@@ -7,6 +7,8 @@ import tflite_runtime.interpreter as tflite
 import librosa
 import logging
 import sys
+import soundfile as sf
+
 from pathlib import Path
 
 # Configure logging
@@ -182,35 +184,6 @@ def invoke_interpreter(audio_segment):
     return embedding_flat, species_scores, hill_number, simpson_index
 
 
-def store_results(file_path, channel, start_frame, embeddings, scores, , hill_number, simpson_index, top_n=5):
-    with psycopg.connect(DB_PARAMS) as conn:
-        with conn.cursor() as cur:
-            if embeddings is not None:
-                cur.execute(
-                    """
-                    INSERT INTO sensos.birdnet_embeddings (file_path, channel, start_frame, vector)
-                    VALUES (%s, %s, %s, %s);
-                """,
-                    (file_path, channel, start_frame, embeddings.tolist()),
-                )
-            for label, score in sorted(
-                scores.items(), key=lambda x: x[1], reverse=True
-            )[:top_n]:
-                cur.execute(
-                    """
-                    INSERT INTO sensos.birdnet_scores (file_path, channel, start_frame, label, score)
-                    VALUES (%s, %s, %s, %s, %s);
-                """,
-                    (file_path, channel, start_frame, label, score),
-                )
-            cur.execute("""INSERT INTO sensos.score_diversity (hill_number, simpson_index) VALUES (%s, %s)""",
-                        (hill_number, simpson_index))
-            conn.commit()
-    logger.info(
-        f"Stored embeddings and scores for {file_path}, ch {channel}, frame {start_frame}."
-    )
-
-
 def get_next_unprocessed_file():
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
@@ -227,9 +200,6 @@ def get_next_unprocessed_file():
             )
             row = cur.fetchone()
             return row[0] if row else None
-
-
-import soundfile as sf
 
 
 def main():
@@ -258,36 +228,69 @@ def main():
 
         logger.info(f"Processing file: {file_path} ({channels} ch, {duration:.2f} s)")
 
-        for start in range(0, total_frames - seg_size + 1, step):
-            for ch in range(channels):
-                logger.info(f"Processing segment: ch {ch}, frame {start}")
-                try:
-                    y, sr = librosa.load(
-                        abs_path.as_posix(),
-                        sr=SAMPLE_RATE,
-                        mono=False,
-                        offset=start / SAMPLE_RATE,
-                        duration=SEGMENT_DURATION,
-                    )
-                    if y.ndim == 1:
-                        if ch != 0:
-                            continue
-                        audio_segment = y
-                    else:
-                        if ch >= y.shape[0]:
-                            continue
-                        audio_segment = y[ch]
+        with psycopg.connect(DB_PARAMS) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    for start in range(0, total_frames - seg_size + 1, step):
+                        for ch in range(channels):
+                            logger.info(f"Processing segment: ch {ch}, frame {start}")
+                            try:
+                                y, sr = librosa.load(
+                                    abs_path.as_posix(),
+                                    sr=SAMPLE_RATE,
+                                    mono=False,
+                                    offset=start / SAMPLE_RATE,
+                                    duration=SEGMENT_DURATION,
+                                )
+                                if y.ndim == 1:
+                                    if ch != 0:
+                                        continue
+                                    audio_segment = y
+                                else:
+                                    if ch >= y.shape[0]:
+                                        continue
+                                    audio_segment = y[ch]
 
-                    if len(audio_segment) != SEGMENT_SIZE:
-                        continue
+                                if len(audio_segment) != SEGMENT_SIZE:
+                                    continue
 
-                    embeddings, scores, hill_number, simpson_index = invoke_interpreter(audio_segment)
-                    store_results(file_path, ch, start, embeddings, scores, hill_number, simpson_index)
+                                embeddings, scores, hill_number, simpson_index = (
+                                    invoke_interpreter(audio_segment)
+                                )
 
-                except Exception as e:
-                    logger.error(
-                        f"Failed segment {file_path}, ch {ch}, frame {start}: {e}"
-                    )
+                                # Store in a single shared transaction
+                                if embeddings is not None:
+                                    cur.execute(
+                                        """
+                                        INSERT INTO sensos.birdnet_embeddings (file_path, channel, start_frame, vector)
+                                        VALUES (%s, %s, %s, %s);
+                                        """,
+                                        (file_path, ch, start, embeddings.tolist()),
+                                    )
+
+                                for label, score in sorted(
+                                    scores.items(), key=lambda x: x[1], reverse=True
+                                )[:5]:
+                                    cur.execute(
+                                        """
+                                        INSERT INTO sensos.birdnet_scores (file_path, channel, start_frame, label, score)
+                                        VALUES (%s, %s, %s, %s, %s);
+                                        """,
+                                        (file_path, ch, start, label, score),
+                                    )
+
+                                cur.execute(
+                                    """
+                                    INSERT INTO sensos.score_diversity (file_path, channel, start_frame, hill_number, simpson_index)
+                                    VALUES (%s, %s, %s, %s, %s);
+                                    """,
+                                    (file_path, ch, start, hill_number, simpson_index),
+                                )
+
+                            except Exception as e:
+                                raise RuntimeError(
+                                    f"Failed segment {file_path}, ch {ch}, frame {start}: {e}"
+                                ) from e
 
         logger.info(f"Completed processing file: {file_path}")
 
