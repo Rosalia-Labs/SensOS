@@ -69,6 +69,8 @@ def initialize_schema():
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
+            # Embeddings table
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
@@ -78,8 +80,10 @@ def initialize_schema():
                     vector vector(1024) NOT NULL,
                     PRIMARY KEY (file_path, channel, start_frame)
                 );
-            """
+                """
             )
+
+            # Species scores table
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
@@ -90,8 +94,23 @@ def initialize_schema():
                     score FLOAT NOT NULL,
                     PRIMARY KEY (file_path, channel, start_frame, label)
                 );
-            """
+                """
             )
+
+            # Diversity metrics table
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.score_diversity (
+                    file_path TEXT NOT NULL REFERENCES sensos.audio_files(file_path) ON DELETE CASCADE,
+                    channel INT NOT NULL,
+                    start_frame BIGINT NOT NULL,
+                    hill_number FLOAT NOT NULL,
+                    simpson_index FLOAT NOT NULL,
+                    PRIMARY KEY (file_path, channel, start_frame)
+                );
+                """
+            )
+
             conn.commit()
     logger.info("Database schema verified.")
 
@@ -152,17 +171,18 @@ def invoke_interpreter(audio_segment):
     else:
         probs = np.zeros_like(scores_flat)
 
-    # Shannon entropy (base 2)
+    # Hill number (order 1): 2^entropy
     nonzero_probs = probs[probs > 0]
     entropy = -np.sum(nonzero_probs * np.log2(nonzero_probs))
-
-    # Hill number order 1 = 2^entropy
     hill_number = float(2**entropy)
 
-    return embedding_flat, species_scores, entropy, hill_number
+    # Simpson index: sum of squared probabilities
+    simpson_index = float(np.sum(probs**2))
+
+    return embedding_flat, species_scores, hill_number, simpson_index
 
 
-def store_results(file_path, channel, start_frame, embeddings, scores, top_n=5):
+def store_results(file_path, channel, start_frame, embeddings, scores, , hill_number, simpson_index, top_n=5):
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
             if embeddings is not None:
@@ -183,6 +203,8 @@ def store_results(file_path, channel, start_frame, embeddings, scores, top_n=5):
                 """,
                     (file_path, channel, start_frame, label, score),
                 )
+            cur.execute("""INSERT INTO sensos.score_diversity (hill_number, simpson_index) VALUES (%s, %s)""",
+                        (hill_number, simpson_index))
             conn.commit()
     logger.info(
         f"Stored embeddings and scores for {file_path}, ch {channel}, frame {start_frame}."
@@ -259,8 +281,8 @@ def main():
                     if len(audio_segment) != SEGMENT_SIZE:
                         continue
 
-                    embeddings, scores = invoke_interpreter(audio_segment)
-                    store_results(file_path, ch, start, embeddings, scores)
+                    embeddings, scores, hill_number, simpson_index = invoke_interpreter(audio_segment)
+                    store_results(file_path, ch, start, embeddings, scores, hill_number, simpson_index)
 
                 except Exception as e:
                     logger.error(
