@@ -37,7 +37,7 @@ fi
 # Define the output filename pattern.
 # This pattern creates directories: BASE_DIR/YYYY/MM/DD/
 # and filenames like: sensos-YYYY-MM-DD-HH-MM-SS.wav
-OUTPUT_PATTERN="${BASE_DIR}/unprocessed/%Y/%m/%d/sensos_%Y%m%dT%H%M%S.wav"
+OUTPUT_PATTERN="${BASE_DIR}/queued/%Y/%m/%d/sensos_%Y%m%dT%H%M%S.wav"
 
 # Ensure the base directory exists (arecord won't create intermediate directories)
 mkdir -p "$BASE_DIR"

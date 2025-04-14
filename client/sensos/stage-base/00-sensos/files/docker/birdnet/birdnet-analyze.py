@@ -137,12 +137,29 @@ def invoke_interpreter(audio_segment):
     input_data = np.expand_dims(audio_segment, axis=0).astype(np.float32)
     interpreter.set_tensor(input_details[0]["index"], input_data)
     interpreter.invoke()
+
     scores = interpreter.get_tensor(output_details[0]["index"])
     embedding = interpreter.get_tensor(output_details[0]["index"] - 1)
+
     scores_flat = flat_sigmoid(scores.flatten())
     embedding_flat = embedding.flatten()
     species_scores = {LABELS[i]: scores_flat[i] for i in range(len(scores_flat))}
-    return embedding_flat, species_scores
+
+    # Normalize scores to probabilities
+    total = np.sum(scores_flat)
+    if total > 0:
+        probs = scores_flat / total
+    else:
+        probs = np.zeros_like(scores_flat)
+
+    # Shannon entropy (base 2)
+    nonzero_probs = probs[probs > 0]
+    entropy = -np.sum(nonzero_probs * np.log2(nonzero_probs))
+
+    # Hill number order 1 = 2^entropy
+    hill_number = float(2**entropy)
+
+    return embedding_flat, species_scores, entropy, hill_number
 
 
 def store_results(file_path, channel, start_frame, embeddings, scores, top_n=5):
@@ -172,50 +189,85 @@ def store_results(file_path, channel, start_frame, embeddings, scores, top_n=5):
     )
 
 
+def get_next_unprocessed_file():
+    with psycopg.connect(DB_PARAMS) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT af.file_path
+                FROM sensos.audio_files af
+                LEFT JOIN sensos.birdnet_embeddings be
+                ON af.file_path = be.file_path
+                WHERE be.file_path IS NULL
+                ORDER BY af.processed_time
+                LIMIT 1;
+                """
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+
+import soundfile as sf
+
+
 def main():
     initialize_schema()
     while True:
-        logger.info("Checking for new audio segments...")
-        segments = get_cataloged_audio()
-        if not segments:
-            logger.info("No new segments found. Sleeping...")
+        logger.info("Checking for next unprocessed file...")
+        file_path = get_next_unprocessed_file()
+        if not file_path:
+            logger.info("No unprocessed files found. Sleeping...")
             time.sleep(60)
             continue
 
-        for seg in segments:
-            file_path = seg["file_path"]
-            abs_path = seg["abs_path"]
-            channel = seg["channel"]
-            start_frame = seg["start_frame"]
-            logger.info(f"Processing {file_path}, ch {channel}, frame {start_frame}")
+        abs_path = CATALOGED / Path(file_path).relative_to("cataloged")
 
-            try:
-                y, sr = librosa.load(
-                    abs_path.as_posix(),
-                    sr=SAMPLE_RATE,
-                    mono=False,
-                    offset=start_frame / SAMPLE_RATE,
-                    duration=SEGMENT_DURATION,
-                )
-                if y.ndim == 1:
-                    if channel != 0:
+        try:
+            info = sf.info(abs_path.as_posix())
+            channels = info.channels
+            duration = info.frames / info.samplerate
+        except Exception as e:
+            logger.error(f"Failed to read audio info from {file_path}: {e}")
+            continue
+
+        total_frames = int(duration * SAMPLE_RATE)
+        step = SAMPLE_RATE  # 1s
+        seg_size = SEGMENT_SIZE  # 3s
+
+        logger.info(f"Processing file: {file_path} ({channels} ch, {duration:.2f} s)")
+
+        for start in range(0, total_frames - seg_size + 1, step):
+            for ch in range(channels):
+                logger.info(f"Processing segment: ch {ch}, frame {start}")
+                try:
+                    y, sr = librosa.load(
+                        abs_path.as_posix(),
+                        sr=SAMPLE_RATE,
+                        mono=False,
+                        offset=start / SAMPLE_RATE,
+                        duration=SEGMENT_DURATION,
+                    )
+                    if y.ndim == 1:
+                        if ch != 0:
+                            continue
+                        audio_segment = y
+                    else:
+                        if ch >= y.shape[0]:
+                            continue
+                        audio_segment = y[ch]
+
+                    if len(audio_segment) != SEGMENT_SIZE:
                         continue
-                    audio_segment = y
-                else:
-                    if channel >= y.shape[0]:
-                        continue
-                    audio_segment = y[channel]
 
-                if len(audio_segment) != SEGMENT_SIZE:
-                    continue
+                    embeddings, scores = invoke_interpreter(audio_segment)
+                    store_results(file_path, ch, start, embeddings, scores)
 
-                embeddings, scores = invoke_interpreter(audio_segment)
-                store_results(file_path, channel, start_frame, embeddings, scores)
+                except Exception as e:
+                    logger.error(
+                        f"Failed segment {file_path}, ch {ch}, frame {start}: {e}"
+                    )
 
-            except Exception as e:
-                logger.error(f"Failed to process {file_path}: {e}")
-
-        logger.info("Segments completed.")
+        logger.info(f"Completed processing file: {file_path}")
 
 
 if __name__ == "__main__":

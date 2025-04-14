@@ -63,15 +63,6 @@ def already_in_db(cursor, rel_path: str) -> bool:
     return cursor.fetchone() is not None
 
 
-def convert_to_flac(src_path: Path, dest_path: Path):
-    tmp_path = dest_path.with_suffix(".tmp")
-    data, sr = sf.read(src_path, always_2d=True)
-    tmp_path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(tmp_path, data, sr, format="FLAC")
-    tmp_path.rename(dest_path)
-    logging.info(f"Safely converted to FLAC: {src_path} → {dest_path}")
-
-
 def process_file(cursor, path: Path):
     rel_input = path.relative_to(QUEUED)
     output_name = path.stem + ".flac"
