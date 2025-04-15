@@ -5,6 +5,7 @@ WG_CONFIG_DIR="/config/wg_confs"
 
 refresh_status() {
     for iface in $(wg show interfaces); do
+        echo "Refreshing interface: ${iface}."
         wg show "$iface" >"/config/wireguard_status_${iface}.txt" || true
     done
 }
