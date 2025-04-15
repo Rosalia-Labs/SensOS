@@ -14,13 +14,12 @@ import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Form, BackgroundTasks
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, status
 from psycopg.errors import UniqueViolation
 from typing import Tuple, Optional, Union
 from pydantic import BaseModel, IPvAnyAddress
 from datetime import datetime, timedelta
 from pathlib import Path
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -419,28 +418,66 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
             "wg_public_key": public_key,
         }
 
-    except psycopg.errors.UniqueViolation:
-        logger.warning(f"⚠️ Network '{name}' already exists. Fetching existing details.")
-        cur.execute(
-            "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
-            (name,),
+    except psycopg.errors.UniqueViolation as e:
+        logger.warning(
+            f"⚠️ Unique constraint violated when creating network '{name}': {e}"
         )
-        existing_network = cur.fetchone()
-        if existing_network is None:
-            raise HTTPException(
-                status_code=500, detail="Error fetching existing network."
-            )
-        network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
 
-        # Do not reinitialize configuration; simply return the existing record.
-        return {
-            "id": network_id,
-            "name": name,
-            "ip_range": ip_range,
-            "wg_public_ip": wg_public_ip,
-            "wg_port": wg_port,
-            "wg_public_key": wg_public_key,
+        # Identify which constraint failed
+        if "networks_name_key" in str(e):
+            cur.execute(
+                "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
+                (name,),
+            )
+        elif "networks_ip_range_key" in str(e):
+            cur.execute(
+                "SELECT id, name, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE ip_range = %s;",
+                (ip_range,),
+            )
+        elif "networks_wg_public_key_key" in str(e):
+            cur.execute(
+                "SELECT id, name, ip_range, wg_public_ip, wg_port FROM sensos.networks WHERE wg_public_key = %s;",
+                (public_key,),
+            )
+        elif "networks_wg_public_ip_wg_port_key" in str(e):
+            cur.execute(
+                "SELECT id, name, ip_range, wg_public_key FROM sensos.networks WHERE wg_public_ip = %s AND wg_port = %s;",
+                (wg_public_ip, wg_port),
+            )
+        else:
+            raise RuntimeError(
+                "Constraint violation but failed to retrieve existing network."
+            )
+
+        existing_network = cur.fetchone()
+        if not existing_network:
+            raise RuntimeError(
+                "Constraint violation but failed to retrieve existing network."
+            )
+
+        # Map result
+        result = {
+            "id": existing_network[0],
+            "name": existing_network[1] if len(existing_network) > 1 else name,
+            "ip_range": existing_network[2] if len(existing_network) > 2 else ip_range,
+            "wg_public_ip": (
+                existing_network[3] if len(existing_network) > 3 else wg_public_ip
+            ),
+            "wg_port": existing_network[4] if len(existing_network) > 4 else wg_port,
+            "wg_public_key": (
+                existing_network[5] if len(existing_network) > 5 else public_key
+            ),
         }
+
+        # ✅ Refuse to overwrite the key
+        if result["wg_public_key"] != public_key:
+            raise RuntimeError(
+                f"❌ Refusing to overwrite existing WireGuard key for network '{name}'. "
+                f"The database is authoritative. Restore the original key or delete the network first."
+            )
+
+        logger.info(f"✅ Returning existing network: {result}")
+        return result
 
 
 def create_wireguard_configs(
@@ -594,7 +631,8 @@ def create_networks_table(cur):
             ip_range CIDR UNIQUE NOT NULL,
             wg_public_ip INET NOT NULL,
             wg_port INTEGER NOT NULL CHECK (wg_port > 0 AND wg_port <= 65535),
-            wg_public_key TEXT UNIQUE NOT NULL
+            wg_public_key TEXT UNIQUE NOT NULL,
+            UNIQUE (wg_public_ip, wg_port)
         );
         """
     )
@@ -739,6 +777,7 @@ def create_initial_network(cur):
     if existing_network:
         network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
         logger.info(f"✅ Network '{network_name}' already exists (ID: {network_id}).")
+
         # Optionally update missing details
         if not wg_public_ip or not wg_port:
             wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
@@ -752,7 +791,12 @@ def create_initial_network(cur):
             )
     else:
         logger.info(f"Creating network '{network_name}'...")
-        result = create_network_entry(cur, network_name)
+        try:
+            result = create_network_entry(cur, network_name)
+        except RuntimeError as e:
+            logger.critical(f"❌ Failed to initialize network '{network_name}': {e}")
+            raise
+
         add_peers_to_wireguard()
         restart_container("sensos-wireguard")
         restart_container("sensos-api-proxy")
@@ -898,20 +942,27 @@ def create_network(
             raise ValueError()
     except ValueError:
         return JSONResponse(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "Invalid WireGuard port. Must be between 1 and 65535."},
         )
 
-    with get_db() as conn:
-        result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
-        logger.info(f"create_network_entry returned: {result}")
-        start_controller_wireguard()
+    try:
+        with get_db() as conn:
+            result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
+            logger.info(f"create_network_entry returned: {result}")
+            start_controller_wireguard()
 
-    # Schedule the restart of the API proxy container in the background
-    background_tasks.add_task(restart_container, "sensos-wireguard")
-    background_tasks.add_task(restart_container, "sensos-api-proxy")
+        # Schedule the restart of the API proxy container in the background
+        background_tasks.add_task(restart_container, "sensos-wireguard")
+        background_tasks.add_task(restart_container, "sensos-api-proxy")
 
-    return result
+        return result
+
+    except RuntimeError as e:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": str(e)},
+        )
 
 
 @app.get("/list-peers", response_class=HTMLResponse)
