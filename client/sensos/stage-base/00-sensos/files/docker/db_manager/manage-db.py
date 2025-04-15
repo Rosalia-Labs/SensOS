@@ -73,7 +73,7 @@ def overwrite_segment_with_zeros(
         return False
 
 
-def process_human_vocal_segments(conn):
+def zero_human_vocal_segments(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -119,7 +119,7 @@ def main():
                     )
                     time.sleep(60)
                     continue
-                segment_found = process_human_vocal_segments(conn)
+                segment_found = zero_human_vocal_segments(conn)
                 if not segment_found:
                     time.sleep(60)
 
