@@ -5,7 +5,6 @@ WG_CONFIG_DIR="/config/wg_confs"
 
 refresh_status() {
     for iface in $(wg show interfaces); do
-        echo "Refreshing interface: ${iface}."
         wg show "$iface" >"/config/wireguard_status_${iface}.txt" || true
     done
 }
@@ -33,4 +32,11 @@ done
 rm -f /config/wireguard_status_*.txt
 refresh_status
 
-while true; do sleep 3600; done
+(
+    while true; do
+        sleep 30
+        refresh_status
+    done
+) &
+
+wait

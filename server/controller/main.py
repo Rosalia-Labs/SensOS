@@ -1473,17 +1473,6 @@ def upload_hardware_profile(
     return {"status": "success", "wg_ip": wg_ip}
 
 
-def signal_wireguard_container(signal_name="SIGUSR1"):
-    try:
-        container = get_docker_client().containers.get("sensos-wireguard")
-        container.kill(signal=signal_name)
-        logger.info(f"📣 Sent {signal_name} to sensos-wireguard container.")
-    except docker.errors.NotFound:
-        logger.error("❌ WireGuard container not found.")
-    except Exception as e:
-        logger.exception(f"❌ Failed to send signal to WireGuard container: {e}")
-
-
 @app.get("/wireguard-status", response_class=HTMLResponse)
 def wireguard_status_dashboard(
     credentials: HTTPBasicCredentials = Depends(authenticate),
@@ -1492,7 +1481,6 @@ def wireguard_status_dashboard(
     Displays an HTML dashboard showing WireGuard peer status for all active interfaces.
     Falls back to a warning if no status files are found.
     """
-    signal_wireguard_container("SIGUSR1")
     status_files = sorted(Path("/config").glob("wireguard_status_*.txt"))
     if not status_files:
         return HTMLResponse(
