@@ -46,7 +46,7 @@ def ensure_schema(cursor):
         CREATE TABLE IF NOT EXISTS sensos.audio_files (
             id SERIAL PRIMARY KEY,
             file_path TEXT,
-            processed_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            cataloged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         """
     )

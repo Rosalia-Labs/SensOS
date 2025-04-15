@@ -55,24 +55,6 @@ services:
         condition: on-failure
         max_attempts: 3
 
-  sensos-sound-analyzer:
-    image: sensos-client-sound-analyzer
-    container_name: sensos-client-sound-analyzer
-    restart: always
-    depends_on:
-      - sensos-client-database
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
-
   sensos-client-db-manager:
     image: sensos-client-db-manager
     container_name: sensos-client-db-manager
