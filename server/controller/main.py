@@ -753,6 +753,7 @@ def create_initial_network(cur):
     else:
         logger.info(f"Creating network '{network_name}'...")
         result = create_network_entry(cur, network_name)
+        add_peers_to_wireguard()
         restart_container("sensos-wireguard")
         restart_container("sensos-api-proxy")
         network_id = result["id"]
@@ -1421,40 +1422,67 @@ def upload_hardware_profile(
     return {"status": "success", "wg_ip": wg_ip}
 
 
+def signal_wireguard_container(signal_name="SIGUSR1"):
+    try:
+        container = get_docker_client().containers.get("sensos-wireguard")
+        container.kill(signal=signal_name)
+        logger.info(f"📣 Sent {signal_name} to sensos-wireguard container.")
+    except docker.errors.NotFound:
+        logger.error("❌ WireGuard container not found.")
+    except Exception as e:
+        logger.exception(f"❌ Failed to send signal to WireGuard container: {e}")
+
+
 @app.get("/wireguard-status", response_class=HTMLResponse)
 def wireguard_status_dashboard(
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     """
-    Displays an HTML dashboard showing WireGuard peer status from the sensos-wireguard-new container.
-    Falls back to a warning if the status file is missing.
+    Displays an HTML dashboard showing WireGuard peer status for all active interfaces.
+    Falls back to a warning if no status files are found.
     """
-    status_path = Path("/config/wireguard_status")
-    if not status_path.exists():
+    signal_wireguard_container("SIGUSR1")
+    status_files = sorted(Path("/config").glob("wireguard_status_*.txt"))
+    if not status_files:
         return HTMLResponse(
             """
             <html>
             <head><title>WireGuard Status</title></head>
             <body>
-                <h2 style='color: red;'>⚠️ No wireguard_status file found.</h2>
-                <p>The background service may not be running or has not yet written a status update.</p>
+                <h2 style='color: red;'>⚠️ No wireguard_status_*.txt files found.</h2>
+                <p>The background service may not be running or has not yet written any status updates.</p>
             </body>
             </html>
             """,
             status_code=200,
         )
 
-    try:
-        output = status_path.read_text()
-    except Exception as e:
-        return HTMLResponse(
-            f"<h3 style='color:red;'>❌ Failed to read wireguard_status: {e}</h3>",
-            status_code=500,
-        )
+    def parse_peers(output: str):
+        lines = output.strip().splitlines()
+        peers = []
+        current_peer = {}
+        skip_interface = True
 
-    lines = output.strip().splitlines()
-    peers = []
-    current_peer = {}
+        for line in lines:
+            line = line.strip()
+            if skip_interface:
+                if line.startswith("peer:"):
+                    skip_interface = False
+                else:
+                    continue
+
+            if line.startswith("peer:"):
+                if current_peer:
+                    peers.append(current_peer)
+                current_peer = {"public_key": line.split(":", 1)[1].strip()}
+            elif ":" in line:
+                key, val = map(str.strip, line.split(":", 1))
+                current_peer[key] = val
+
+        if current_peer:
+            peers.append(current_peer)
+
+        return peers
 
     def parse_handshake(text):
         match = re.match(r"(\d+)\s+(\w+)\s+ago", text)
@@ -1468,25 +1496,6 @@ def wireguard_status_dashboard(
         except Exception:
             return text
 
-    skip_interface = True
-    for line in lines:
-        line = line.strip()
-        if skip_interface:
-            if line.startswith("peer:"):
-                skip_interface = False
-            else:
-                continue  # skip lines before first peer
-
-        if line.startswith("peer:"):
-            if current_peer:
-                peers.append(current_peer)
-            current_peer = {"public_key": line.split(":", 1)[1].strip()}
-        elif ":" in line:
-            key, val = map(str.strip, line.split(":", 1))
-            current_peer[key] = val
-    if current_peer:
-        peers.append(current_peer)
-
     html = """
     <html>
     <head>
@@ -1494,7 +1503,8 @@ def wireguard_status_dashboard(
         <style>
             body { font-family: Arial, sans-serif; background: #f7f7f7; padding: 20px; }
             h2 { color: #005a9c; }
-            table { width: 100%; border-collapse: collapse; background: white; margin-top: 20px; }
+            h3 { color: #333; margin-top: 40px; }
+            table { width: 100%; border-collapse: collapse; background: white; margin-top: 10px; }
             th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
             th { background: #005a9c; color: white; }
             tr:nth-child(even) { background: #f2f2f2; }
@@ -1502,6 +1512,20 @@ def wireguard_status_dashboard(
     </head>
     <body>
         <h2>🔐 WireGuard Peer Status</h2>
+    """
+
+    for status_path in status_files:
+        interface_name = status_path.stem.replace("wireguard_status_", "")
+        try:
+            output = status_path.read_text()
+        except Exception as e:
+            html += f"<h3 style='color: red;'>❌ Failed to read {status_path.name}: {e}</h3>"
+            continue
+
+        peers = parse_peers(output)
+
+        html += f"<h3>Interface: <code>{interface_name}</code></h3>"
+        html += """
         <table>
             <tr>
                 <th>Public Key</th>
@@ -1510,20 +1534,22 @@ def wireguard_status_dashboard(
                 <th>Last Contact</th>
                 <th>Transfer</th>
             </tr>
-    """
-
-    for p in peers:
-        html += f"""
-        <tr>
-            <td style="font-family: monospace;">{p.get("public_key")}</td>
-            <td>{p.get("allowed ips", "—")}</td>
-            <td>{p.get("endpoint", "—")}</td>
-            <td>{parse_handshake(p.get("latest handshake", "—"))}</td>
-            <td>{p.get("transfer", "—").replace("received", "⬇").replace("sent", "⬆")}</td>
-        </tr>
         """
 
-    html += "</table></body></html>"
+        for p in peers:
+            html += f"""
+            <tr>
+                <td style="font-family: monospace;">{p.get("public_key")}</td>
+                <td>{p.get("allowed ips", "—")}</td>
+                <td>{p.get("endpoint", "—")}</td>
+                <td>{parse_handshake(p.get("latest handshake", "—"))}</td>
+                <td>{p.get("transfer", "—").replace("received", "⬇").replace("sent", "⬆")}</td>
+            </tr>
+            """
+
+        html += "</table>"
+
+    html += "</body></html>"
     return HTMLResponse(content=html)
 
 

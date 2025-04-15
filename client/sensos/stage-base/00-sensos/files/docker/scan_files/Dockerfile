@@ -3,7 +3,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Set required DEBs
-ENV REQUIRED_DEBS="python3 python3-venv python3-pip libportaudio2 libpq5 libsndfile1 libopenblas0 ffmpeg"
+ENV REQUIRED_DEBS="python3 python3-venv python3-pip"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends $REQUIRED_DEBS && \
@@ -17,5 +17,5 @@ COPY requirements.txt .
 
 RUN pip install -r requirements.txt
 
-COPY analyze-sound.py .
-CMD ["python", "analyze-sound.py"]
+COPY scan_files.py .
+CMD ["python", "scan_files.py"]

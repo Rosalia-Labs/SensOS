@@ -22,7 +22,16 @@ for config_file in "$WG_CONFIG_DIR"/*.conf; do
     wg-quick up "$vpn" || echo "⚠️ Failed to bring up $vpn"
 done
 
-while true; do
-    wg show >/config/wireguard_status || true
-    sleep 30
-done
+rm -f /config/wireguard_status_*.txt
+
+trap 'refresh_status' SIGUSR1
+
+refresh_status() {
+    for iface in $(wg show interfaces); do
+        wg show "$iface" >"/config/wireguard_status_${iface}.txt" || true
+    done
+}
+
+refresh_status
+
+while true; do sleep 3600; done
