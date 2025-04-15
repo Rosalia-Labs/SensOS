@@ -1,8 +1,15 @@
 #!/bin/bash
-
 set -euo pipefail
 
 WG_CONFIG_DIR="/config/wg_confs"
+
+refresh_status() {
+    for iface in $(wg show interfaces); do
+        wg show "$iface" >"/config/wireguard_status_${iface}.txt" || true
+    done
+}
+
+trap 'refresh_status' SIGUSR1
 
 mkdir -p /etc/wireguard
 chown root:root /etc/wireguard
@@ -23,15 +30,6 @@ for config_file in "$WG_CONFIG_DIR"/*.conf; do
 done
 
 rm -f /config/wireguard_status_*.txt
-
-trap 'refresh_status' SIGUSR1
-
-refresh_status() {
-    for iface in $(wg show interfaces); do
-        wg show "$iface" >"/config/wireguard_status_${iface}.txt" || true
-    done
-}
-
 refresh_status
 
 while true; do sleep 3600; done
