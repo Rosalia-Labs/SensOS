@@ -103,6 +103,8 @@ services:
     restart: always
     env_file: .env
     privileged: true
+    volumes:
+      - sensos_api_proxy_wg_config:/etc/wireguard
     cap_add:
       - NET_ADMIN
     ports:
