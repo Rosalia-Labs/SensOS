@@ -32,6 +32,7 @@ from core import (
     add_peers_to_wireguard,
     restart_container,
     start_controller_wireguard,
+    create_network_entry
 )
 
 logger = logging.getLogger(__name__)

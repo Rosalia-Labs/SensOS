@@ -3,22 +3,17 @@ import os
 import stat
 import subprocess
 import ipaddress
-import platform
 import logging
 import psycopg
 import socket
 import docker
 import time
-import json
 import re
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from psycopg.errors import UniqueViolation
 from typing import Tuple, Optional
-from pydantic import BaseModel, IPvAnyAddress
-from datetime import datetime, timedelta
 from pathlib import Path
 
 # ------------------------------------------------------------
@@ -34,7 +29,9 @@ POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 if not POSTGRES_PASSWORD:
     raise ValueError("POSTGRES_PASSWORD is not set. Exiting.")
-DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
+DATABASE_URL = (
+    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@sensos-database/postgres"
+)
 
 API_PASSWORD = os.getenv("API_PASSWORD")
 if not API_PASSWORD:
@@ -50,11 +47,29 @@ GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 EXPOSE_CONTAINERS = os.getenv("EXPOSE_CONTAINERS", "false").lower() == "true"
 
+
 # ------------------------------------------------------------
 # Application Lifespan
 # ------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Async context manager for handling the application's startup and shutdown procedures.
+
+    During startup, it:
+      - Creates the 'sensos' schema if it doesn't exist.
+      - Sets the search path to include the schema.
+      - Creates and/or updates required database tables.
+      - Initializes network configuration and WireGuard interfaces.
+
+    During shutdown, it logs the shutdown procedure.
+
+    Parameters:
+        app (FastAPI): The FastAPI application instance.
+
+    Yields:
+        None
+    """
     logger.info("Called lifespan async context manager...")
     try:
         with get_db() as conn:
@@ -83,34 +98,185 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down!")
 
+
 # ------------------------------------------------------------
 # Security & Authentication
 # ------------------------------------------------------------
 security = HTTPBasic()
 
+
 def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
+    """
+    Verifies HTTP Basic credentials against the API_PASSWORD environment variable.
+
+    Parameters:
+        credentials (HTTPBasicCredentials): The credentials provided by the client.
+
+    Returns:
+        HTTPBasicCredentials: The same credentials if authentication is successful.
+
+    Raises:
+        HTTPException: If the provided password does not match the expected API_PASSWORD.
+    """
     if credentials.password != API_PASSWORD:
         raise HTTPException(status_code=401, detail="Unauthorized")
     return credentials
+
 
 # ------------------------------------------------------------
 # Database Connection
 # ------------------------------------------------------------
 def get_db(retries=10, delay=3):
+    """
+    Establishes and returns a PostgreSQL database connection.
+
+    The function will attempt to connect to the database for a specified number of times,
+    with a delay between attempts, to handle potential startup race conditions.
+
+    Parameters:
+        retries (int): Number of connection attempts (default: 10).
+        delay (int): Delay in seconds between attempts (default: 3).
+
+    Returns:
+        connection: A psycopg connection object with autocommit enabled.
+
+    Raises:
+        psycopg.OperationalError: If connection fails after all attempts.
+    """
     for attempt in range(retries):
         try:
             return psycopg.connect(DATABASE_URL, autocommit=True)
         except psycopg.OperationalError:
             if attempt == retries - 1:
                 raise
-            logger.info(f"Database not ready, retrying in {delay} seconds... (Attempt {attempt+1}/{retries})")
+            logger.info(
+                f"Database not ready, retrying in {delay} seconds... (Attempt {attempt+1}/{retries})"
+            )
             time.sleep(delay)
+
 
 # ------------------------------------------------------------
 # Core Utility Functions
 # ------------------------------------------------------------
 
+
+def get_network_details(network_name: str):
+    """
+    Retrieves network details from the database based on the network name.
+
+    Parameters:
+        network_name (str): The name of the network.
+
+    Returns:
+        tuple or None: A tuple containing (id, ip_range, wg_public_key, wg_public_ip, wg_port)
+                       if the network is found; otherwise, None.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, ip_range, wg_public_key, wg_public_ip, wg_port
+                FROM sensos.networks
+                WHERE name = %s;
+                """,
+                (network_name,),
+            )
+            return cur.fetchone()
+
+
+def restart_container(container_name: str):
+    """
+    Restarts a Docker container identified by its name.
+
+    If the container is not running, logs a warning and attempts to restart it.
+
+    Parameters:
+        container_name (str): The name of the container to restart.
+
+    Returns:
+        None
+    """
+    try:
+        client = docker.from_env()
+        container = client.containers.get(container_name)
+        if container.status != "running":
+            logger.warning(
+                f"Container '{container_name}' is not running but will be restarted."
+            )
+        container.restart()
+        logger.info(f"Container '{container_name}' restarted successfully.")
+    except Exception as e:
+        logger.error(f"Error restarting container '{container_name}': {e}")
+
+
+def start_controller_wireguard():
+    """
+    Loads or updates WireGuard configurations from the controller configuration directory.
+
+    Scans the /etc/wireguard directory for configuration files. For each file, it either:
+      - Updates an already running WireGuard interface via wg-quick and wg syncconf.
+      - Or brings up a new WireGuard interface using wg-quick up.
+
+    Returns:
+        None
+    """
+    logger.info("🔍 Scanning /etc/wireguard for existing WireGuard configurations...")
+    config_files = sorted(CONTROLLER_CONFIG_DIR.glob("*.conf"))
+
+    if not config_files:
+        logger.warning("⚠️ No WireGuard config files found in /etc/wireguard.")
+        return
+
+    for config_file in config_files:
+        network_name = config_file.stem  # e.g., 'wg0' from 'wg0.conf'
+        result = subprocess.run(
+            ["wg", "show", network_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        if result.returncode == 0:
+            logger.info(f"🔄 Updating running WireGuard interface: {network_name}")
+            try:
+                strip_result = subprocess.run(
+                    ["wg-quick", "strip", network_name],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                subprocess.run(
+                    ["wg", "syncconf", network_name, "/dev/stdin"],
+                    input=strip_result.stdout,
+                    text=True,
+                    check=True,
+                )
+                logger.info(f"✅ Updated WireGuard interface: {network_name}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Failed to update {network_name}: {e}")
+        else:
+            logger.info(f"🚀 Enabling new WireGuard interface: {network_name}")
+            try:
+                subprocess.run(["wg-quick", "up", network_name], check=True)
+                logger.info(f"✅ Activated WireGuard interface: {network_name}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"❌ Failed to activate {network_name}: {e}")
+
+    logger.info("✅ WireGuard interfaces setup complete.")
+
+
 def resolve_hostname(value):
+    """
+    Resolves a hostname or returns the value if it is already a valid IP address.
+
+    Attempts to interpret the input as an IPv4 or IPv6 address. If not, performs a DNS
+    lookup to resolve the hostname.
+
+    Parameters:
+        value (str): A hostname or IP address.
+
+    Returns:
+        str or None: The resolved IP address as a string, or None if resolution fails.
+    """
     try:
         socket.inet_pton(socket.AF_INET, value)
         return value
@@ -129,16 +295,51 @@ def resolve_hostname(value):
         pass
     return None
 
+
 def generate_default_ip_range(name):
+    """
+    Generates a default /16 CIDR IP range based on a deterministic hash of the network name.
+
+    Parameters:
+        name (str): The name of the network.
+
+    Returns:
+        str: A CIDR-formatted IP range string.
+    """
     hash_val = sum(ord(c) for c in name) % 256
     return f"10.{hash_val}.0.0/16"
 
+
 def generate_wireguard_keys():
-    private_key = subprocess.run("wg genkey", shell=True, capture_output=True, text=True).stdout.strip()
-    public_key = subprocess.run(f"echo {private_key} | wg pubkey", shell=True, capture_output=True, text=True).stdout.strip()
+    """
+    Generates a WireGuard key pair using wg commands.
+
+    Returns:
+        tuple: A tuple (private_key, public_key), where each is a string.
+    """
+    private_key = subprocess.run(
+        "wg genkey", shell=True, capture_output=True, text=True
+    ).stdout.strip()
+    public_key = subprocess.run(
+        f"echo {private_key} | wg pubkey", shell=True, capture_output=True, text=True
+    ).stdout.strip()
     return private_key, public_key
 
-def insert_peer(network_id: int, wg_ip: str, note: Optional[str] = None) -> Tuple[int, str]:
+
+def insert_peer(
+    network_id: int, wg_ip: str, note: Optional[str] = None
+) -> Tuple[int, str]:
+    """
+    Inserts a new WireGuard peer entry into the database.
+
+    Parameters:
+        network_id (int): The ID of the network.
+        wg_ip (str): The WireGuard IP to assign to the peer.
+        note (str, optional): An optional note or description.
+
+    Returns:
+        tuple: A tuple containing the new peer's id and uuid.
+    """
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -151,10 +352,24 @@ def insert_peer(network_id: int, wg_ip: str, note: Optional[str] = None) -> Tupl
             )
             return cur.fetchone()
 
+
 def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
+    """
+    Registers a WireGuard public key in the database for an existing peer.
+
+    Parameters:
+        wg_ip (str): The WireGuard IP address of the peer.
+        wg_public_key (str): The public key to register.
+
+    Returns:
+        dict or None: A dictionary containing the wg_ip and wg_public_key if successful,
+                      otherwise None if the peer does not exist.
+    """
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;", (wg_ip,))
+            cur.execute(
+                "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s;", (wg_ip,)
+            )
             peer = cur.fetchone()
             if not peer:
                 return None
@@ -165,8 +380,28 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
             )
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
+
 def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
-    wg_public_ip = wg_public_ip or resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
+    """
+    Creates a new network entry in the database along with generating WireGuard keys
+    and configurations.
+
+    Parameters:
+        cur: The database cursor.
+        name (str): The name of the network.
+        wg_public_ip (str, optional): The public IP address for WireGuard; if not provided,
+                                      it is resolved via environment variables.
+        wg_port (str or int, optional): The WireGuard port; if not provided, defaults are used.
+
+    Returns:
+        dict: A dictionary containing the network details (id, name, ip_range, wg_public_ip, wg_port, wg_public_key).
+
+    Raises:
+        RuntimeError: If a unique constraint is violated and the existing network details conflict.
+    """
+    wg_public_ip = wg_public_ip or resolve_hostname(
+        os.getenv("WG_SERVER_IP", "127.0.0.1")
+    )
     wg_port = wg_port or int(os.getenv("WG_PORT", "51820"))
     ip_range = generate_default_ip_range(name)
     private_key, public_key = generate_wireguard_keys()
@@ -192,27 +427,49 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
             "wg_public_key": public_key,
         }
     except psycopg.errors.UniqueViolation as e:
-        logger.warning(f"⚠️ Unique constraint violated when creating network '{name}': {e}")
+        logger.warning(
+            f"⚠️ Unique constraint violated when creating network '{name}': {e}"
+        )
         if "networks_name_key" in str(e):
-            cur.execute("SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;", (name,))
+            cur.execute(
+                "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
+                (name,),
+            )
         elif "networks_ip_range_key" in str(e):
-            cur.execute("SELECT id, name, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE ip_range = %s;", (ip_range,))
+            cur.execute(
+                "SELECT id, name, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE ip_range = %s;",
+                (ip_range,),
+            )
         elif "networks_wg_public_key_key" in str(e):
-            cur.execute("SELECT id, name, ip_range, wg_public_ip, wg_port FROM sensos.networks WHERE wg_public_key = %s;", (public_key,))
+            cur.execute(
+                "SELECT id, name, ip_range, wg_public_ip, wg_port FROM sensos.networks WHERE wg_public_key = %s;",
+                (public_key,),
+            )
         elif "networks_wg_public_ip_wg_port_key" in str(e):
-            cur.execute("SELECT id, name, ip_range, wg_public_key FROM sensos.networks WHERE wg_public_ip = %s AND wg_port = %s;", (wg_public_ip, wg_port))
+            cur.execute(
+                "SELECT id, name, ip_range, wg_public_key FROM sensos.networks WHERE wg_public_ip = %s AND wg_port = %s;",
+                (wg_public_ip, wg_port),
+            )
         else:
-            raise RuntimeError("Constraint violation but failed to retrieve existing network.")
+            raise RuntimeError(
+                "Constraint violation but failed to retrieve existing network."
+            )
         existing_network = cur.fetchone()
         if not existing_network:
-            raise RuntimeError("Constraint violation but failed to retrieve existing network.")
+            raise RuntimeError(
+                "Constraint violation but failed to retrieve existing network."
+            )
         result = {
             "id": existing_network[0],
             "name": existing_network[1] if len(existing_network) > 1 else name,
             "ip_range": existing_network[2] if len(existing_network) > 2 else ip_range,
-            "wg_public_ip": existing_network[3] if len(existing_network) > 3 else wg_public_ip,
+            "wg_public_ip": (
+                existing_network[3] if len(existing_network) > 3 else wg_public_ip
+            ),
             "wg_port": existing_network[4] if len(existing_network) > 4 else wg_port,
-            "wg_public_key": existing_network[5] if len(existing_network) > 5 else public_key,
+            "wg_public_key": (
+                existing_network[5] if len(existing_network) > 5 else public_key
+            ),
         }
         if result["wg_public_key"] != public_key:
             raise RuntimeError(
@@ -222,13 +479,31 @@ def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
         logger.info(f"✅ Returning existing network: {result}")
         return result
 
-def create_wireguard_configs(network_id: int, name: str, ip_range: str, private_key: str, wg_public_key: str):
+
+def create_wireguard_configs(
+    network_id: int, name: str, ip_range: str, private_key: str, wg_public_key: str
+):
+    """
+    Generates and writes WireGuard configuration files for a network.
+
+    Creates both server and, if enabled, controller configuration files.
+
+    Parameters:
+        network_id (int): The ID of the network.
+        name (str): The name of the network.
+        ip_range (str): The CIDR-formatted IP range of the network.
+        private_key (str): The WireGuard private key for the server.
+        wg_public_key (str): The WireGuard public key for the server.
+
+    Returns:
+        tuple: A tuple containing the path to the server config and the controller config
+               (if EXPOSE_CONTAINERS is True), otherwise just the server config path.
+    """
     WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     wg_config_path = WG_CONFIG_DIR / f"{name}.conf"
     controller_config_path = CONTROLLER_CONFIG_DIR / f"{name}.conf"
     base_ip = ip_range.split("/")[0]
     network_prefix = ".".join(base_ip.split(".")[:3])
-    # API Proxy always assigned prefix .1
     api_proxy_ip = f"{network_prefix}.1"
     insert_peer(network_id, api_proxy_ip, "API server")
     wg_interface_ip = ""
@@ -239,7 +514,9 @@ def create_wireguard_configs(network_id: int, name: str, ip_range: str, private_
         controller_private_key, controller_public_key = generate_wireguard_keys()
         insert_peer(network_id, controller_ip.split("/")[0])
         register_wireguard_key_in_db(controller_ip.split("/")[0], controller_public_key)
-        wg_peers.append(f"\n[Peer]\nPublicKey = {controller_public_key}\nAllowedIPs = {controller_ip.split('/')[0]}/32\n")
+        wg_peers.append(
+            f"\n[Peer]\nPublicKey = {controller_public_key}\nAllowedIPs = {controller_ip.split('/')[0]}/32\n"
+        )
         wireguard_container_ip = get_container_ip("sensos-wireguard")
         controller_config_content = f"""[Interface]
 Address = {controller_ip}
@@ -259,14 +536,29 @@ PersistentKeepalive = 25
 {"Address = " + wg_interface_ip if wg_interface_ip else ""}
 ListenPort = 51820
 PrivateKey = {private_key}
-""" + "".join(wg_peers)
+""" + "".join(
+        wg_peers
+    )
     with open(wg_config_path, "w") as f:
         f.write(wg_config_content.strip() + "\n")
     os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
     logger.info(f"✅ WireGuard server config written: {wg_config_path}")
     return wg_config_path, controller_config_path if EXPOSE_CONTAINERS else None
 
+
 def get_container_ip(container_name):
+    """
+    Retrieves the IP address of a Docker container using the Docker SDK.
+
+    Parameters:
+        container_name (str): The name of the container.
+
+    Returns:
+        str or None: The container's IP address if found, otherwise None.
+
+    Raises:
+        ValueError: If no valid IP address is found.
+    """
     try:
         client = docker.from_env()
         container = client.containers.get(container_name)
@@ -274,15 +566,29 @@ def get_container_ip(container_name):
         for network_name, network_info in networks.items():
             if "IPAddress" in network_info and network_info["IPAddress"]:
                 return network_info["IPAddress"]
-        raise ValueError(f"❌ No valid IP address found for container '{container_name}'")
+        raise ValueError(
+            f"❌ No valid IP address found for container '{container_name}'"
+        )
     except Exception as e:
         logger.error(f"❌ Error getting container IP for '{container_name}': {e}")
     return None
 
+
 def add_peers_to_wireguard():
+    """
+    Regenerates the WireGuard configuration files based on the current database state.
+
+    Iterates over each network in the database, extracts the existing server configuration,
+    and appends all active peer configurations.
+
+    Returns:
+        None
+    """
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name, ip_range, wg_public_key FROM sensos.networks;")
+            cur.execute(
+                "SELECT id, name, ip_range, wg_public_key FROM sensos.networks;"
+            )
             networks = cur.fetchall()
             for network_id, network_name, ip_range, server_public_key in networks:
                 wg_config_path = WG_CONFIG_DIR / f"{network_name}.conf"
@@ -293,26 +599,62 @@ def add_peers_to_wireguard():
                     FROM sensos.wireguard_peers p
                     JOIN sensos.wireguard_keys k ON p.id = k.peer_id
                     WHERE p.network_id = %s AND k.is_active = TRUE;
-                    """, (network_id,)
+                    """,
+                    (network_id,),
                 )
                 peers = cur.fetchall()
                 with open(wg_config_path, "w") as f:
                     f.write(server_config.strip() + "\n\n")
                     for wg_ip, wg_public_key in peers:
-                        f.write(f"\n[Peer]\nPublicKey = {wg_public_key}\nAllowedIPs = {wg_ip}/32\n")
+                        f.write(
+                            f"\n[Peer]\nPublicKey = {wg_public_key}\nAllowedIPs = {wg_ip}/32\n"
+                        )
     logger.info("✅ WireGuard configuration regenerated for all networks.")
 
+
 def extract_server_config(wg_config_path):
+    """
+    Extracts the [Interface] section from an existing WireGuard configuration file.
+
+    Parameters:
+        wg_config_path (Path): The file path to the WireGuard configuration.
+
+    Returns:
+        str: The extracted server configuration (the [Interface] section).
+
+    Raises:
+        FileNotFoundError: If the configuration file does not exist.
+        ValueError: If the [Interface] section cannot be found.
+    """
     if not os.path.exists(wg_config_path):
-        raise FileNotFoundError(f"Config file {wg_config_path} does not exist. Cannot regenerate configuration.")
+        raise FileNotFoundError(
+            f"Config file {wg_config_path} does not exist. Cannot regenerate configuration."
+        )
     with open(wg_config_path, "r") as f:
         config = f.read()
-    match = re.search(r"^\s*\[\s*Interface\s*\](?:\n(?!^\s*\[\s*\w+\s*\]$)\s*.*)*", config, re.MULTILINE)
+    match = re.search(
+        r"^\s*\[\s*Interface\s*\](?:\n(?!^\s*\[\s*\w+\s*\]$)\s*.*)*",
+        config,
+        re.MULTILINE,
+    )
     if not match:
-        raise ValueError(f"[Interface] not found in {wg_config_path}. Check the file format.")
+        raise ValueError(
+            f"[Interface] not found in {wg_config_path}. Check the file format."
+        )
     return match.group(0)
 
+
 def get_last_assigned_ip(network_id: int) -> Optional[ipaddress.IPv4Address]:
+    """
+    Retrieves the highest assigned WireGuard IP address for a given network.
+
+    Parameters:
+        network_id (int): The network's ID.
+
+    Returns:
+        IPv4Address or None: The last assigned IP as an IPv4Address object,
+                             or None if no IP has been assigned.
+    """
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -322,7 +664,24 @@ def get_last_assigned_ip(network_id: int) -> Optional[ipaddress.IPv4Address]:
             result = cur.fetchone()
             return ipaddress.ip_address(result[0]) if result else None
 
-def compute_next_ip(ip_range: ipaddress.IPv4Network, last_ip: Optional[ipaddress.IPv4Address] = None, subnet_offset: int = 0) -> Optional[ipaddress.IPv4Address]:
+
+def compute_next_ip(
+    ip_range: ipaddress.IPv4Network,
+    last_ip: Optional[ipaddress.IPv4Address] = None,
+    subnet_offset: int = 0,
+) -> Optional[ipaddress.IPv4Address]:
+    """
+    Computes the next available IP address within a specified subnetwork.
+
+    Parameters:
+        ip_range (IPv4Network): The base IP network.
+        last_ip (IPv4Address, optional): The last assigned IP address. If None,
+                                         the function returns the first available IP.
+        subnet_offset (int, optional): An offset to specify which subnet to use.
+
+    Returns:
+        IPv4Address or None: The next available IP address, or None if none is available.
+    """
     base_bytes = bytearray(ip_range.network_address.packed)
     base_bytes[2] = subnet_offset
     base_bytes[3] = 0
@@ -334,7 +693,17 @@ def compute_next_ip(ip_range: ipaddress.IPv4Network, last_ip: Optional[ipaddress
         next_ip = last_ip + 1
     return next_ip if next_ip < subnet.broadcast_address else None
 
+
 def create_version_history_table(cur):
+    """
+    Creates the version_history table to track version and Git information.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.version_history (
@@ -352,7 +721,17 @@ def create_version_history_table(cur):
         """
     )
 
+
 def create_networks_table(cur):
+    """
+    Creates the networks table to store network configurations.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.networks (
@@ -367,7 +746,17 @@ def create_networks_table(cur):
         """
     )
 
+
 def create_wireguard_peers_table(cur):
+    """
+    Creates the wireguard_peers table to store peer information for WireGuard.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -383,7 +772,17 @@ def create_wireguard_peers_table(cur):
         """
     )
 
+
 def create_wireguard_keys_table(cur):
+    """
+    Creates the wireguard_keys table to store WireGuard public keys for peers.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.wireguard_keys (
@@ -396,7 +795,17 @@ def create_wireguard_keys_table(cur):
         """
     )
 
+
 def create_ssh_keys_table(cur):
+    """
+    Creates the ssh_keys table to store SSH key information associated with peers.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.ssh_keys (
@@ -417,7 +826,17 @@ def create_ssh_keys_table(cur):
         """
     )
 
+
 def create_client_status_table(cur):
+    """
+    Creates the client_status table to log periodic status information from clients.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.client_status (
@@ -439,7 +858,17 @@ def create_client_status_table(cur):
         """
     )
 
+
 def update_version_history_table(cur):
+    """
+    Inserts a new version history record into the version_history table.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         INSERT INTO sensos.version_history 
@@ -458,7 +887,17 @@ def update_version_history_table(cur):
         ),
     )
 
+
 def create_hardware_profile_table(cur):
+    """
+    Creates the hardware_profiles table to store hardware profile data for peers.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.hardware_profiles (
@@ -471,7 +910,17 @@ def create_hardware_profile_table(cur):
         """
     )
 
+
 def create_peer_location_table(cur):
+    """
+    Creates the peer_locations table to store geographical location data for peers.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        None
+    """
     cur.execute(
         """
         CREATE EXTENSION IF NOT EXISTS postgis;
@@ -484,12 +933,27 @@ def create_peer_location_table(cur):
         """
     )
 
+
 def create_initial_network(cur):
+    """
+    Retrieves or creates the initial network based on the INITIAL_NETWORK environment variable.
+
+    If the network exists, it may update missing details. Otherwise, it creates a new network entry.
+
+    Parameters:
+        cur: The database cursor.
+
+    Returns:
+        int or None: The network ID of the initial network, or None if INITIAL_NETWORK is not set.
+    """
     network_name = os.getenv("INITIAL_NETWORK")
     if not network_name:
         logger.error("❌ INITIAL_NETWORK is not set in .env. Exiting.")
         return None
-    cur.execute("SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;", (network_name,))
+    cur.execute(
+        "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
+        (network_name,),
+    )
     existing_network = cur.fetchone()
     if existing_network:
         network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
@@ -497,8 +961,13 @@ def create_initial_network(cur):
         if not wg_public_ip or not wg_port:
             wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
             wg_port = int(os.getenv("WG_PORT", "51820"))
-            cur.execute("UPDATE sensos.networks SET wg_public_ip = %s, wg_port = %s WHERE id = %s;", (wg_public_ip, wg_port, network_id))
-            logger.info(f"✅ Network '{network_name}' updated with IP {wg_public_ip}, port {wg_port}.")
+            cur.execute(
+                "UPDATE sensos.networks SET wg_public_ip = %s, wg_port = %s WHERE id = %s;",
+                (wg_public_ip, wg_port, network_id),
+            )
+            logger.info(
+                f"✅ Network '{network_name}' updated with IP {wg_public_ip}, port {wg_port}."
+            )
     else:
         logger.info(f"Creating network '{network_name}'...")
         try:
