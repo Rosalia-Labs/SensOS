@@ -25,14 +25,13 @@ from core import (
     get_db,
     authenticate,
     get_network_details,
-    get_last_assigned_ip,
-    compute_next_ip,
+    search_for_next_available_ip,
     insert_peer,
     register_wireguard_key_in_db,
     add_peers_to_wireguard,
     restart_container,
     start_controller_wireguard,
-    create_network_entry
+    create_network_entry,
 )
 
 logger = logging.getLogger(__name__)
@@ -240,9 +239,9 @@ def register_peer(
             },
         )
 
-    # Compute the first IP in the specified subnetwork (x.x.<subnet_offset>.1)
-    last_ip = get_last_assigned_ip(network_id)
-    wg_ip = compute_next_ip(subnet, last_ip, request.subnet_offset)
+    wg_ip = search_for_next_available_ip(
+        subnet, network_id, subnet_start=request.subnet_offset
+    )
 
     if not wg_ip:
         return JSONResponse(

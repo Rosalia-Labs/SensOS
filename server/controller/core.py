@@ -126,7 +126,7 @@ def authenticate(credentials: HTTPBasicCredentials = Depends(security)):
 # ------------------------------------------------------------
 # Database Connection
 # ------------------------------------------------------------
-def get_db(retries=10, delay=3):
+def get_db(retries: int = 10, delay: int = 3):
     """
     Establishes and returns a PostgreSQL database connection.
 
@@ -264,7 +264,7 @@ def start_controller_wireguard():
     logger.info("✅ WireGuard interfaces setup complete.")
 
 
-def resolve_hostname(value):
+def resolve_hostname(value: str):
     """
     Resolves a hostname or returns the value if it is already a valid IP address.
 
@@ -296,7 +296,7 @@ def resolve_hostname(value):
     return None
 
 
-def generate_default_ip_range(name):
+def generate_default_ip_range(name: str):
     """
     Generates a default /16 CIDR IP range based on a deterministic hash of the network name.
 
@@ -381,7 +381,7 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
-def create_network_entry(cur, name, wg_public_ip=None, wg_port=None):
+def create_network_entry(cur, name: str, wg_public_ip: str = None, wg_port=None):
     """
     Creates a new network entry in the database along with generating WireGuard keys
     and configurations.
@@ -546,7 +546,7 @@ PrivateKey = {private_key}
     return wg_config_path, controller_config_path if EXPOSE_CONTAINERS else None
 
 
-def get_container_ip(container_name):
+def get_container_ip(container_name: str):
     """
     Retrieves the IP address of a Docker container using the Docker SDK.
 
@@ -612,7 +612,7 @@ def add_peers_to_wireguard():
     logger.info("✅ WireGuard configuration regenerated for all networks.")
 
 
-def extract_server_config(wg_config_path):
+def extract_server_config(wg_config_path: Path):
     """
     Extracts the [Interface] section from an existing WireGuard configuration file.
 
@@ -644,54 +644,50 @@ def extract_server_config(wg_config_path):
     return match.group(0)
 
 
-def get_last_assigned_ip(network_id: int) -> Optional[ipaddress.IPv4Address]:
-    """
-    Retrieves the highest assigned WireGuard IP address for a given network.
-
-    Parameters:
-        network_id (int): The network's ID.
-
-    Returns:
-        IPv4Address or None: The last assigned IP as an IPv4Address object,
-                             or None if no IP has been assigned.
-    """
+def get_assigned_ips(network_id: int) -> set[ipaddress.IPv4Address]:
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT wg_ip FROM sensos.wireguard_peers WHERE network_id = %s ORDER BY wg_ip DESC LIMIT 1;",
+                "SELECT wg_ip FROM sensos.wireguard_peers WHERE network_id = %s;",
                 (network_id,),
             )
-            result = cur.fetchone()
-            return ipaddress.ip_address(result[0]) if result else None
+            return {ipaddress.ip_address(row[0]) for row in cur.fetchall()}
 
 
-def compute_next_ip(
-    ip_range: ipaddress.IPv4Network,
-    last_ip: Optional[ipaddress.IPv4Address] = None,
-    subnet_offset: int = 0,
+def search_for_next_available_ip(
+    subnet: str,
+    network_id: int,
+    subnet_start: int = 0,
 ) -> Optional[ipaddress.IPv4Address]:
     """
-    Computes the next available IP address within a specified subnetwork.
+    Finds the next available IP in the given subnet range, starting from subnet_start.
+    Walks through each /24 block (<prefix>.<subnet>.1–254) until an available IP is found.
 
     Parameters:
-        ip_range (IPv4Network): The base IP network.
-        last_ip (IPv4Address, optional): The last assigned IP address. If None,
-                                         the function returns the first available IP.
-        subnet_offset (int, optional): An offset to specify which subnet to use.
+        subnet (str): CIDR notation string (e.g., '10.0.0.0/16').
+        network_id (int): The WireGuard network ID.
+        subnet_start (int): The third octet to begin searching from.
 
     Returns:
-        IPv4Address or None: The next available IP address, or None if none is available.
+        IPv4Address or None: First available IP address, or None if exhausted.
     """
+    ip_range = ipaddress.ip_network(subnet, strict=False)
+    used_ips = get_assigned_ips(network_id)
+
     base_bytes = bytearray(ip_range.network_address.packed)
-    base_bytes[2] = subnet_offset
-    base_bytes[3] = 0
-    subnet_base = ipaddress.IPv4Address(bytes(base_bytes))
-    subnet = ipaddress.ip_network(f"{subnet_base}/{ip_range.prefixlen}", strict=False)
-    if last_ip is None or last_ip not in subnet:
-        next_ip = subnet.network_address + 1
-    else:
-        next_ip = last_ip + 1
-    return next_ip if next_ip < subnet.broadcast_address else None
+    max_subnet = ip_range.num_addresses // 256
+
+    for third_octet in range(subnet_start, max_subnet):
+        base_bytes[2] = third_octet
+        base_bytes[3] = 0
+        subnet_base = ipaddress.IPv4Address(bytes(base_bytes))
+        subnet_net = ipaddress.ip_network(f"{subnet_base}/24", strict=False)
+
+        for host_ip in subnet_net.hosts():
+            if host_ip not in used_ips:
+                return host_ip
+
+    return None
 
 
 def create_version_history_table(cur):
