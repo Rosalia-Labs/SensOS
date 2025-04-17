@@ -662,20 +662,15 @@ def search_for_next_available_ip(
     """
     Finds the next available IP in the given subnet range, starting from subnet_start.
     Walks through each /24 block (<prefix>.<subnet>.1–254) until an available IP is found.
-
-    Parameters:
-        subnet (str): CIDR notation string (e.g., '10.0.0.0/16').
-        network_id (int): The WireGuard network ID.
-        subnet_start (int): The third octet to begin searching from.
-
-    Returns:
-        IPv4Address or None: First available IP address, or None if exhausted.
     """
     ip_range = ipaddress.ip_network(subnet, strict=False)
     used_ips = get_assigned_ips(network_id)
 
     base_bytes = bytearray(ip_range.network_address.packed)
     max_subnet = ip_range.num_addresses // 256
+
+    # Start from subnet_start
+    base_bytes[2] = subnet_start
 
     for third_octet in range(subnet_start, max_subnet):
         base_bytes[2] = third_octet
