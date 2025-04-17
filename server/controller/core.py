@@ -416,7 +416,9 @@ def create_network_entry(cur, name: str, wg_public_ip: str = None, wg_port=None)
         )
         network_id = cur.fetchone()[0]
         logger.info(f"✅ Network '{name}' created with ID: {network_id}")
-        create_wireguard_configs(network_id, name, ip_range, private_key, public_key)
+        create_wireguard_configs(
+            network_id, name, ip_range, private_key, public_key, wg_port
+        )
         add_peers_to_wireguard()
         return {
             "id": network_id,
@@ -481,7 +483,12 @@ def create_network_entry(cur, name: str, wg_public_ip: str = None, wg_port=None)
 
 
 def create_wireguard_configs(
-    network_id: int, name: str, ip_range: str, private_key: str, wg_public_key: str
+    network_id: int,
+    name: str,
+    ip_range: str,
+    private_key: str,
+    wg_public_key: str,
+    wg_port: int,
 ):
     """
     Generates and writes WireGuard configuration files for a network.
@@ -525,7 +532,7 @@ PrivateKey = {controller_private_key}
 [Peer]
 PublicKey = {wg_public_key}
 AllowedIPs = {ip_range}
-Endpoint = {wireguard_container_ip}:51820
+Endpoint = {wireguard_container_ip}:{wg_port}
 PersistentKeepalive = 25
 """
         with open(controller_config_path, "w") as f:
@@ -534,7 +541,7 @@ PersistentKeepalive = 25
         logger.info(f"✅ Controller WireGuard config written: {controller_config_path}")
     wg_config_content = f"""[Interface]
 {"Address = " + wg_interface_ip if wg_interface_ip else ""}
-ListenPort = 51820
+ListenPort = {wg_port}
 PrivateKey = {private_key}
 """ + "".join(
         wg_peers
