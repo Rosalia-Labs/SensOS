@@ -107,7 +107,7 @@ while [[ $# -gt 0 ]]; do
         echo "  --deploy-compression <value>               (default: $DEPLOY_COMPRESSION)"
         echo "  --enable-wifi-ap                           Enable AP (default: disabled)"
         echo "  --enable-geekworm-eeprom                   Enable EEPROM update (default: disabled)"
-        echo "  --image-size <value>                       (default: $IMAGE_SIZE)"
+        echo "  --image-size <value>                       (default: $IMAGE_SIZE MB)"
         echo "  --help                                     Display this help message"
         exit 0
         ;;
@@ -139,7 +139,7 @@ WPA_COUNTRY="$WPA_COUNTRY"
 DEPLOY_COMPRESSION="$DEPLOY_COMPRESSION"
 ENABLE_HOTSPOT="$ENABLE_HOTSPOT"
 ENABLE_GEEKWORM_EEPROM="$ENABLE_GEEKWORM_EEPROM"
-IMAGE_SIZE="$IMAGE_SIZE"
+IMG_SIZE="$((IMAGE_SIZE * 1048576))"
 EOF
 
 echo -e "\nConfig file written. Now go to the pi-gen directory and run ./build-docker.sh\n"
