@@ -1,6 +1,7 @@
 import os
 import sys
 import stat
+import shutil
 import base64
 import subprocess
 import requests
@@ -118,6 +119,28 @@ def validate_api_password(config_server, port, api_password):
 
 
 def get_api_password(config_server, port):
+    def check_server_reachable():
+        try:
+            url = f"http://{config_server}:{port}/"
+            response = requests.get(url, timeout=3)
+            return True  # Server is up
+        except requests.exceptions.ConnectionError:
+            return False
+        except Exception as e:
+            print(
+                f"⚠️ Unexpected error when checking server availability: {e}",
+                file=sys.stderr,
+            )
+            return False
+
+    if not check_server_reachable():
+        print(
+            f"❌ Cannot reach configuration server at {config_server}:{port}.",
+            file=sys.stderr,
+        )
+        print("📡 Is the device online? Is the server address correct?")
+        return None
+
     tries = 3
     for attempt in range(tries):
         if os.path.exists(API_PASSWORD_FILE):
@@ -129,9 +152,10 @@ def get_api_password(config_server, port):
                 return stored_password
             else:
                 print("⚠️ Stored API password is invalid.", file=sys.stderr)
+
         api_password = input("🔑 Enter API password: ").strip()
         if validate_api_password(config_server, port, api_password):
-            if api_password is None or api_password == "":
+            if not api_password:
                 print("❌ Error: API password is empty. Not saving.", file=sys.stderr)
                 continue
             with open(API_PASSWORD_FILE, "w") as f:
@@ -141,6 +165,7 @@ def get_api_password(config_server, port):
             return api_password
         else:
             print("❌ API password is invalid, please try again.", file=sys.stderr)
+
     print(
         "🚫 Failed to provide a valid API password after 3 attempts.", file=sys.stderr
     )
@@ -240,6 +265,35 @@ def setup_logging(log_filename=None):
     sys.stderr = sys.stdout
 
 
+def enable_service(service_name, start=False):
+    """Enable and optionally start the specified systemd service using sudo."""
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
+        if start:
+            subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
+            print(f"✅ Service {service_name} enabled and started.")
+        else:
+            print(f"✅ Service {service_name} enabled.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
+
+
+def safe_cmd_output(cmd, try_sudo=False):
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True).strip()
+    except subprocess.CalledProcessError as e:
+        if not try_sudo:
+            return safe_cmd_output(f"sudo {cmd}", try_sudo=True)
+        else:
+            return f"ERROR: {e}"
+
+
 # Note: the registry functionality is not being used at the moment
 
 REGISTRY_CONFIG_FILE = "/sensos/.sensos_registry_config.json"
@@ -308,31 +362,3 @@ def get_registry_password_from_info(registry_info):
         file=sys.stderr,
     )
     return None
-
-def enable_service(service_name, start=False):
-    """Enable and optionally start the specified systemd service using sudo."""
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
-        if start:
-            subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
-            print(f"✅ Service {service_name} enabled and started.")
-        else:
-            print(f"✅ Service {service_name} enabled.")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
-
-
-def safe_cmd_output(cmd, try_sudo=False):
-    try:
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
-    except subprocess.CalledProcessError as e:
-        if not try_sudo:
-            return safe_cmd_output(f"sudo {cmd}", try_sudo=True)
-        else:
-            return f"ERROR: {e}"
