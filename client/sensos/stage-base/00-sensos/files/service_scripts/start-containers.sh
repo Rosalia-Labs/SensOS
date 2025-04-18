@@ -48,11 +48,25 @@ esac
 
 # CLI flag overrides config-based offline mode
 if [[ "$OFFLINE_MODE" == true ]]; then
+    echo "[INFO] Overriding connectivity profile: forcing OFFLINE mode"
     OFFLINE=true
+elif [[ "$OFFLINE_MODE" == false ]]; then
+    echo "[INFO] Overriding connectivity profile: forcing ONLINE mode"
+    OFFLINE=false
 fi
 
-echo "[INFO] Preloading images from disk..."
-load_missing_images_from_disk
+# Load images from tarballs (ALWAYS safe)
+echo "[INFO] Loading any available images from tarballs..."
+load_images_from_disk
+
+# Build missing images (ONLY if online and --build given)
+if [[ "$OFFLINE" == false && "$NEEDS_BUILD" == true ]]; then
+    echo "[INFO] Building missing images using docker compose bake..."
+    build_missing_images
+elif [[ "$NEEDS_BUILD" == true ]]; then
+    echo "[FATAL] Cannot build images in offline mode." >&2
+    exit 1
+fi
 
 # Prepare Docker Compose command
 COMPOSE_CMD=(docker compose)
@@ -68,10 +82,6 @@ if [[ "$OFFLINE" == true ]]; then
     export DOCKER_BUILDKIT=1
     export COMPOSE_DOCKER_CLI_BUILD=1
     COMPOSE_CMD+=(--pull never)
-fi
-
-if [[ "$NEEDS_BUILD" == true ]]; then
-    COMPOSE_CMD+=(--build)
 fi
 
 "${COMPOSE_CMD[@]}"
