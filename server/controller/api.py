@@ -121,11 +121,11 @@ def create_network(
     background_tasks: BackgroundTasks,
     credentials: HTTPBasicCredentials = Depends(authenticate),
     name: str = Form(...),
-    wg_public_ip: Optional[str] = Form(None),
-    wg_port: Optional[str] = Form(None),
+    wg_public_ip: str = Form(...),
+    wg_port: str = Form(...),
 ):
     try:
-        wg_port = int(wg_port) if wg_port else int(os.getenv("WG_PORT", "51820"))
+        wg_port = int(wg_port)
         if not (1 <= wg_port <= 65535):
             raise ValueError()
     except ValueError:
@@ -140,7 +140,6 @@ def create_network(
             logger.info(f"create_network_entry returned: {result}")
             start_controller_wireguard()
 
-        # Schedule the restart of the API proxy container in the background
         background_tasks.add_task(restart_container, "sensos-wireguard")
         background_tasks.add_task(restart_container, "sensos-api-proxy")
 

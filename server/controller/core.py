@@ -381,7 +381,7 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
-def create_network_entry(cur, name: str, wg_public_ip: str = None, wg_port=None):
+def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
     """
     Creates a new network entry in the database along with generating WireGuard keys
     and configurations.
@@ -389,9 +389,8 @@ def create_network_entry(cur, name: str, wg_public_ip: str = None, wg_port=None)
     Parameters:
         cur: The database cursor.
         name (str): The name of the network.
-        wg_public_ip (str, optional): The public IP address for WireGuard; if not provided,
-                                      it is resolved via environment variables.
-        wg_port (str or int, optional): The WireGuard port; if not provided, defaults are used.
+        wg_public_ip (str): The public IP address for WireGuard.
+        wg_port (int): The WireGuard port.
 
     Returns:
         dict: A dictionary containing the network details (id, name, ip_range, wg_public_ip, wg_port, wg_public_key).
@@ -399,10 +398,6 @@ def create_network_entry(cur, name: str, wg_public_ip: str = None, wg_port=None)
     Raises:
         RuntimeError: If a unique constraint is violated and the existing network details conflict.
     """
-    wg_public_ip = wg_public_ip or resolve_hostname(
-        os.getenv("WG_SERVER_IP", "127.0.0.1")
-    )
-    wg_port = wg_port or int(os.getenv("WG_PORT", "51820"))
     ip_range = generate_default_ip_range(name)
     private_key, public_key = generate_wireguard_keys()
     try:
@@ -581,25 +576,50 @@ def get_container_ip(container_name: str):
     return None
 
 
+def load_private_key(wg_config_path: Path) -> str:
+    """
+    Loads the private key from an existing WireGuard config file.
+    """
+    if not wg_config_path.exists():
+        raise FileNotFoundError(f"{wg_config_path} does not exist")
+
+    with open(wg_config_path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("PrivateKey ="):
+                return line.split("=", 1)[1].strip()
+
+    raise ValueError(f"PrivateKey not found in {wg_config_path}")
+
+
 def add_peers_to_wireguard():
     """
     Regenerates the WireGuard configuration files based on the current database state.
-
-    Iterates over each network in the database, extracts the existing server configuration,
-    and appends all active peer configurations.
-
-    Returns:
-        None
     """
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, name, ip_range, wg_public_key FROM sensos.networks;"
+                "SELECT id, name, ip_range, wg_public_key, wg_port FROM sensos.networks;"
             )
             networks = cur.fetchall()
-            for network_id, network_name, ip_range, server_public_key in networks:
+            for (
+                network_id,
+                network_name,
+                ip_range,
+                server_public_key,
+                wg_port,
+            ) in networks:
                 wg_config_path = WG_CONFIG_DIR / f"{network_name}.conf"
-                server_config = extract_server_config(wg_config_path)
+
+                # Load private key from existing config
+                private_key = load_private_key(wg_config_path)
+
+                # Build fresh [Interface] config
+                interface_config = f"""[Interface]
+ListenPort = {wg_port}
+PrivateKey = {private_key}
+"""
+
                 cur.execute(
                     """
                     SELECT p.wg_ip, k.wg_public_key 
@@ -610,45 +630,14 @@ def add_peers_to_wireguard():
                     (network_id,),
                 )
                 peers = cur.fetchall()
+
                 with open(wg_config_path, "w") as f:
-                    f.write(server_config.strip() + "\n\n")
+                    f.write(interface_config.strip() + "\n\n")
                     for wg_ip, wg_public_key in peers:
                         f.write(
                             f"\n[Peer]\nPublicKey = {wg_public_key}\nAllowedIPs = {wg_ip}/32\n"
                         )
     logger.info("✅ WireGuard configuration regenerated for all networks.")
-
-
-def extract_server_config(wg_config_path: Path):
-    """
-    Extracts the [Interface] section from an existing WireGuard configuration file.
-
-    Parameters:
-        wg_config_path (Path): The file path to the WireGuard configuration.
-
-    Returns:
-        str: The extracted server configuration (the [Interface] section).
-
-    Raises:
-        FileNotFoundError: If the configuration file does not exist.
-        ValueError: If the [Interface] section cannot be found.
-    """
-    if not os.path.exists(wg_config_path):
-        raise FileNotFoundError(
-            f"Config file {wg_config_path} does not exist. Cannot regenerate configuration."
-        )
-    with open(wg_config_path, "r") as f:
-        config = f.read()
-    match = re.search(
-        r"^\s*\[\s*Interface\s*\](?:\n(?!^\s*\[\s*\w+\s*\]$)\s*.*)*",
-        config,
-        re.MULTILINE,
-    )
-    if not match:
-        raise ValueError(
-            f"[Interface] not found in {wg_config_path}. Check the file format."
-        )
-    return match.group(0)
 
 
 def get_assigned_ips(network_id: int) -> set[ipaddress.IPv4Address]:
@@ -662,24 +651,21 @@ def get_assigned_ips(network_id: int) -> set[ipaddress.IPv4Address]:
 
 
 def search_for_next_available_ip(
-    subnet: str,
+    network: str,
     network_id: int,
-    subnet_start: int = 0,
+    start_third_octet: int = 0,
 ) -> Optional[ipaddress.IPv4Address]:
     """
-    Finds the next available IP in the given subnet range, starting from subnet_start.
-    Walks through each /24 block (<prefix>.<subnet>.1–254) until an available IP is found.
+    Finds the next available IP in the given network range, starting from start_third_octet.
+    Walks through each /24 block (<prefix>.<third octet>.1–254) until an available IP is found.
     """
-    ip_range = ipaddress.ip_network(subnet, strict=False)
+    ip_range = ipaddress.ip_network(network, strict=False)
     used_ips = get_assigned_ips(network_id)
 
     base_bytes = bytearray(ip_range.network_address.packed)
     max_subnet = ip_range.num_addresses // 256
 
-    # Start from subnet_start
-    base_bytes[2] = subnet_start
-
-    for third_octet in range(subnet_start, max_subnet):
+    for third_octet in range(start_third_octet, max_subnet):
         base_bytes[2] = third_octet
         base_bytes[3] = 0
         subnet_base = ipaddress.IPv4Address(bytes(base_bytes))
@@ -934,47 +920,46 @@ def create_peer_location_table(cur):
 
 def create_initial_network(cur):
     """
-    Retrieves or creates the initial network based on the INITIAL_NETWORK environment variable.
-
-    If the network exists, it may update missing details. Otherwise, it creates a new network entry.
+    If INITIAL_NETWORK is set, ensures the network exists.
+    Does nothing if INITIAL_NETWORK is unset.
 
     Parameters:
         cur: The database cursor.
 
     Returns:
-        int or None: The network ID of the initial network, or None if INITIAL_NETWORK is not set.
+        int or None: The network ID if created or found, else None.
     """
     network_name = os.getenv("INITIAL_NETWORK")
     if not network_name:
-        logger.error("❌ INITIAL_NETWORK is not set in .env. Exiting.")
+        logger.info("🔵 INITIAL_NETWORK is not set. Skipping initial network creation.")
         return None
+
     cur.execute(
-        "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
+        "SELECT id FROM sensos.networks WHERE name = %s;",
         (network_name,),
     )
     existing_network = cur.fetchone()
+
     if existing_network:
-        network_id, ip_range, wg_public_ip, wg_port, wg_public_key = existing_network
+        network_id = existing_network[0]
         logger.info(f"✅ Network '{network_name}' already exists (ID: {network_id}).")
-        if not wg_public_ip or not wg_port:
-            wg_public_ip = resolve_hostname(os.getenv("WG_SERVER_IP", "127.0.0.1"))
-            wg_port = int(os.getenv("WG_PORT", "51820"))
-            cur.execute(
-                "UPDATE sensos.networks SET wg_public_ip = %s, wg_port = %s WHERE id = %s;",
-                (wg_public_ip, wg_port, network_id),
-            )
-            logger.info(
-                f"✅ Network '{network_name}' updated with IP {wg_public_ip}, port {wg_port}."
-            )
-    else:
-        logger.info(f"Creating network '{network_name}'...")
-        try:
-            result = create_network_entry(cur, network_name)
-        except RuntimeError as e:
-            logger.critical(f"❌ Failed to initialize network '{network_name}': {e}")
-            raise
-        add_peers_to_wireguard()
-        restart_container("sensos-wireguard")
-        restart_container("sensos-api-proxy")
-        network_id = result["id"]
-    return network_id
+        return network_id
+
+    logger.info(f"📡 Network '{network_name}' not found. Creating...")
+
+    wg_public_ip = os.getenv("WG_SERVER_IP")
+    wg_port = os.getenv("WG_PORT")
+
+    if not wg_public_ip or not wg_port:
+        raise RuntimeError(
+            f"❌ Cannot create network '{network_name}'. "
+            "WG_SERVER_IP and WG_PORT must be set."
+        )
+
+    wg_port = int(wg_port)
+    if not (1 <= wg_port <= 65535):
+        raise RuntimeError(f"❌ Invalid WG_PORT: {wg_port}. Must be between 1–65535.")
+
+    result = create_network_entry(cur, network_name, wg_public_ip, wg_port)
+    logger.info(f"✅ Created network '{network_name}' (ID: {result['id']}).")
+    return result["id"]
