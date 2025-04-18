@@ -241,7 +241,7 @@ def register_peer(
         )
 
     wg_ip = search_for_next_available_ip(
-        subnet, network_id, subnet_start=request.subnet_offset
+        subnet, network_id, start_third_octet=request.subnet_offset
     )
 
     if not wg_ip:
