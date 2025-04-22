@@ -1,0 +1,86 @@
+#!/bin/bash
+set -e
+
+script_name=$(basename "$0")
+
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
+source /sensos/lib/docker-utils.sh
+
+load_defaults /sensos/etc/defaults.conf "$script_name"
+
+# Register CLI options
+register_option --local-only LOCAL_ONLY "Restrict to local images only (do not pull from network)" "true"
+
+parse_switches "$script_name" "$@"
+
+cd /sensos/docker
+
+# Verify .env exists
+if [[ ! -f .env ]]; then
+    echo "ERROR: Missing /sensos/docker/.env — run config-containers.sh first." >&2
+    exit 1
+fi
+
+# Read connectivity profile from .env
+connectivity_profile="unrestricted"
+while IFS='=' read -r key value; do
+    if [[ "$key" == "CONNECTIVITY_PROFILE" ]]; then
+        connectivity_profile="$value"
+    fi
+done <.env
+
+# Determine default behavior based on connectivity profile
+OFFLINE=false
+case "$connectivity_profile" in
+offline | restricted)
+    OFFLINE=true
+    ;;
+unrestricted)
+    OFFLINE=false
+    ;;
+*)
+    echo "Warning: Unknown connectivity profile in .env: $connectivity_profile"
+    OFFLINE=true
+    ;;
+esac
+
+# CLI overrides connectivity defaults
+if [[ "$LOCAL_ONLY" == "true" ]]; then
+    echo "[INFO] Forcing local-only mode: builds will NOT pull from the network."
+    OFFLINE=true
+else
+    echo "[INFO] Allowing network access during builds if needed."
+    OFFLINE=false
+fi
+
+echo "[INFO] Effective build mode: $([[ "$OFFLINE" == true ]] && echo "LOCAL ONLY" || echo "NETWORK ALLOWED")"
+
+echo "[INFO] Loading any available images from local tarballs..."
+load_images_from_disk
+
+# Check for missing images
+missing_images=()
+while IFS= read -r docker_dir; do
+    image_name="sensos-client-$(basename "$docker_dir" | tr '_' '-')"
+    if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+        missing_images+=("$image_name")
+    fi
+done < <(find . -type f -name 'Dockerfile' -exec dirname {} \;)
+
+# Decide based on missing images
+if [[ "${#missing_images[@]}" -gt 0 ]]; then
+    echo "[INFO] Missing Docker images detected:"
+    printf '  %s\n' "${missing_images[@]}"
+
+    if [[ "$OFFLINE" == true ]]; then
+        echo "[FATAL] Cannot build missing images: local-only mode enforced (--local-only=true)." >&2
+        exit 1
+    else
+        echo "[INFO] Building missing images (network access allowed)..."
+        build_missing_images
+        echo "[INFO] Image build complete."
+    fi
+else
+    echo "[INFO] All required Docker images are already available locally. No build needed."
+fi

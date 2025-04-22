@@ -1,81 +1,48 @@
 #!/bin/bash
+set -e
 
-# Call this to register valid options with help text and optional default value
-# Example:
-#   register_option "--postgres-db" "Set database name" "postgres"
-#   register_option "--enable-service" "Enable systemd service" "true"
-declare -A __cli_options_help
-declare -A __cli_options_defaults
+script_name=$(basename "$0")
 
-register_option() {
-    local opt="$1"
-    local varname="$2"
-    local help="$3"
-    local default="$4"
+source /sensos/lib/load-defaults.sh
+source /sensos/lib/parse-switches.sh
+source /sensos/lib/docker-utils.sh
 
-    # Replace dashes with underscores
-    local safe_varname="${varname//-/_}"
+# Load defaults (optional here but consistent)
+load_defaults /sensos/etc/defaults.conf "$script_name"
 
-    __cli_options_help["$opt"]="$help"
-    __cli_options_defaults["$safe_varname"]="$default"
+# Register CLI options
+register_option --offline OFFLINE_MODE "Disable network access (build without pulling images)" "false"
 
-    # Export the default value if not already set
-    if [[ -z "${!safe_varname+x}" ]]; then
-        declare -g "$safe_varname=$default"
+# Parse CLI args
+parse_switches "$script_name" "$@"
+
+cd /sensos/docker
+
+echo "[INFO] Loading any available images from local tarballs..."
+load_images_from_disk
+
+# Check for missing images
+missing_images=()
+while IFS= read -r docker_dir; do
+    image_name="sensos-client-$(basename "$docker_dir" | tr '_' '-')"
+    if ! docker image inspect "$image_name" >/dev/null 2>&1; then
+        missing_images+=("$image_name")
     fi
-}
+done < <(find . -type f -name 'Dockerfile' -exec dirname {} \;)
 
-parse_switches() {
-    local script_name="$1"
-    shift
+# Decide based on missing images
+if [[ "${#missing_images[@]}" -gt 0 ]]; then
+    echo "[INFO] Missing Docker images detected:"
+    printf '  %s\n' "${missing_images[@]}"
 
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-        --help)
-            show_usage "$script_name"
-            exit 0
-            ;;
-        --*=*) # handle --key=value
-            opt="${1%%=*}"
-            val="${1#*=}"
-            ;;
-        --*) # handle --key value
-            opt="$1"
-            val="$2"
-            shift
-            ;;
-        *)
-            echo "Unknown argument: $1"
-            show_usage "$script_name"
-            exit 1
-            ;;
-        esac
-
-        varname="${opt#--}"
-        safe_varname="${varname//-/_}"
-        if [[ -v __cli_options_help["$opt"] ]]; then
-            declare -g "$safe_varname=\"$val\""
-            eval "$safe_varname=\"\$val\""
-        else
-            echo "Unknown option: $opt"
-            show_usage "$script_name"
-            exit 1
-        fi
-        shift
-    done
-}
-
-show_usage() {
-    local script_name="$1"
-    echo "Usage: $script_name [options]"
-    echo
-    echo "Options:"
-    for opt in "${!__cli_options_help[@]}"; do
-        local varname="${opt#--}"
-        local safe_varname="${varname//-/_}"
-        local default="${__cli_options_defaults[$safe_varname]}"
-        local help="${__cli_options_help[$opt]}"
-        printf "  %-25s %-40s %s\n" "$opt <value>" "$help" "(default: $default)"
-    done
-    echo "  --help                   Show this help message"
-}
+    if [[ "$OFFLINE_MODE" == true ]]; then
+        echo "[FATAL] Cannot build missing images: offline mode enabled (--offline, equivalent to --pull=never)." >&2
+        exit 1
+    else
+        echo "[INFO] Building missing images (network access allowed)..."
+        build_missing_images
+        echo "[INFO] Image build complete."
+    fi
+else
+    echo "[INFO] All required Docker images are already available locally. No build needed."
+fi

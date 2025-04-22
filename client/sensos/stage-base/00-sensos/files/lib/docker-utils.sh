@@ -41,7 +41,7 @@ load_images_from_disk() {
 
 build_missing_images() {
     local base_dir="${1:-/sensos/docker}"
-    local bakefile="/tmp/docker-bake.hcl"
+    local bakefile="$(mktemp /tmp/docker-bake.XXXXXX.hcl)"
     echo "[INFO] Generating bake file $bakefile..."
 
     echo 'group "default" {' >"$bakefile"
@@ -69,6 +69,13 @@ build_missing_images() {
         fi
     done < <(find "$base_dir" -type f -name 'Dockerfile' -exec dirname {} \;)
 
+    if grep -q 'targets = \[\]' "$bakefile"; then
+        echo "[INFO] No missing images to build."
+        rm -f "$bakefile"
+        return 0
+    fi
+
     echo "[INFO] Running docker compose bake..."
     docker compose bake --file "$bakefile" --load
+    rm -f "$bakefile"
 }

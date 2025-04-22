@@ -62,9 +62,6 @@ if [[ ! -w "$docker_compose_dir" ]]; then
     exit 1
 fi
 
-echo "[INFO] Preloading images from disk..."
-load_missing_images_from_disk
-
 # Write .env file
 env_file="$docker_compose_dir/.env"
 cat >"$env_file" <<EOF
@@ -94,3 +91,5 @@ if [[ "$start_service" == "true" ]]; then
     sudo systemctl daemon-reload
     sudo systemctl start sensos-container.service
 fi
+
+echo "Now call build-containers to prepare docker."
