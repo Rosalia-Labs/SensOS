@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import subprocess
 import psycopg
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -40,7 +41,9 @@ def extract_timestamp(path: Path) -> float:
 
 
 def ensure_schema(cursor):
+    db_name = DB_PARAMS["db_name"]
     cursor.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+    cursor.execute(f"ALTER DATABASE {db_name} SET search_path TO sensos, public;")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sensos.audio_files (
@@ -86,6 +89,7 @@ def process_file(cursor, path: Path):
             """,
             (new_rel,),
         )
+        cursor.connection.commit()
         logging.info(f"Processed and recorded {new_rel}")
 
     except Exception as e:
@@ -146,6 +150,21 @@ def restore_untracked_processed_files(cursor):
         logging.info(f"Restored {restored} and deleted {deleted} files from cataloged/")
 
 
+def is_not_open(path: Path) -> bool:
+    """Return True if the file is not open by another process (Linux only)."""
+    try:
+        result = subprocess.run(
+            ["lsof", "--", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return result.returncode != 0
+    except FileNotFoundError:
+        logging.warning("lsof not found; skipping open file checks")
+        return True
+
+
 def main():
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
@@ -157,7 +176,11 @@ def main():
             count = 0
             with conn.cursor() as cur:
                 for path in QUEUED.rglob("*"):
-                    if path.is_file() and path.suffix.lower() in EXTENSIONS:
+                    if (
+                        path.is_file()
+                        and path.suffix.lower() in EXTENSIONS
+                        and is_not_open(path)
+                    ):
                         try:
                             process_file(cur, path)
                             count += 1

@@ -34,9 +34,10 @@ def connect_db():
 
 def create_schema(conn):
     with conn.cursor() as cur:
+        cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS system_stats (
+            CREATE TABLE IF NOT EXISTS sensos.system_stats (
                 id SERIAL PRIMARY KEY,
                 recorded_at TIMESTAMPTZ NOT NULL,
                 hostname TEXT,
@@ -49,7 +50,7 @@ def create_schema(conn):
                 load_15m REAL,
                 sensor_stats JSONB
             )
-        """
+            """
         )
         conn.commit()
 
