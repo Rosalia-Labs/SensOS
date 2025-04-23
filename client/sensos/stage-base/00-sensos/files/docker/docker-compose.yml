@@ -98,3 +98,22 @@ services:
       restart_policy:
         condition: on-failure
         max_attempts: 3
+
+  sensos-client-sensor-reader:
+    image: sensos-client-read-i2c
+    container_name: sensos-client-read-i2c
+    restart: always
+    depends_on:
+      - sensos-client-database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+    devices:
+      - /dev/i2c-1:/dev/i2c-1
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3

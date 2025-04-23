@@ -1,0 +1,6 @@
+adafruit-circuitpython-bme280
+adafruit-circuitpython-busdevice
+adafruit-circuitpython-scd30
+adafruit-circuitpython-scd4x
+psycopg[binary]
+smbus2
