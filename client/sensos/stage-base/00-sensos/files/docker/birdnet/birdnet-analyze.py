@@ -145,15 +145,15 @@ def get_next_file():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT af.id, af.file_path, af.channel_count, af.duration
+                SELECT af.file_path
                 FROM sensos.audio_files af
                 WHERE NOT EXISTS (
                     SELECT 1 FROM sensos.audio_segments s
-                    WHERE s.file_id = af.id
+                    WHERE s.file_path = af.file_path
                 )
                 ORDER BY af.cataloged_at
                 LIMIT 1;
-            """
+                """
             )
             return cur.fetchone()
 

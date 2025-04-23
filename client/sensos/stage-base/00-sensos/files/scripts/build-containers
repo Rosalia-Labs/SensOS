@@ -10,7 +10,7 @@ source /sensos/lib/docker-utils.sh
 load_defaults /sensos/etc/defaults.conf "$script_name"
 
 # Register CLI options
-register_option --local-only LOCAL_ONLY "Restrict to local images only (do not pull from network)" "true"
+register_option --local-only LOCAL_ONLY "Restrict to local images only (do not pull from network)" "false"
 
 parse_switches "$script_name" "$@"
 
@@ -31,7 +31,6 @@ while IFS='=' read -r key value; do
 done <.env
 
 # Determine default behavior based on connectivity profile
-OFFLINE=false
 case "$connectivity_profile" in
 offline | restricted)
     OFFLINE=true
@@ -45,13 +44,15 @@ unrestricted)
     ;;
 esac
 
-# CLI overrides connectivity defaults
+# CLI overrides connectivity profile if specified
 if [[ "$LOCAL_ONLY" == "true" ]]; then
     echo "[INFO] Forcing local-only mode: builds will NOT pull from the network."
     OFFLINE=true
-else
-    echo "[INFO] Allowing network access during builds if needed."
+elif [[ "$LOCAL_ONLY" == "false" ]]; then
+    echo "[INFO] Forcing network-allowed mode even if connectivity profile is restricted."
     OFFLINE=false
+else
+    echo "[INFO] No CLI override. Using default from connectivity profile: $connectivity_profile"
 fi
 
 echo "[INFO] Effective build mode: $([[ "$OFFLINE" == true ]] && echo "LOCAL ONLY" || echo "NETWORK ALLOWED")"
