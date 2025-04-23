@@ -76,6 +76,6 @@ build_missing_images() {
     fi
 
     echo "[INFO] Running docker compose bake..."
-    docker compose bake --file "$bakefile" --load
+    docker buildx bake --file "$bakefile" --load
     rm -f "$bakefile"
 }

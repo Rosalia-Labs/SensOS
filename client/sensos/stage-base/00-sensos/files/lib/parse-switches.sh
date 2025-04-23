@@ -1,10 +1,9 @@
 #!/bin/bash
 
-# Global maps for help text and defaults
+# CLI option registration and parsing
 declare -A __cli_options_help
 declare -A __cli_options_defaults
 
-# Register an option: register_option "--option-name" VAR_NAME "Help text" "default"
 register_option() {
     local opt="$1"
     local varname="$2"
@@ -15,16 +14,18 @@ register_option() {
     __cli_options_help["$opt"]="$help"
     __cli_options_defaults["$safe_varname"]="$default"
 
-    # Set default value if not already defined
+    # Only assign default if not already set
     if [[ -z "${!safe_varname+x}" ]]; then
-        declare -g "$safe_varname=$default"
+        declare -g "$safe_varname"
+        printf -v "$safe_varname" '%s' "$default"
     fi
 }
 
-# Parse CLI switches
 parse_switches() {
     local script_name="$1"
     shift
+
+    local opt val varname safe_varname
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -36,13 +37,17 @@ parse_switches() {
             opt="${1%%=*}"
             val="${1#*=}"
             ;;
-        --*) # --key value
+        --*) # --key value or flag
             opt="$1"
-            val="$2"
-            shift
+            if [[ $# -gt 1 && "$2" != --* ]]; then
+                val="$2"
+                shift
+            else
+                val="true"
+            fi
             ;;
         *)
-            echo "Unknown argument: $1"
+            echo "[ERROR] Unknown argument: $1"
             show_usage "$script_name"
             exit 1
             ;;
@@ -52,9 +57,9 @@ parse_switches() {
         safe_varname="${varname//-/_}"
 
         if [[ -v __cli_options_help["$opt"] ]]; then
-            declare -g "$safe_varname=$val"
+            printf -v "$safe_varname" '%s' "$val"
         else
-            echo "Unknown option: $opt"
+            echo "[ERROR] Unknown option: $opt"
             show_usage "$script_name"
             exit 1
         fi
@@ -62,7 +67,6 @@ parse_switches() {
     done
 }
 
-# Show usage/help
 show_usage() {
     local script_name="$1"
     echo "Usage: $script_name [options]"
@@ -73,7 +77,7 @@ show_usage() {
         local safe_varname="${varname//-/_}"
         local default="${__cli_options_defaults[$safe_varname]}"
         local help="${__cli_options_help[$opt]}"
-        printf "  %-25s %-40s %s\n" "$opt <value>" "$help" "(default: $default)"
+        printf "  %-25s %-40s %s\n" "$opt [value]" "$help" "(default: $default)"
     done
     echo "  --help                   Show this help message"
 }
