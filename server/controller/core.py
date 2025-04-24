@@ -92,6 +92,7 @@ async def lifespan(app: FastAPI):
                     add_peers_to_wireguard()
                     start_controller_wireguard()
                     logger.info("✅ WireGuard setup completed.")
+                regenerate_all_api_proxy_configs()
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
@@ -490,9 +491,6 @@ PersistentKeepalive = 25
     os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
     logger.info(f"✅ API proxy config written: {config_path}")
 
-    restart_container("sensos-api-proxy")
-    logger.info("✅ Restarted api-proxy container.")
-
 
 def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
     """
@@ -526,6 +524,7 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
         network_id = cur.fetchone()[0]
         logger.info(f"✅ Network '{name}' created with ID: {network_id}")
         generate_api_proxy_config(name, ip_range, public_key, wg_public_ip, wg_port)
+        restart_container("sensos-api-proxy")
         add_peers_to_wireguard()
         return {
             "id": network_id,
@@ -966,3 +965,38 @@ def create_initial_network(cur):
     result = create_network_entry(cur, network_name, wg_public_ip, wg_port)
     logger.info(f"✅ Created network '{network_name}' (ID: {result['id']}).")
     return result["id"]
+
+
+def regenerate_all_api_proxy_configs():
+    """
+    Regenerates all API proxy WireGuard configs from the 'sensos.networks' table.
+
+    Useful if the configs are missing or out of sync.
+    """
+    logger.info("🔄 Regenerating all API proxy configs from database...")
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, ip_range, wg_public_ip, wg_port, wg_public_key
+                FROM sensos.networks;
+                """
+            )
+            rows = cur.fetchall()
+
+            for row in rows:
+                network_id, name, ip_range, wg_public_ip, wg_port, wg_public_key = row
+                try:
+                    generate_api_proxy_config(
+                        network_id=network_id,
+                        network_name=name,
+                        ip_range=ipaddress.ip_network(ip_range),
+                        wg_server_public_key=wg_public_key,
+                        wg_server_ip=wg_public_ip,
+                        wg_port=wg_port,
+                    )
+                    logger.info(f"✅ Rewrote config for network '{name}'")
+                    restart_container("sensos-api-proxy")
+                    logger.info(f"✅ Restarted api-proxy container '{name}'")
+                except Exception as e:
+                    logger.error(f"❌ Failed to regenerate config for '{name}': {e}")
