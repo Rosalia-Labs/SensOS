@@ -25,14 +25,13 @@ from pydantic import BaseModel, IPvAnyAddress
 # Import only the shared functions and objects from core (so there is no duplication)
 from core import (
     get_db,
+    insert_peer,
     authenticate,
     get_network_details,
     search_for_next_available_ip,
-    insert_peer,
     register_wireguard_key_in_db,
-    add_peers_to_wireguard,
-    restart_container,
     start_controller_wireguard,
+    add_peers_to_wireguard,
     create_network_entry,
 )
 
@@ -139,9 +138,6 @@ def create_network(
             result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
             logger.info(f"create_network_entry returned: {result}")
             start_controller_wireguard()
-
-        background_tasks.add_task(restart_container, "sensos-wireguard")
-        background_tasks.add_task(restart_container, "sensos-api-proxy")
 
         return result
 
@@ -281,7 +277,6 @@ def register_wireguard_key(
         )
 
     add_peers_to_wireguard()
-    restart_container("sensos-wireguard")
 
     return result
 

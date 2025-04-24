@@ -45,7 +45,8 @@ GIT_COMMIT = os.getenv("GIT_COMMIT", "Unknown")
 GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
 GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
-EXPOSE_CONTAINERS = os.getenv("EXPOSE_CONTAINERS", "false").lower() == "true"
+
+API_PROXY_CONFIG_DIR = Path("/api-proxy-config")
 
 
 # ------------------------------------------------------------
@@ -89,7 +90,6 @@ async def lifespan(app: FastAPI):
                 network_id = create_initial_network(cur)
                 if network_id:
                     add_peers_to_wireguard()
-                    restart_container("sensos-wireguard")
                     start_controller_wireguard()
                     logger.info("✅ WireGuard setup completed.")
         logger.info("✅ Database schema and tables initialized successfully.")
@@ -383,6 +383,61 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
+def stash_private_key(network_name: str, private_key: str):
+    """
+    Stores the WireGuard private key in a secure file under WG_CONFIG_DIR.
+
+    Parameters:
+        network_name (str): The name of the network (used for filename).
+        private_key (str): The private key string.
+    """
+    WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    key_path = WG_CONFIG_DIR / f"{network_name}.key"
+
+    with open(key_path, "w") as f:
+        f.write(private_key + "\n")
+    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # chmod 600
+
+    logger.info(f"🔐 Private key stashed at {key_path}")
+
+
+def generate_api_proxy_config(
+    network_id: int,
+    network_name: str,
+    ip_range: ipaddress.IPv4Network,
+    wg_server_public_key: str,
+    wg_server_ip: str,
+    wg_port: int,
+):
+    """
+    Generates a WireGuard config file for the API proxy container.
+    """
+    proxy_ip = ip_range.network_address + 1
+    proxy_private_key, proxy_public_key = generate_wireguard_keys()
+
+    register_wireguard_key_in_db(str(proxy_ip), proxy_public_key)
+
+    API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    config_path = API_PROXY_CONFIG_DIR / f"{network_name}.conf"
+    config_content = f"""[Interface]
+Address = {proxy_ip}/32
+PrivateKey = {proxy_private_key}
+
+[Peer]
+PublicKey = {wg_server_public_key}
+Endpoint = {wg_server_ip}:{wg_port}
+AllowedIPs = {ip_range}
+PersistentKeepalive = 25
+"""
+    with open(config_path, "w") as f:
+        f.write(config_content)
+    os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
+    logger.info(f"✅ API proxy config written: {config_path}")
+
+    restart_container("sensos-api-proxy")
+    logger.info("✅ Restarted api-proxy container.")
+
+
 def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
     """
     Creates a new network entry in the database along with generating WireGuard keys
@@ -402,6 +457,7 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
     """
     ip_range = generate_default_ip_range(name)
     private_key, public_key = generate_wireguard_keys()
+    stash_private_key(name, private_key)
     try:
         cur.execute(
             """
@@ -413,10 +469,8 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
         )
         network_id = cur.fetchone()[0]
         logger.info(f"✅ Network '{name}' created with ID: {network_id}")
-        create_wireguard_configs(
-            network_id, name, ip_range, private_key, public_key, wg_port
-        )
-        add_peers_to_wireguard()
+        generate_api_proxy_config(name, ip_range, public_key, wg_public_ip, wg_port)
+        add_peers_to_wireguard(private_key)
         return {
             "id": network_id,
             "name": name,
@@ -479,79 +533,6 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
         return result
 
 
-def create_wireguard_configs(
-    network_id: int,
-    name: str,
-    ip_range,  # assumed to be ipaddress.IPv4Network
-    private_key: str,
-    wg_public_key: str,
-    wg_port: int,
-):
-    """
-    Generates and writes WireGuard configuration files for a network.
-
-    Creates both server and, if enabled, controller configuration files.
-    """
-    WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    wg_config_path = WG_CONFIG_DIR / f"{name}.conf"
-    controller_config_path = CONTROLLER_CONFIG_DIR / f"{name}.conf"
-
-    # Assign static IPs: .1 = API proxy, .2 = interface, .3 = controller
-    proxy_ip = ip_range.network_address + 1
-    interface_ip = ip_range.network_address + 2
-    controller_ip = ip_range.network_address + 3
-
-    insert_peer(network_id, str(proxy_ip), "API server")
-
-    wg_interface_ip = ""
-    wg_peers = []
-
-    if EXPOSE_CONTAINERS:
-        wg_interface_ip = f"{interface_ip}/{ip_range.prefixlen}"
-        controller_private_key, controller_public_key = generate_wireguard_keys()
-
-        insert_peer(network_id, str(controller_ip))
-        register_wireguard_key_in_db(str(controller_ip), controller_public_key)
-
-        wg_peers.append(
-            f"""
-[Peer]
-PublicKey = {controller_public_key}
-AllowedIPs = {controller_ip}/32
-"""
-        )
-
-        wireguard_container_ip = get_container_ip("sensos-wireguard")
-        controller_config_content = f"""[Interface]
-Address = {controller_ip}/{ip_range.prefixlen}
-PrivateKey = {controller_private_key}
-
-[Peer]
-PublicKey = {wg_public_key}
-AllowedIPs = {ip_range}
-Endpoint = {wireguard_container_ip}:{wg_port}
-PersistentKeepalive = 25
-"""
-        with open(controller_config_path, "w") as f:
-            f.write(controller_config_content)
-        os.chmod(controller_config_path, stat.S_IRUSR | stat.S_IWUSR)
-        logger.info(f"✅ Controller WireGuard config written: {controller_config_path}")
-
-    wg_config_content = f"""[Interface]
-{"Address = " + wg_interface_ip if wg_interface_ip else ""}
-ListenPort = {wg_port}
-PrivateKey = {private_key}
-""" + "".join(
-        wg_peers
-    )
-
-    with open(wg_config_path, "w") as f:
-        f.write(wg_config_content.strip() + "\n")
-    os.chmod(wg_config_path, stat.S_IRUSR | stat.S_IWUSR)
-    logger.info(f"✅ WireGuard server config written: {wg_config_path}")
-    return wg_config_path, controller_config_path if EXPOSE_CONTAINERS else None
-
-
 def get_container_ip(container_name: str):
     """
     Retrieves the IP address of a Docker container using the Docker SDK.
@@ -580,20 +561,33 @@ def get_container_ip(container_name: str):
     return None
 
 
-def load_private_key(wg_config_path: Path) -> str:
+def load_private_key(network_name: str) -> str:
     """
-    Loads the private key from an existing WireGuard config file.
+    Loads the private key for a given network from the stashed .key file.
+
+    Parameters:
+        network_name (str): The name of the network.
+
+    Returns:
+        str: The WireGuard private key.
+
+    Raises:
+        FileNotFoundError: If the key file does not exist.
+        ValueError: If the key file is empty.
     """
-    if not wg_config_path.exists():
-        raise FileNotFoundError(f"{wg_config_path} does not exist")
+    key_path = WG_CONFIG_DIR / f"{network_name}.key"
 
-    with open(wg_config_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line.startswith("PrivateKey ="):
-                return line.split("=", 1)[1].strip()
+    if not key_path.exists():
+        raise FileNotFoundError(f"❌ Private key file not found: {key_path}")
 
-    raise ValueError(f"PrivateKey not found in {wg_config_path}")
+    with open(key_path, "r") as f:
+        private_key = f.read().strip()
+
+    if not private_key:
+        raise ValueError(f"❌ Private key file {key_path} is empty")
+
+    logger.info(f"🔐 Loaded private key from {key_path}")
+    return private_key
 
 
 def add_peers_to_wireguard():
@@ -605,36 +599,25 @@ def add_peers_to_wireguard():
     """
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id, name, ip_range, wg_public_key, wg_port FROM sensos.networks;"
-            )
+            cur.execute("SELECT id, name, wg_port FROM sensos.networks;")
             networks = cur.fetchall()
             for (
                 network_id,
                 network_name,
-                ip_range,
-                server_public_key,
                 wg_port,
             ) in networks:
-                wg_config_path = WG_CONFIG_DIR / f"{network_name}.conf"
-
                 # Load private key from existing config
-                private_key = load_private_key(wg_config_path)
-
-                # Use x.x.0.1 convention for proxy container
-                server_ip = ip_range.network_address + 1
-                server_ip_with_mask = f"{server_ip}/{ip_range.prefixlen}"
+                private_key = load_private_key(network_name)
 
                 # Build [Interface] config
                 interface_config = f"""[Interface]
-Address = {server_ip_with_mask}
 ListenPort = {wg_port}
 PrivateKey = {private_key}
 """
 
                 cur.execute(
                     """
-                    SELECT p.wg_ip, k.wg_public_key, n.wg_public_ip, n.wg_port
+                    SELECT p.wg_ip, k.wg_public_key
                     FROM sensos.wireguard_peers p
                     JOIN sensos.wireguard_keys k ON p.id = k.peer_id
                     JOIN sensos.networks n ON p.network_id = n.id
@@ -644,9 +627,10 @@ PrivateKey = {private_key}
                 )
                 peers = cur.fetchall()
 
+                wg_config_path = WG_CONFIG_DIR / f"{network_name}.conf"
                 with open(wg_config_path, "w") as f:
                     f.write(interface_config.strip() + "\n\n")
-                    for wg_ip, wg_public_key, endpoint_ip, endpoint_port in peers:
+                    for wg_ip, wg_public_key in peers:
                         f.write(
                             f"""[Peer]
 PublicKey = {wg_public_key}
@@ -654,8 +638,10 @@ AllowedIPs = {wg_ip}/32
 
 """
                         )
-
     logger.info("✅ WireGuard configuration regenerated for all networks.")
+
+    restart_container("sensos-wireguard")
+    logger.info("✅ Restarted wireguard container.")
 
 
 def get_assigned_ips(network_id: int) -> set[ipaddress.IPv4Address]:

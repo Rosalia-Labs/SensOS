@@ -38,6 +38,7 @@ services:
       - sensos_wireguard_config:/config
       - sensos_controller_wg_dir:/etc/wireguard
       - /var/run/docker.sock:/var/run/docker.sock
+      - sensos_api_proxy_wg_config:/api_proxy_config
     expose:
       - "8000"
     networks:
