@@ -46,7 +46,7 @@ GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
 GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
-API_PROXY_CONFIG_DIR = Path("/api-proxy-config")
+API_PROXY_CONFIG_DIR = Path("/api_proxy_config")
 
 
 # ------------------------------------------------------------
