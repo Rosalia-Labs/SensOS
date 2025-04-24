@@ -47,6 +47,7 @@ GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
 API_PROXY_CONFIG_DIR = Path("/api_proxy_config")
+API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ------------------------------------------------------------
@@ -87,11 +88,9 @@ async def lifespan(app: FastAPI):
                 create_client_status_table(cur)
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
-                network_id = create_initial_network(cur)
-                if network_id:
-                    add_peers_to_wireguard()
-                    start_controller_wireguard()
-                    logger.info("✅ WireGuard setup completed.")
+                create_initial_network(cur)
+                add_peers_to_wireguard()
+                start_controller_wireguard()
                 regenerate_all_api_proxy_configs()
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
@@ -412,50 +411,47 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
-def stash_private_key(network_name: str, private_key: str):
-    """
-    Stores the WireGuard private key in a secure file under WG_CONFIG_DIR.
+def save_wireguard_keys(directory: Path, name: str, private_key: str, public_key: str):
+    directory.mkdir(parents=True, exist_ok=True)
+    key_file = directory / f"{name}.key"
+    pub_file = directory / f"{name}.pub"
 
-    Parameters:
-        network_name (str): The name of the network (used for filename).
-        private_key (str): The private key string.
-    """
-    WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    key_path = WG_CONFIG_DIR / f"{network_name}.key"
+    with open(key_file, "w") as f:
+        f.write(private_key)
+    os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
 
-    with open(key_path, "w") as f:
-        f.write(private_key + "\n")
-    key_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # chmod 600
-
-    logger.info(f"🔐 Private key stashed at {key_path}")
+    with open(pub_file, "w") as f:
+        f.write(public_key)
+    os.chmod(pub_file, stat.S_IRUSR | stat.S_IWUSR)
 
 
-def load_private_key(network_name: str) -> str:
-    """
-    Loads the private key for a given network from the stashed .key file.
+def read_wireguard_keys(directory: Path, name: str) -> tuple[str, str]:
+    key_file = directory / f"{name}.key"
+    pub_file = directory / f"{name}.pub"
 
-    Parameters:
-        network_name (str): The name of the network.
+    with open(key_file, "r") as f:
+        private_key = f.read().strip()
+    with open(pub_file, "r") as f:
+        public_key = f.read().strip()
 
-    Returns:
-        str: The WireGuard private key.
+    return private_key, public_key
 
-    Raises:
-        FileNotFoundError: If the key file does not exist.
-        ValueError: If the key file is empty.
-    """
-    key_path = WG_CONFIG_DIR / f"{network_name}.key"
 
-    if not key_path.exists():
-        raise FileNotFoundError(f"❌ Private key file not found: {key_path}")
+def save_wireguard_private_key(directory: Path, name: str, private_key: str):
+    directory.mkdir(parents=True, exist_ok=True)
+    key_file = directory / f"{name}.key"
 
-    with open(key_path, "r") as f:
+    with open(key_file, "w") as f:
+        f.write(private_key)
+    os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
+
+
+def read_wireguard_private_key(directory: Path, name: str) -> str:
+    key_file = directory / f"{name}.key"
+
+    with open(key_file, "r") as f:
         private_key = f.read().strip()
 
-    if not private_key:
-        raise ValueError(f"❌ Private key file {key_path} is empty")
-
-    logger.info(f"🔐 Loaded private key from {key_path}")
     return private_key
 
 
@@ -467,15 +463,23 @@ def generate_api_proxy_config(
 ):
     """
     Generates a WireGuard config file for the API proxy container.
+    If keys already exist, they will be reused.
     """
     proxy_ip = ip_range.network_address + 1
-    proxy_private_key, proxy_public_key = generate_wireguard_keys()
 
-    register_wireguard_key_in_db(str(proxy_ip), proxy_public_key)
+    try:
+        proxy_private_key, proxy_public_key = read_wireguard_keys(
+            API_PROXY_CONFIG_DIR, network_name
+        )
+    except FileNotFoundError:
+        proxy_private_key, proxy_public_key = generate_wireguard_keys()
+        save_wireguard_keys(
+            API_PROXY_CONFIG_DIR, network_name, proxy_private_key, proxy_public_key
+        )
+        register_wireguard_key_in_db(str(proxy_ip), proxy_public_key)
 
     wg_server_ip = get_container_ip("sensos-wireguard")
 
-    API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config_path = API_PROXY_CONFIG_DIR / f"{network_name}.conf"
     config_content = f"""[Interface]
 Address = {proxy_ip}/32
@@ -512,7 +516,7 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
     """
     ip_range = generate_default_ip_range(name)
     private_key, public_key = generate_wireguard_keys()
-    stash_private_key(name, private_key)
+    save_wireguard_keys(WG_CONFIG_DIR, name, private_key, public_key)
     try:
         cur.execute(
             """
@@ -605,8 +609,7 @@ def add_peers_to_wireguard():
                 network_name,
                 wg_port,
             ) in networks:
-                # Load private key from existing config
-                private_key = load_private_key(network_name)
+                private_key = read_wireguard_private_key(WG_CONFIG_DIR, network_name)
 
                 # Build [Interface] config
                 interface_config = f"""[Interface]
