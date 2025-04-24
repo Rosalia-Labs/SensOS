@@ -463,7 +463,6 @@ def generate_api_proxy_config(
     network_name: str,
     ip_range: ipaddress.IPv4Network,
     wg_server_public_key: str,
-    wg_server_ip: str,
     wg_port: int,
 ):
     """
@@ -473,6 +472,8 @@ def generate_api_proxy_config(
     proxy_private_key, proxy_public_key = generate_wireguard_keys()
 
     register_wireguard_key_in_db(str(proxy_ip), proxy_public_key)
+
+    wg_server_ip = get_container_ip("sensos-wireguard")
 
     API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     config_path = API_PROXY_CONFIG_DIR / f"{network_name}.conf"
@@ -523,7 +524,7 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
         )
         network_id = cur.fetchone()[0]
         logger.info(f"✅ Network '{name}' created with ID: {network_id}")
-        generate_api_proxy_config(name, ip_range, public_key, wg_public_ip, wg_port)
+        generate_api_proxy_config(name, ip_range, public_key, wg_port)
         restart_container("sensos-api-proxy")
         add_peers_to_wireguard()
         return {
@@ -991,7 +992,6 @@ def regenerate_all_api_proxy_configs():
                         network_name=name,
                         ip_range=ipaddress.ip_network(ip_range),
                         wg_server_public_key=wg_public_key,
-                        wg_server_ip=wg_public_ip,
                         wg_port=wg_port,
                     )
                     logger.info(f"✅ Rewrote config for network '{name}'")
