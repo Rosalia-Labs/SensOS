@@ -56,7 +56,6 @@ services:
     volumes:
       - sensos_wireguard_config:/config
     ports:
-      - "51820:51820/udp"
       - "51821:51821/udp"
       - "51822:51822/udp"
       - "51823:51823/udp"
