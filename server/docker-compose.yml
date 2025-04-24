@@ -55,7 +55,16 @@ services:
     volumes:
       - sensos_wireguard_config:/config
     ports:
-      - "${WG_PORT:-51820}:51820/udp"
+      - "51820:51820/udp"
+      - "51821:51821/udp"
+      - "51822:51822/udp"
+      - "51823:51823/udp"
+      - "51824:51824/udp"
+      - "51825:51825/udp"
+      - "51826:51826/udp"
+      - "51827:51827/udp"
+      - "51828:51828/udp"
+      - "51829:51829/udp"
     healthcheck:
       test: ["CMD", "wg", "show"]
       interval: 10s

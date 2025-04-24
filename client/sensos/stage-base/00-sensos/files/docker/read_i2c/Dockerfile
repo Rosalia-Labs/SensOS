@@ -3,7 +3,18 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Set required DEBs
-ENV REQUIRED_DEBS="python3 python3-venv python3-pip i2c-tools"
+ENV REQUIRED_DEBS="\
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    build-essential \
+    i2c-tools \
+    libgpiod-dev \
+    libffi-dev \
+    libpq-dev \
+    git \
+    "
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends $REQUIRED_DEBS && \
