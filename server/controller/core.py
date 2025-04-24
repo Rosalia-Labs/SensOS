@@ -296,6 +296,34 @@ def resolve_hostname(value: str):
     return None
 
 
+def get_container_ip(container_name: str):
+    """
+    Retrieves the IP address of a Docker container using the Docker SDK.
+
+    Parameters:
+        container_name (str): The name of the container.
+
+    Returns:
+        str or None: The container's IP address if found, otherwise None.
+
+    Raises:
+        ValueError: If no valid IP address is found.
+    """
+    try:
+        client = docker.from_env()
+        container = client.containers.get(container_name)
+        networks = container.attrs["NetworkSettings"]["Networks"]
+        for network_name, network_info in networks.items():
+            if "IPAddress" in network_info and network_info["IPAddress"]:
+                return network_info["IPAddress"]
+        raise ValueError(
+            f"❌ No valid IP address found for container '{container_name}'"
+        )
+    except Exception as e:
+        logger.error(f"❌ Error getting container IP for '{container_name}': {e}")
+    return None
+
+
 def generate_default_ip_range(name: str) -> ipaddress.IPv4Network:
     hash_val = sum(ord(c) for c in name) % 256
     return ipaddress.ip_network(f"10.{hash_val}.0.0/16")
@@ -401,8 +429,36 @@ def stash_private_key(network_name: str, private_key: str):
     logger.info(f"🔐 Private key stashed at {key_path}")
 
 
+def load_private_key(network_name: str) -> str:
+    """
+    Loads the private key for a given network from the stashed .key file.
+
+    Parameters:
+        network_name (str): The name of the network.
+
+    Returns:
+        str: The WireGuard private key.
+
+    Raises:
+        FileNotFoundError: If the key file does not exist.
+        ValueError: If the key file is empty.
+    """
+    key_path = WG_CONFIG_DIR / f"{network_name}.key"
+
+    if not key_path.exists():
+        raise FileNotFoundError(f"❌ Private key file not found: {key_path}")
+
+    with open(key_path, "r") as f:
+        private_key = f.read().strip()
+
+    if not private_key:
+        raise ValueError(f"❌ Private key file {key_path} is empty")
+
+    logger.info(f"🔐 Loaded private key from {key_path}")
+    return private_key
+
+
 def generate_api_proxy_config(
-    network_id: int,
     network_name: str,
     ip_range: ipaddress.IPv4Network,
     wg_server_public_key: str,
@@ -470,7 +526,7 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
         network_id = cur.fetchone()[0]
         logger.info(f"✅ Network '{name}' created with ID: {network_id}")
         generate_api_proxy_config(name, ip_range, public_key, wg_public_ip, wg_port)
-        add_peers_to_wireguard(private_key)
+        add_peers_to_wireguard()
         return {
             "id": network_id,
             "name": name,
@@ -531,63 +587,6 @@ def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
             )
         logger.info(f"✅ Returning existing network: {result}")
         return result
-
-
-def get_container_ip(container_name: str):
-    """
-    Retrieves the IP address of a Docker container using the Docker SDK.
-
-    Parameters:
-        container_name (str): The name of the container.
-
-    Returns:
-        str or None: The container's IP address if found, otherwise None.
-
-    Raises:
-        ValueError: If no valid IP address is found.
-    """
-    try:
-        client = docker.from_env()
-        container = client.containers.get(container_name)
-        networks = container.attrs["NetworkSettings"]["Networks"]
-        for network_name, network_info in networks.items():
-            if "IPAddress" in network_info and network_info["IPAddress"]:
-                return network_info["IPAddress"]
-        raise ValueError(
-            f"❌ No valid IP address found for container '{container_name}'"
-        )
-    except Exception as e:
-        logger.error(f"❌ Error getting container IP for '{container_name}': {e}")
-    return None
-
-
-def load_private_key(network_name: str) -> str:
-    """
-    Loads the private key for a given network from the stashed .key file.
-
-    Parameters:
-        network_name (str): The name of the network.
-
-    Returns:
-        str: The WireGuard private key.
-
-    Raises:
-        FileNotFoundError: If the key file does not exist.
-        ValueError: If the key file is empty.
-    """
-    key_path = WG_CONFIG_DIR / f"{network_name}.key"
-
-    if not key_path.exists():
-        raise FileNotFoundError(f"❌ Private key file not found: {key_path}")
-
-    with open(key_path, "r") as f:
-        private_key = f.read().strip()
-
-    if not private_key:
-        raise ValueError(f"❌ Private key file {key_path} is empty")
-
-    logger.info(f"🔐 Loaded private key from {key_path}")
-    return private_key
 
 
 def add_peers_to_wireguard():
