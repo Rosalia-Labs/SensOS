@@ -988,7 +988,6 @@ def regenerate_all_api_proxy_configs():
                 network_id, name, ip_range, wg_public_ip, wg_port, wg_public_key = row
                 try:
                     generate_api_proxy_config(
-                        network_id=network_id,
                         network_name=name,
                         ip_range=ipaddress.ip_network(ip_range),
                         wg_server_public_key=wg_public_key,
