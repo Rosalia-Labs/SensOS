@@ -8,13 +8,20 @@ import psycopg
 import socket
 import docker
 import time
-import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from psycopg.errors import UniqueViolation
 from typing import Tuple, Optional
 from pathlib import Path
+
+from wireguard import (
+    generate_wireguard_keys,
+    save_wireguard_keys,
+    read_wireguard_keys,
+    read_wireguard_private_key,
+)
+
 
 # ------------------------------------------------------------
 # Logging & Configuration
@@ -329,22 +336,6 @@ def generate_default_ip_range(name: str) -> ipaddress.IPv4Network:
     return ipaddress.ip_network(f"10.{hash_val}.0.0/16")
 
 
-def generate_wireguard_keys():
-    """
-    Generates a WireGuard key pair using wg commands.
-
-    Returns:
-        tuple: A tuple (private_key, public_key), where each is a string.
-    """
-    private_key = subprocess.run(
-        "wg genkey", shell=True, capture_output=True, text=True
-    ).stdout.strip()
-    public_key = subprocess.run(
-        f"echo {private_key} | wg pubkey", shell=True, capture_output=True, text=True
-    ).stdout.strip()
-    return private_key, public_key
-
-
 def insert_peer(
     network_id: int, wg_ip: str, note: Optional[str] = None
 ) -> Tuple[int, str]:
@@ -409,50 +400,6 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
             )
 
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
-
-
-def save_wireguard_keys(directory: Path, name: str, private_key: str, public_key: str):
-    directory.mkdir(parents=True, exist_ok=True)
-    key_file = directory / f"{name}.key"
-    pub_file = directory / f"{name}.pub"
-
-    with open(key_file, "w") as f:
-        f.write(private_key)
-    os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-
-    with open(pub_file, "w") as f:
-        f.write(public_key)
-    os.chmod(pub_file, stat.S_IRUSR | stat.S_IWUSR)
-
-
-def read_wireguard_keys(directory: Path, name: str) -> tuple[str, str]:
-    key_file = directory / f"{name}.key"
-    pub_file = directory / f"{name}.pub"
-
-    with open(key_file, "r") as f:
-        private_key = f.read().strip()
-    with open(pub_file, "r") as f:
-        public_key = f.read().strip()
-
-    return private_key, public_key
-
-
-def save_wireguard_private_key(directory: Path, name: str, private_key: str):
-    directory.mkdir(parents=True, exist_ok=True)
-    key_file = directory / f"{name}.key"
-
-    with open(key_file, "w") as f:
-        f.write(private_key)
-    os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-
-
-def read_wireguard_private_key(directory: Path, name: str) -> str:
-    key_file = directory / f"{name}.key"
-
-    with open(key_file, "r") as f:
-        private_key = f.read().strip()
-
-    return private_key
 
 
 def generate_api_proxy_config(
