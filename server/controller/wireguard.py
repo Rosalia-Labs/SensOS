@@ -155,12 +155,14 @@ class WireGuardPrivateKeyFile:
         return public_key == self.public_key()
 
 
-class WireGuardPeerEntry:
+class WireGuardEntry:
+    section_name: str  # to be overridden by subclasses
+
     def __init__(self, **fields):
         self.fields = fields
 
     @classmethod
-    def from_lines(cls, lines: list[str]) -> "WireGuardPeerEntry":
+    def from_lines(cls, lines: list[str]) -> "WireGuardEntry":
         fields = {}
         for line in lines:
             if "=" in line:
@@ -169,7 +171,56 @@ class WireGuardPeerEntry:
         return cls(**fields)
 
     def to_lines(self) -> list[str]:
-        return [f"{key} = {value}" for key, value in self.fields.items()]
+        lines = [f"[{self.section_name}]"]
+        for key in sorted(self.fields):
+            lines.append(f"{key} = {self.fields[key]}")
+        return lines
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, WireGuardEntry):
+            return NotImplemented
+        return self.section_name == other.section_name and self.fields == other.fields
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}({self.fields})"
+
+
+class WireGuardInterfaceEntry(WireGuardEntry):
+    section_name = "Interface"
+
+    @property
+    def private_key(self) -> str:
+        return self.fields.get("PrivateKey")
+
+    @property
+    def address(self) -> str:
+        return self.fields.get("Address")
+
+    @property
+    def listen_port(self) -> str:
+        return self.fields.get("ListenPort")
+
+    def validate(self) -> None:
+        if "PrivateKey" not in self.fields:
+            raise ValueError(
+                "Missing required field 'PrivateKey' in [Interface] section."
+            )
+
+        for key in self.fields:
+            if key not in INTERFACE_ALLOWED_FIELDS:
+                raise ValueError(f"Unknown field '{key}' in [Interface] section.")
+
+    def __repr__(self) -> str:
+        important_fields = []
+        for key in ["PrivateKey", "Address", "ListenPort"]:
+            if key in self.fields:
+                val = "redacted" if key == "PrivateKey" else self.fields[key]
+                important_fields.append(f"{key}={val}")
+        return f"WireGuardInterfaceEntry({', '.join(important_fields)})"
+
+
+class WireGuardPeerEntry(WireGuardEntry):
+    section_name = "Peer"
 
     @property
     def public_key(self) -> str:
@@ -187,33 +238,7 @@ class WireGuardPeerEntry:
     def persistent_keepalive(self) -> str:
         return self.fields.get("PersistentKeepalive")
 
-    @public_key.setter
-    def public_key(self, value: str) -> None:
-        self.fields["PublicKey"] = value
-
-    @allowed_ips.setter
-    def allowed_ips(self, value: str) -> None:
-        self.fields["AllowedIPs"] = value
-
-    @endpoint.setter
-    def endpoint(self, value: str) -> None:
-        self.fields["Endpoint"] = value
-
-    @persistent_keepalive.setter
-    def persistent_keepalive(self, value: str) -> None:
-        self.fields["PersistentKeepalive"] = value
-
-    def __repr__(self) -> str:
-        important_fields = []
-        for key in ["PublicKey", "AllowedIPs", "Endpoint"]:
-            if key in self.fields:
-                important_fields.append(f"{key}={self.fields[key]}")
-        if not important_fields:
-            important_fields = [f"{k}={v}" for k, v in self.fields.items()]
-        return f"WireGuardPeerEntry({', '.join(important_fields)})"
-
     def validate(self) -> None:
-        """Validate required fields and known keys."""
         for required in ("PublicKey", "AllowedIPs"):
             if required not in self.fields:
                 raise ValueError(
@@ -224,45 +249,12 @@ class WireGuardPeerEntry:
             if key not in PEER_ALLOWED_FIELDS:
                 raise ValueError(f"Unknown field '{key}' in [Peer] section.")
 
-
-class WireGuardInterfaceEntry:
-    def __init__(self, **fields):
-        self.fields = fields
-
-    @classmethod
-    def from_lines(cls, lines: list[str]) -> "WireGuardInterfaceEntry":
-        fields = {}
-        for line in lines:
-            if "=" in line:
-                key, value = map(str.strip, line.split("=", 1))
-                fields[key] = value
-        return cls(**fields)
-
-    def to_lines(self) -> list[str]:
-        return [f"{key} = {value}" for key, value in self.fields.items()]
-
-    @property
-    def private_key(self) -> str:
-        return self.fields.get("PrivateKey")
-
-    @property
-    def address(self) -> str:
-        return self.fields.get("Address")
-
-    @property
-    def listen_port(self) -> str:
-        return self.fields.get("ListenPort")
-
-    def validate(self) -> None:
-        """Validate required fields and known keys."""
-        if "PrivateKey" not in self.fields:
-            raise ValueError(
-                "Missing required field 'PrivateKey' in [Interface] section."
-            )
-
-        for key in self.fields:
-            if key not in INTERFACE_ALLOWED_FIELDS:
-                raise ValueError(f"Unknown field '{key}' in [Interface] section.")
+    def __repr__(self) -> str:
+        important_fields = []
+        for key in ["PublicKey", "AllowedIPs", "Endpoint"]:
+            if key in self.fields:
+                important_fields.append(f"{key}={self.fields[key]}")
+        return f"WireGuardPeerEntry({', '.join(important_fields)})"
 
 
 class WireGuardInterfaceConfigFile:
@@ -295,19 +287,31 @@ class WireGuardInterfaceConfigFile:
         if self.interface is None:
             raise ValueError("Interface config is not set.")
 
-        lines = ["[Interface]"]
-        lines.extend(self.interface.to_lines())
-        lines.append("")  # blank line
+        lines = []
 
+        # Write [Interface] block
+        lines.append("[Interface]")
+        for key in sorted(self.interface.fields):
+            lines.append(f"{key} = {self.interface.fields[key]}")
+        lines.append("")  # blank line after [Interface]
+
+        # Write [Peer] blocks
         for peer in self.peers:
             peer.validate()
             lines.append("[Peer]")
-            lines.extend(peer.to_lines())
-            lines.append("")  # blank line
+            for key in sorted(peer.fields):
+                lines.append(f"{key} = {peer.fields[key].strip()}")
+            lines.append("")  # blank line after each [Peer]
+
+        # Remove last blank line if present
+        if lines and lines[-1] == "":
+            lines.pop()
 
         return "\n".join(lines)
 
-    def save(self) -> None:
+    def save(self, overwrite: bool = False) -> None:
+        if self.exists() and not overwrite:
+            raise FileExistsError(f"Config file already exists at {self.path}")
         config_text = self.render_config()
         self.path.write_text(config_text)
         os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
@@ -322,12 +326,33 @@ class WireGuardInterfaceConfigFile:
         if "[Interface]" not in section_map:
             raise ValueError(f"Missing [Interface] section in {self.path}")
 
-        # Parse [Interface] first
-        self.interface = WireGuardInterfaceEntry.from_lines(section_map["[Interface]"])
+        # Collect all [Interface] sections
+        interface_entries = []
+
+        for section, lines in section_map.items():
+            if section == "[Interface]":
+                entry = WireGuardInterfaceEntry.from_lines(lines)
+                entry.validate()
+                interface_entries.append(entry)
+
+        # Now check how many
+        if not interface_entries:
+            raise ValueError(f"Missing [Interface] section in {self.path}")
+
+        # If multiple, check that all are identical
+        first_entry = interface_entries[0]
+        for other_entry in interface_entries[1:]:
+            if first_entry != other_entry:
+                raise ValueError(
+                    f"Multiple [Interface] sections with different contents in {self.path}"
+                )
+
+        # Use the first valid one
+        self.interface = first_entry
         self.interface.validate()
 
-        # Now remove [Interface] before looping
-        del section_map["[Interface]"]
+        # Remove all [Interface] sections from map
+        section_map = {k: v for k, v in section_map.items() if k != "[Interface]"}
 
         # Parse remaining sections
         self.peers.clear()
