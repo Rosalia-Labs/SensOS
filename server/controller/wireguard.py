@@ -4,6 +4,67 @@ import shutil
 import subprocess
 from pathlib import Path
 
+INTERFACE_ALLOWED_FIELDS = {
+    "PrivateKey",
+    "Address",
+    "ListenPort",
+    "MTU",
+    "DNS",
+    "Table",
+    "PreUp",
+    "PostUp",
+    "PreDown",
+    "PostDown",
+}
+
+PEER_ALLOWED_FIELDS = {
+    "PublicKey",
+    "PresharedKey",
+    "AllowedIPs",
+    "Endpoint",
+    "PersistentKeepalive",
+}
+
+
+def parse_sections(path: Path, strict: bool = True) -> dict[str, list[str]]:
+    """Reads [section] blocks into a dict {header: lines}.
+
+    Args:
+        path: File to read.
+        strict: If True, fail on lines outside any section.
+                If False, skip lines outside sections.
+
+    Returns:
+        Dict mapping section headers to list of non-empty, non-comment lines.
+    """
+    sections = {}
+    current_section = None
+    current_lines = []
+
+    with path.open("r") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if line.startswith("[") and line.endswith("]"):
+                if current_section:
+                    sections[current_section] = current_lines
+                current_section = line
+                current_lines = []
+            elif current_section is None:
+                if strict:
+                    raise ValueError(f"Line outside any section: {line}")
+                else:
+                    continue
+            else:
+                current_lines.append(line)
+
+        if current_section:
+            sections[current_section] = current_lines
+
+    return sections
+
 
 class WireGuardError(Exception):
     """Base class for WireGuard errors."""
@@ -94,12 +155,12 @@ class WireGuardPrivateKeyFile:
         return public_key == self.public_key()
 
 
-class WireGuardPeer:
+class WireGuardPeerEntry:
     def __init__(self, **fields):
         self.fields = fields
 
     @classmethod
-    def from_lines(cls, lines: list[str]) -> "WireGuardPeer":
+    def from_lines(cls, lines: list[str]) -> "WireGuardPeerEntry":
         fields = {}
         for line in lines:
             if "=" in line:
@@ -149,28 +210,66 @@ class WireGuardPeer:
                 important_fields.append(f"{key}={self.fields[key]}")
         if not important_fields:
             important_fields = [f"{k}={v}" for k, v in self.fields.items()]
-        return f"WireGuardPeer({', '.join(important_fields)})"
+        return f"WireGuardPeerEntry({', '.join(important_fields)})"
 
     def validate(self) -> None:
-        """Validates that the peer has all required fields.
+        """Validate required fields and known keys."""
+        for required in ("PublicKey", "AllowedIPs"):
+            if required not in self.fields:
+                raise ValueError(
+                    f"Missing required field '{required}' in [Peer] section."
+                )
 
-        Raises:
-            ValueError if required fields are missing.
-        """
-        missing = []
-        for required_field in ["PublicKey", "AllowedIPs"]:
-            if required_field not in self.fields:
-                missing.append(required_field)
+        for key in self.fields:
+            if key not in PEER_ALLOWED_FIELDS:
+                raise ValueError(f"Unknown field '{key}' in [Peer] section.")
 
-        if missing:
-            raise ValueError(f"Missing required peer field(s): {', '.join(missing)}")
+
+class WireGuardInterfaceEntry:
+    def __init__(self, **fields):
+        self.fields = fields
+
+    @classmethod
+    def from_lines(cls, lines: list[str]) -> "WireGuardInterfaceEntry":
+        fields = {}
+        for line in lines:
+            if "=" in line:
+                key, value = map(str.strip, line.split("=", 1))
+                fields[key] = value
+        return cls(**fields)
+
+    def to_lines(self) -> list[str]:
+        return [f"{key} = {value}" for key, value in self.fields.items()]
+
+    @property
+    def private_key(self) -> str:
+        return self.fields.get("PrivateKey")
+
+    @property
+    def address(self) -> str:
+        return self.fields.get("Address")
+
+    @property
+    def listen_port(self) -> str:
+        return self.fields.get("ListenPort")
+
+    def validate(self) -> None:
+        """Validate required fields and known keys."""
+        if "PrivateKey" not in self.fields:
+            raise ValueError(
+                "Missing required field 'PrivateKey' in [Interface] section."
+            )
+
+        for key in self.fields:
+            if key not in INTERFACE_ALLOWED_FIELDS:
+                raise ValueError(f"Unknown field '{key}' in [Interface] section.")
 
 
 class WireGuardInterfaceConfigFile:
     def __init__(self, path: Path):
         self.path = path
-        self.interface_settings: dict[str, str] = {}
-        self.peers: list[WireGuardPeer] = []
+        self.interface: WireGuardInterfaceEntry = None
+        self.peers: list[WireGuardPeerEntry] = []
 
     def exists(self) -> bool:
         return self.path.exists()
@@ -178,30 +277,30 @@ class WireGuardInterfaceConfigFile:
     def set_interface(
         self, private_key: str, address: str, listen_port: int, **extra_options
     ) -> None:
-        """Sets [Interface] block. Private key must be provided."""
-        self.interface_settings = {
-            "PrivateKey": private_key,
-            "Address": address,
-            "ListenPort": str(listen_port),
-        }
-        for key, value in extra_options.items():
-            if key in self.interface_settings:
-                raise ValueError(f"Cannot override {key}")
-            self.interface_settings[key] = value
+        """Sets the [Interface] block."""
+        self.interface = WireGuardInterfaceEntry(
+            PrivateKey=private_key,
+            Address=address,
+            ListenPort=str(listen_port),
+            **extra_options,
+        )
 
-    def add_peer(self, peer: WireGuardPeer) -> None:
+    def add_peer(self, peer: WireGuardPeerEntry) -> None:
         self.peers.append(peer)
 
-    def remove_peer(self, peer: WireGuardPeer) -> None:
+    def remove_peer(self, peer: WireGuardPeerEntry) -> None:
         self.peers.remove(peer)
 
     def render_config(self) -> str:
+        if self.interface is None:
+            raise ValueError("Interface config is not set.")
+
         lines = ["[Interface]"]
-        for key, value in self.interface_settings.items():
-            lines.append(f"{key} = {value}")
+        lines.extend(self.interface.to_lines())
         lines.append("")  # blank line
 
         for peer in self.peers:
+            peer.validate()
             lines.append("[Peer]")
             lines.extend(peer.to_lines())
             lines.append("")  # blank line
@@ -213,128 +312,118 @@ class WireGuardInterfaceConfigFile:
         self.path.write_text(config_text)
         os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
-    def load(self) -> None:
-        """Loads existing config from disk into memory."""
+    def load(self, strict: bool = True) -> None:
+        """Loads and validates config from disk."""
         if not self.exists():
             raise FileNotFoundError(f"Config file {self.path} does not exist.")
 
-        self.interface_settings.clear()
+        section_map = parse_sections(self.path, strict=strict)
+
+        if "[Interface]" not in section_map:
+            raise ValueError(f"Missing [Interface] section in {self.path}")
+
+        # Parse [Interface] first
+        self.interface = WireGuardInterfaceEntry.from_lines(section_map["[Interface]"])
+        self.interface.validate()
+
+        # Now remove [Interface] before looping
+        del section_map["[Interface]"]
+
+        # Parse remaining sections
         self.peers.clear()
-
-        with self.path.open("r") as f:
-            lines = [
-                line.strip()
-                for line in f
-                if line.strip() and not line.strip().startswith("#")
-            ]
-
-        current_section = None
-        current_fields = []
-
-        for line in lines:
-            if line == "[Interface]":
-                if current_section == "Peer" and current_fields:
-                    self.peers.append(WireGuardPeer.from_lines(current_fields))
-                current_section = "Interface"
-                current_fields = []
-            elif line == "[Peer]":
-                if current_section == "Interface" and current_fields:
-                    for l in current_fields:
-                        key, value = map(str.strip, l.split("=", 1))
-                        self.interface_settings[key] = value
-                elif current_section == "Peer" and current_fields:
-                    self.peers.append(WireGuardPeer.from_lines(current_fields))
-                current_section = "Peer"
-                current_fields = []
+        for section, lines in section_map.items():
+            if section == "[Peer]":
+                peer = WireGuardPeerEntry.from_lines(lines)
+                peer.validate()
+                self.peers.append(peer)
             else:
-                current_fields.append(line)
-
-        if current_section == "Interface" and current_fields:
-            for l in current_fields:
-                key, value = map(str.strip, l.split("=", 1))
-                self.interface_settings[key] = value
-        elif current_section == "Peer" and current_fields:
-            self.peers.append(WireGuardPeer.from_lines(current_fields))
+                raise ValueError(f"Unknown section {section} in {self.path}")
 
 
 class WireGuardInterface:
     def __init__(self, name: str, config_dir: Path = Path("/etc/wireguard")):
         self.name = name
         self.config_dir = config_dir
-        self.wg = WireGuard()
+        self._config = WireGuardInterfaceConfigFile(
+            self.config_dir / f"{self.name}.conf"
+        )
+        self._private_key = WireGuardPrivateKeyFile(
+            self.config_dir / "keys" / f"{self.name}.privatekey"
+        )
 
     @property
     def config_file(self) -> Path:
         return self.config_dir / f"{self.name}.conf"
 
     @property
-    def key_dir(self) -> Path:
-        return self.config_dir / "keys"
-
-    @property
     def private_key_file(self) -> Path:
-        return self.key_dir / f"{self.name}.privatekey"
+        return self._private_key.path
 
     def interface_path(self) -> str:
         """Returns config file path as string, for use by wg-quick."""
         return str(self.config_file)
 
     def config_exists(self) -> bool:
-        return self.config_file.exists()
+        return self._config.exists()
 
-    def key_exist(self) -> bool:
-        return self.private_key_file.exists()
+    def key_exists(self) -> bool:
+        return self._private_key.exists()
 
     def ensure_directories(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        self.key_dir.mkdir(parents=True, exist_ok=True)
+        (self.config_dir / "keys").mkdir(parents=True, exist_ok=True)
 
     def generate_key(self, overwrite: bool = False) -> None:
-        """Generates private and public keys.
-
-        Args:
-            wg: WireGuard instance used to generate keys.
-            overwrite: If True, will overwrite existing private key.
-
-        Raises:
-            FileExistsError: If private key exists and overwrite is False.
-        """
+        """Generates a private key (public key always derived on the fly)."""
         self.ensure_directories()
-
-        if self.private_key_file.exists() and not overwrite:
-            raise FileExistsError(
-                f"Private key already exists for {self.name}; refusing to overwrite."
-            )
-
-        private_key = self.wg.genkey()
-        self.private_key_file.write_text(private_key)
-        os.chmod(self.private_key_file, stat.S_IRUSR | stat.S_IWUSR)
+        self._private_key.generate(overwrite=overwrite)
 
     def get_private_key(self) -> str:
-        return self.private_key_file.read_text().strip()
+        return self._private_key.read()
 
     def get_public_key(self) -> str:
-        return self.wg.pubkey(self.get_private_key())
+        return self._private_key.public_key()
 
     def get_keys(self) -> tuple[str, str]:
-        """Reads and returns (private_key, public_key)."""
-        private_key = self.get_private_key()
-        public_key = self.get_public_key()
-        return private_key, public_key
+        return (self.get_private_key(), self.get_public_key())
 
     def validate_publickey(self, testkey: str) -> bool:
-        """Returns True if the test key matches the private key."""
-        return testkey == self.get_public_key()
+        return self._private_key.validate_public_key(testkey)
 
-    def ensure_key_exist(self, wg: WireGuard) -> None:
-        """Ensures private key exist.
-
-        - If private key is missing, generates a new key.
-        """
+    def ensure_key_exists(self) -> None:
+        """Ensures private key exists, otherwise generates."""
         self.ensure_directories()
+        if not self._private_key.exists():
+            self._private_key.generate()
 
-        if not self.private_key_file.exists():
-            self.generate_keys(wg)
+    def set_interface(self, address: str, listen_port: int, **extra_options) -> None:
+        """Sets and saves the [Interface] block."""
+        self.ensure_key_exists()
+        private_key = self.get_private_key()
+        self._config.set_interface(private_key, address, listen_port, **extra_options)
+
+    def add_peer(self, peer: WireGuardPeerEntry) -> None:
+        self._config.add_peer(peer)
+
+    def remove_peer(self, peer: WireGuardPeerEntry) -> None:
+        self._config.remove_peer(peer)
+
+    def save_config(self) -> None:
+        self._config.save()
+
+    def load_config(self) -> None:
+        self._config.load()
+
+    def render_config(self) -> str:
+        return self._config.render_config()
+
+    @property
+    def interface_def(self) -> "WireGuardInterfaceEntry":
+        return self._config.interface
+
+    @property
+    def peer_defs(self) -> list["WireGuardPeerEntry"]:
+        return self._config.peers
 
 
 class WireGuardConfiguration:
@@ -354,65 +443,36 @@ class WireGuardConfiguration:
         iface = self.get_interface(name)
         if iface.config_file.exists():
             iface.config_file.unlink()
-        if iface.key_dir.exists():
-            shutil.rmtree(iface.key_dir)
+        if iface.private_key_file.exists():
+            iface.private_key_file.unlink()
 
     def create_interface(
         self,
         name: str,
-        wg: WireGuard,
         address: str,
         listen_port: int,
         save_config: bool = True,
         overwrite: bool = False,
     ) -> WireGuardInterface:
-        """Creates a new interface with generated keys and minimal config.
-
-        Args:
-            name: Interface name (e.g. 'wg0')
-            wg: WireGuard wrapper instance
-            address: Interface IP address, e.g. '10.0.0.1/24'
-            listen_port: Port to listen on
-            save_config: Whether to write the config immediately
-            overwrite: Allow overwriting existing keys/configs (default False)
-
-        Raises:
-            FileExistsError: If private key, public key, or config already exists and overwrite=False
-        """
         iface = self.get_interface(name)
-
         iface.ensure_directories()
 
-        # Check for existing keys
-        if iface.private_key_file.exists() or iface.public_key_file.exists():
-            if not overwrite:
-                raise FileExistsError(
-                    f"Keys already exist for {name}. Use overwrite=True to replace them."
-                )
+        if iface.private_key_file.exists() and not overwrite:
+            raise FileExistsError(
+                f"Private key already exists for {name}; use overwrite=True to replace."
+            )
+        if iface.config_file.exists() and not overwrite:
+            raise FileExistsError(
+                f"Config file already exists for {name}; use overwrite=True to replace."
+            )
 
-        # Check for existing config
-        if iface.config_file.exists():
-            if not overwrite:
-                raise FileExistsError(
-                    f"Config already exists for {name}. Use overwrite=True to replace it."
-                )
-
-        # Generate fresh keys
-        iface.generate_keys(wg)
-
-        private_key = iface.read_private_key()
-
-        config_lines = [
-            "[Interface]",
-            f"Address = {address}",
-            f"ListenPort = {listen_port}",
-            f"PrivateKey = {private_key}",
-            "",
-        ]
+        iface.generate_key(overwrite=overwrite)
+        private_key = iface.get_private_key()
 
         if save_config:
-            iface.config_file.write_text("\n".join(config_lines))
-            os.chmod(iface.config_file, stat.S_IRUSR | stat.S_IWUSR)
+            config = WireGuardInterfaceConfigFile(iface.config_file)
+            config.set_interface(private_key, address, listen_port)
+            config.save()
 
         return iface
 
