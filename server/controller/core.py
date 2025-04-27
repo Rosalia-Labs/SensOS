@@ -1,36 +1,30 @@
 # core.py
 import os
 import stat
-import subprocess
 import ipaddress
 import logging
 import psycopg
 import socket
 import docker
 import time
+import tempfile
+
+from psycopg import Cursor
+
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Tuple, Optional
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from psycopg.errors import UniqueViolation
-from typing import Tuple, Optional
-from pathlib import Path
 
-from wireguard import (
-    generate_wireguard_keys,
-    save_wireguard_keys,
-    read_wireguard_keys,
-    read_wireguard_private_key,
-)
-
+from wireguard import WireGuardService, WireGuardInterface, WireGuardPeerEntry
 
 # ------------------------------------------------------------
 # Logging & Configuration
 # ------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-WG_CONFIG_DIR = Path("/config/wg_confs")
-CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 
 POSTGRES_USER = "postgres"
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
@@ -53,8 +47,13 @@ GIT_BRANCH = os.getenv("GIT_BRANCH", "Unknown")
 GIT_TAG = os.getenv("GIT_TAG", "Unknown")
 GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
+CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 API_PROXY_CONFIG_DIR = Path("/api_proxy_config")
+WG_CONFIG_DIR = Path("/config/wg_confs")
+
+# ensure dirs
 API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ------------------------------------------------------------
@@ -96,7 +95,7 @@ async def lifespan(app: FastAPI):
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
                 create_initial_network(cur)
-                add_peers_to_wireguard()
+                generate_wireguard_container_configs(cur)
                 start_controller_wireguard()
                 regenerate_all_api_proxy_configs()
         logger.info("✅ Database schema and tables initialized successfully.")
@@ -227,48 +226,34 @@ def start_controller_wireguard():
     Returns:
         None
     """
-    logger.info("🔍 Scanning /etc/wireguard for existing WireGuard configurations...")
-    config_files = sorted(CONTROLLER_CONFIG_DIR.glob("*.conf"))
+    logger.info("🔍 Scanning /etc/wireguard for configs…")
+    svc = WireGuardService(config_dir=CONTROLLER_CONFIG_DIR)
+    quick = svc.quick
+    wg = svc.wg
 
-    if not config_files:
-        logger.warning("⚠️ No WireGuard config files found in /etc/wireguard.")
-        return
-
-    for config_file in config_files:
-        network_name = config_file.stem  # e.g., 'wg0' from 'wg0.conf'
-        result = subprocess.run(
-            ["wg", "show", network_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-        if result.returncode == 0:
-            logger.info(f"🔄 Updating running WireGuard interface: {network_name}")
+    for name in svc.list_interfaces():
+        iface = svc.get_interface(name)
+        try:
+            # If interface is already up, sync its config
+            wg.show(name)
+            logger.info(f"🔄 Syncing running interface {name}")
+            stripped = quick.strip(iface)
+            # write strip output to temp file and syncconf
+            with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
+                tmp.write(stripped)
+                tmp.flush()
+                wg.syncconf(name, Path(tmp.name))
+            logger.info(f"✅ Synced {name}")
+        except Exception:
+            # probably not up yet
+            logger.info(f"🚀 Bringing up new interface {name}")
             try:
-                strip_result = subprocess.run(
-                    ["wg-quick", "strip", network_name],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                subprocess.run(
-                    ["wg", "syncconf", network_name, "/dev/stdin"],
-                    input=strip_result.stdout,
-                    text=True,
-                    check=True,
-                )
-                logger.info(f"✅ Updated WireGuard interface: {network_name}")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Failed to update {network_name}: {e}")
-        else:
-            logger.info(f"🚀 Enabling new WireGuard interface: {network_name}")
-            try:
-                subprocess.run(["wg-quick", "up", network_name], check=True)
-                logger.info(f"✅ Activated WireGuard interface: {network_name}")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"❌ Failed to activate {network_name}: {e}")
+                quick.up(iface)
+                logger.info(f"✅ Brought up {name}")
+            except Exception as e:
+                logger.error(f"❌ Failed to bring up {name}: {e}")
 
-    logger.info("✅ WireGuard interfaces setup complete.")
+    logger.info("✅ Controller WireGuard setup complete.")
 
 
 def resolve_hostname(value: str):
@@ -407,190 +392,187 @@ def generate_api_proxy_config(
     ip_range: ipaddress.IPv4Network,
     wg_server_public_key: str,
     wg_port: int,
-):
+) -> None:
     """
-    Generates a WireGuard config file for the API proxy container.
-    If keys already exist, they will be reused.
+    Ensures there's a valid WireGuard config file for the API proxy.
+    - Preserves any on-disk private key.
+    - Generates a new key only if no .conf exists.
+    - Registers the new public key in the DB exactly once.
     """
     proxy_ip = ip_range.network_address + 1
+    cfg_dir = API_PROXY_CONFIG_DIR
 
-    try:
-        proxy_private_key, proxy_public_key = read_wireguard_keys(
-            API_PROXY_CONFIG_DIR, network_name
+    # instantiate the interface object
+    iface = WireGuardInterface(name=network_name, config_dir=cfg_dir)
+
+    # decide whether it's new or existing
+    if iface.config_exists():
+        # load and preserve existing key
+        iface.load_config()
+        priv = iface.get_private_key()
+        iface.set_interface(
+            address=f"{proxy_ip}/32",
+            listen_port=wg_port,
+            private_key=priv,
         )
-    except FileNotFoundError:
-        proxy_private_key, proxy_public_key = generate_wireguard_keys()
-        save_wireguard_keys(
-            API_PROXY_CONFIG_DIR, network_name, proxy_private_key, proxy_public_key
+    else:
+        # no config yet → let set_interface generate & save a new key
+        iface.set_interface(address=f"{proxy_ip}/32", listen_port=wg_port)
+        register_wireguard_key_in_db(str(proxy_ip), iface.get_public_key())
+
+    # build the single [Peer] block for the server
+    iface.peer_entries.clear()
+    server_endpoint = f"{get_container_ip('sensos-wireguard')}:{wg_port}"
+    iface.add_peer(
+        WireGuardPeerEntry(
+            PublicKey=wg_server_public_key,
+            Endpoint=server_endpoint,
+            AllowedIPs=str(ip_range),
+            PersistentKeepalive="25",
         )
-        register_wireguard_key_in_db(str(proxy_ip), proxy_public_key)
+    )
 
-    wg_server_ip = get_container_ip("sensos-wireguard")
-
-    config_path = API_PROXY_CONFIG_DIR / f"{network_name}.conf"
-    config_content = f"""[Interface]
-Address = {proxy_ip}/32
-PrivateKey = {proxy_private_key}
-
-[Peer]
-PublicKey = {wg_server_public_key}
-Endpoint = {wg_server_ip}:{wg_port}
-AllowedIPs = {ip_range}
-PersistentKeepalive = 25
-"""
-    with open(config_path, "w") as f:
-        f.write(config_content)
-    os.chmod(config_path, stat.S_IRUSR | stat.S_IWUSR)
-    logger.info(f"✅ API proxy config written: {config_path}")
+    # write out (or overwrite) the .conf
+    iface.save_config(overwrite=True)
+    logger.info(f"✅ API proxy config written: {iface.config_file}")
 
 
-def create_network_entry(cur, name: str, wg_public_ip: str, wg_port):
+def create_network_entry(
+    cur: Cursor,
+    name: str,
+    wg_public_ip: str,
+    wg_port: int,
+) -> dict:
     """
-    Creates a new network entry in the database along with generating WireGuard keys
-    and configurations.
-
-    Parameters:
-        cur: The database cursor.
-        name (str): The name of the network.
-        wg_public_ip (str): The public IP address for WireGuard.
-        wg_port (int): The WireGuard port.
-
-    Returns:
-        dict: A dictionary containing the network details (id, name, ip_range, wg_public_ip, wg_port, wg_public_key).
-
-    Raises:
-        RuntimeError: If a unique constraint is violated and the existing network details conflict.
+    Creates a new network entry in the DB, plus on-disk WireGuard config.
+    If a network with this name already exists, returns its details immediately.
     """
-    ip_range = generate_default_ip_range(name)
-    private_key, public_key = generate_wireguard_keys()
-    save_wireguard_keys(WG_CONFIG_DIR, name, private_key, public_key)
-    try:
-        cur.execute(
-            """
-            INSERT INTO sensos.networks (name, ip_range, wg_public_ip, wg_port, wg_public_key)
-            VALUES (%s, %s, %s, %s, %s)
-            RETURNING id;
-            """,
-            (name, ip_range, wg_public_ip, wg_port, public_key),
-        )
-        network_id = cur.fetchone()[0]
-        logger.info(f"✅ Network '{name}' created with ID: {network_id}")
-        generate_api_proxy_config(name, ip_range, public_key, wg_port)
-        restart_container("sensos-api-proxy")
-        add_peers_to_wireguard()
+    # 1) Early-return if the name already exists
+    cur.execute(
+        """
+        SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key
+        FROM sensos.networks
+        WHERE name = %s;
+        """,
+        (name,),
+    )
+    existing = cur.fetchone()
+    if existing:
         return {
-            "id": network_id,
+            "id": existing[0],
             "name": name,
-            "ip_range": ip_range,
-            "wg_public_ip": wg_public_ip,
-            "wg_port": wg_port,
-            "wg_public_key": public_key,
+            "ip_range": existing[1],
+            "wg_public_ip": existing[2],
+            "wg_port": existing[3],
+            "wg_public_key": existing[4],
         }
-    except psycopg.errors.UniqueViolation as e:
-        logger.warning(
-            f"⚠️ Unique constraint violated when creating network '{name}': {e}"
-        )
-        if "networks_name_key" in str(e):
-            cur.execute(
-                "SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE name = %s;",
-                (name,),
-            )
-        elif "networks_ip_range_key" in str(e):
-            cur.execute(
-                "SELECT id, name, wg_public_ip, wg_port, wg_public_key FROM sensos.networks WHERE ip_range = %s;",
-                (ip_range,),
-            )
-        elif "networks_wg_public_key_key" in str(e):
-            cur.execute(
-                "SELECT id, name, ip_range, wg_public_ip, wg_port FROM sensos.networks WHERE wg_public_key = %s;",
-                (public_key,),
-            )
-        elif "networks_wg_public_ip_wg_port_key" in str(e):
-            cur.execute(
-                "SELECT id, name, ip_range, wg_public_key FROM sensos.networks WHERE wg_public_ip = %s AND wg_port = %s;",
-                (wg_public_ip, wg_port),
+
+    # 2) Determine IP range and server IP
+    ip_range = generate_default_ip_range(name)
+    server_ip = ip_range.network_address + 1
+
+    # 3) Use WireGuardInterface to generate & save keys + config
+    wg_iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
+    wg_iface.ensure_directories()
+    # Passing no private_key → set_interface will generate & persist one
+    wg_iface.set_interface(
+        address=f"{server_ip}/32",
+        listen_port=wg_port,
+    )
+    # Persist .conf to disk
+    wg_iface.save_config(overwrite=False)
+
+    # Grab the new public key
+    public_key = wg_iface.get_public_key()
+
+    # 4) Insert into DB
+    cur.execute(
+        """
+        INSERT INTO sensos.networks
+          (name, ip_range, wg_public_ip, wg_port, wg_public_key)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id;
+        """,
+        (name, ip_range, wg_public_ip, wg_port, public_key),
+    )
+    network_id = cur.fetchone()[0]
+
+    # 5) Wire up API proxy + container configs
+    generate_api_proxy_config(name, ip_range, public_key, wg_port)
+    restart_container("sensos-api-proxy")
+    # this will reconcile peer configs for *all* networks, including the new one
+    generate_wireguard_container_configs(cur)
+
+    return {
+        "id": network_id,
+        "name": name,
+        "ip_range": ip_range,
+        "wg_public_ip": wg_public_ip,
+        "wg_port": wg_port,
+        "wg_public_key": public_key,
+    }
+
+
+def generate_wireguard_container_configs(
+    cur, restart_wireguard_container: bool = True
+) -> None:
+    """
+    For each network in the DB, ensure a valid WireGuard .conf exists.
+    - On-disk private keys are never overwritten.
+    - New keys are only generated by WireGuardInterface.set_interface().
+    """
+    # 1) Fetch all networks
+    cur.execute("SELECT id, name, ip_range, wg_port FROM sensos.networks;")
+    networks = cur.fetchall()
+
+    for network_id, name, ip_range_cidr, wg_port in networks:
+        ip_range = ipaddress.ip_network(ip_range_cidr, strict=False)
+        server_ip = ip_range.network_address + 1
+
+        wg_iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
+
+        # 2) Load existing config or generate a new key if missing
+        if wg_iface.config_exists():
+            wg_iface.load_config()
+            priv = wg_iface.get_private_key()
+            wg_iface.set_interface(
+                address=f"{server_ip}/32",
+                listen_port=wg_port,
+                private_key=priv,
             )
         else:
-            raise RuntimeError(
-                "Constraint violation but failed to retrieve existing network."
+            wg_iface.set_interface(
+                address=f"{server_ip}/32",
+                listen_port=wg_port,
             )
-        existing_network = cur.fetchone()
-        if not existing_network:
-            raise RuntimeError(
-                "Constraint violation but failed to retrieve existing network."
-            )
-        result = {
-            "id": existing_network[0],
-            "name": existing_network[1] if len(existing_network) > 1 else name,
-            "ip_range": existing_network[2] if len(existing_network) > 2 else ip_range,
-            "wg_public_ip": (
-                existing_network[3] if len(existing_network) > 3 else wg_public_ip
-            ),
-            "wg_port": existing_network[4] if len(existing_network) > 4 else wg_port,
-            "wg_public_key": (
-                existing_network[5] if len(existing_network) > 5 else public_key
-            ),
-        }
-        if result["wg_public_key"] != public_key:
-            raise RuntimeError(
-                f"❌ Refusing to overwrite existing WireGuard key for network '{name}'. "
-                "Restore the original key or delete the network first."
-            )
-        logger.info(f"✅ Returning existing network: {result}")
-        return result
 
-
-def add_peers_to_wireguard():
-    """
-    Regenerates the WireGuard configuration files based on the current database state.
-    Assumes:
-      - Network is always x.x.0.0/16
-      - x.x.0.1 is the WireGuard proxy container
-    """
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, name, wg_port FROM sensos.networks;")
-            networks = cur.fetchall()
-            for (
-                network_id,
-                network_name,
-                wg_port,
-            ) in networks:
-                private_key = read_wireguard_private_key(WG_CONFIG_DIR, network_name)
-
-                # Build [Interface] config
-                interface_config = f"""[Interface]
-ListenPort = {wg_port}
-PrivateKey = {private_key}
-"""
-
-                cur.execute(
-                    """
-                    SELECT p.wg_ip, k.wg_public_key
-                    FROM sensos.wireguard_peers p
-                    JOIN sensos.wireguard_keys k ON p.id = k.peer_id
-                    JOIN sensos.networks n ON p.network_id = n.id
-                    WHERE p.network_id = %s AND k.is_active = TRUE;
-                    """,
-                    (network_id,),
+        # 3) Rebuild peers from the database
+        wg_iface.peer_entries.clear()
+        cur.execute(
+            """
+            SELECT p.wg_ip, k.wg_public_key
+              FROM sensos.wireguard_peers p
+              JOIN sensos.wireguard_keys k
+                ON p.id = k.peer_id
+             WHERE p.network_id = %s AND k.is_active = TRUE;
+            """,
+            (network_id,),
+        )
+        for wg_ip, wg_pub in cur.fetchall():
+            wg_iface.add_peer(
+                WireGuardInterface.peer_class(
+                    PublicKey=wg_pub,
+                    AllowedIPs=f"{wg_ip}/32",
                 )
-                peers = cur.fetchall()
+            )
 
-                wg_config_path = WG_CONFIG_DIR / f"{network_name}.conf"
-                with open(wg_config_path, "w") as f:
-                    f.write(interface_config.strip() + "\n\n")
-                    for wg_ip, wg_public_key in peers:
-                        f.write(
-                            f"""[Peer]
-PublicKey = {wg_public_key}
-AllowedIPs = {wg_ip}/32
+        # 4) Write out the updated .conf
+        wg_iface.save_config(overwrite=True)
 
-"""
-                        )
-    logger.info("✅ WireGuard configuration regenerated for all networks.")
-
-    restart_container("sensos-wireguard")
-    logger.info("✅ Restarted wireguard container.")
+    # 5) Optionally restart the WireGuard container
+    if restart_wireguard_container:
+        restart_container("sensos-wireguard")
+    logger.info("✅ Reconciled WireGuard configs for all networks.")
 
 
 def get_assigned_ips(network_id: int) -> set[ipaddress.IPv4Address]:
