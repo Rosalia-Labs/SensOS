@@ -26,44 +26,33 @@ PEER_ALLOWED_FIELDS = {
 }
 
 
-def parse_sections(path: Path, strict: bool = True) -> dict[str, list[str]]:
-    """Reads [section] blocks into a dict {header: lines}.
-
-    Args:
-        path: File to read.
-        strict: If True, fail on lines outside any section.
-                If False, skip lines outside sections.
-
-    Returns:
-        Dict mapping section headers to list of non-empty, non-comment lines.
-    """
-    sections = {}
+def parse_sections(path: Path, strict: bool = True) -> dict[str, list[list[str]]]:
+    section_map = {}
     current_section = None
     current_lines = []
 
-    with path.open("r") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
+    with path.open() as file:
+        for line in file:
+            line = line.strip()
+            if not line:
                 continue
-
             if line.startswith("[") and line.endswith("]"):
-                if current_section:
-                    sections[current_section] = current_lines
-                current_section = line
+                if current_section is not None:
+                    section_map.setdefault(current_section, []).append(current_lines)
+                current_section = line[1:-1].strip()
                 current_lines = []
-            elif current_section is None:
-                if strict:
-                    raise ValueError(f"Line outside any section: {line}")
-                else:
-                    continue
             else:
+                if current_section is None:
+                    if strict:
+                        raise ValueError("Line outside any section")
+                    else:
+                        continue
                 current_lines.append(line)
 
-        if current_section:
-            sections[current_section] = current_lines
+    if current_section is not None:
+        section_map.setdefault(current_section, []).append(current_lines)
 
-    return sections
+    return section_map
 
 
 class WireGuardError(Exception):
@@ -499,7 +488,7 @@ class WireGuardInterfaceConfigFile:
 
         Raises:
             FileNotFoundError: If the config file does not exist.
-            ValueError: If required sections are missing, sections are duplicated improperly,
+            ValueError: If required sections are missing, duplicated improperly,
                         or unknown sections are present.
         """
         if not self.exists():
@@ -507,39 +496,38 @@ class WireGuardInterfaceConfigFile:
 
         section_map = parse_sections(self.path, strict=strict)
 
-        if "[Interface]" not in section_map:
+        if "Interface" not in section_map:
             raise ValueError(f"Missing [Interface] section in {self.path}")
 
         # Parse [Interface] sections
         interface_entries = []
-        for section, lines in section_map.items():
-            if section == "[Interface]":
-                entry = WireGuardInterfaceEntry.from_lines(lines)
-                entry.validate()
-                interface_entries.append(entry)
+        for entry_lines in section_map.get("Interface", []):
+            entry = WireGuardInterfaceEntry.from_lines(entry_lines)
+            entry.validate()
+            interface_entries.append(entry)
 
         # Validate that all [Interface] sections are identical
-        first_entry = interface_entries[0]
-        for other_entry in interface_entries[1:]:
-            if first_entry != other_entry:
-                raise ValueError(
-                    f"Multiple [Interface] sections with different contents in {self.path}"
-                )
-
-        interface_entry = first_entry
-
-        # Remove [Interface] sections from map
-        section_map = {k: v for k, v in section_map.items() if k != "[Interface]"}
+        if len(interface_entries) > 1:
+            first_entry = interface_entries[0]
+            for other_entry in interface_entries[1:]:
+                if first_entry != other_entry:
+                    raise ValueError(
+                        f"Multiple [Interface] sections with different contents in {self.path}"
+                    )
+        interface_entry = interface_entries[0]
 
         # Parse [Peer] sections
         peer_entries = []
-        for section, lines in section_map.items():
-            if section == "[Peer]":
-                peer = WireGuardPeerEntry.from_lines(lines)
-                peer.validate()
-                peer_entries.append(peer)
-            else:
-                raise ValueError(f"Unknown section {section} in {self.path}")
+        for entry_lines in section_map.get("Peer", []):
+            peer = WireGuardPeerEntry.from_lines(entry_lines)
+            peer.validate()
+            peer_entries.append(peer)
+
+        # Check for unknown sections
+        known_sections = {"Interface", "Peer"}
+        for section_name in section_map.keys():
+            if section_name not in known_sections:
+                raise ValueError(f"Unknown section {section_name} in {self.path}")
 
         return interface_entry, peer_entries
 
