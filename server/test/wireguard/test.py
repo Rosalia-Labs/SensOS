@@ -42,8 +42,8 @@ def test_parse_sections_simple(tempdir):
 
     assert "Interface" in sections
     assert "Peer" in sections
-    assert "PrivateKey = abcdef" in sections["Interface"]
-    assert "PublicKey = xyz" in sections["Peer"]
+    assert "PrivateKey = abcdef" in sections["Interface"][0]
+    assert "PublicKey = xyz" in sections["Peer"][0]
 
 
 def test_config_file_save_and_load(tempdir):
@@ -333,7 +333,7 @@ def test_wireguard_peer_entry_from_lines_and_to_lines():
     assert peer.endpoint == "example.com:51820"
 
     output_lines = peer.to_lines()
-    assert output_lines[0] == "Peer"
+    assert output_lines[0] == "[Peer]"
     assert "PublicKey = def456" in output_lines
     assert "AllowedIPs = 0.0.0.0/0" in output_lines
     assert "Endpoint = example.com:51820" in output_lines

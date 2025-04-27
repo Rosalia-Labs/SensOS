@@ -526,8 +526,8 @@ class WireGuardInterfaceConfigFile:
         # Check for unknown sections
         known_sections = {"Interface", "Peer"}
         for section_name in section_map.keys():
-            if section_name not in known_sections:
-                raise ValueError(f"Unknown section {section_name} in {self.path}")
+            if strict and section_name not in known_sections:
+                raise ValueError(f"Unknown section [{section_name}] in {self.path}")
 
         return interface_entry, peer_entries
 
@@ -554,6 +554,7 @@ class WireGuardInterfaceConfigFile:
         lines = []
 
         # Write [Interface] block
+        interface_entry.validate()
         lines.append("[Interface]")
         for key in sorted(interface_entry.fields):
             lines.append(f"{key} = {interface_entry.fields[key].strip()}")
@@ -668,8 +669,8 @@ class WireGuardInterface:
             private_key = self._wg.genkey()
 
         self.interface_entry = WireGuardInterfaceEntry(
-            PrivateKey=private_key,
             Address=address,
+            PrivateKey=private_key,
             ListenPort=str(listen_port),
             **extra_options,
         )
