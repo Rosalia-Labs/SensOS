@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker/" && pwd)"
 cd "$WORK_DIR"
 
 echo "Working directory: $(pwd)"
@@ -79,7 +79,7 @@ done
 if docker ps --filter "name=sensos-" --format '{{.Names}}' | grep -q .; then
     if [ "$RESTART" = true ]; then
         echo "ℹ️  Restart option enabled. Stopping running SensOS containers..."
-        "$WORK_DIR/bin/stop-server.sh"
+        "$WORK_DIR/../bin/stop-server.sh"
 
         echo "⏳ Waiting for containers to stop..."
         TIMEOUT=60 # Max wait time in seconds

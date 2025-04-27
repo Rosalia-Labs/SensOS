@@ -1,9 +1,13 @@
 #!/bin/bash
-
 set -e
 
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd $WORK_DIR
+# If this script is in <base>/server/bin, then:
+#   dirname "${BASH_SOURCE[0]}" → <base>/server/bin
+#   /../docker                → <base>/server/docker
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker" && pwd)"
+cd "$WORK_DIR"
+
+echo "Working directory: $(pwd)" # should print <base>/server/docker
 
 # Define default values
 DEFAULT_DB_PORT=5432

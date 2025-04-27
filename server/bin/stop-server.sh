@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../docker/" && pwd)"
 cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
 
@@ -56,10 +56,10 @@ fi
 if [ "$PERFORM_BACKUP" = true ]; then
     echo "💾 Initiating backup process..."
     # Execute the backup scripts.
-    ./bin/backup-database.sh
+    "$WORK_DIR"/../bin/backup-database.sh
     db_status=$?
 
-    ./bin/backup-wireguard.sh
+    "$WORK_DIR"/../bin/backup-wireguard.sh
     wg_status=$?
 
     # If either backup fails, disable volume removal.
