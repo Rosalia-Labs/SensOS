@@ -522,6 +522,12 @@ def generate_api_controller_configs(
     logger.info("✅ Reconciled API proxy configs for all networks.")
 
 
+def add_peers_to_wireguard():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            generate_wireguard_container_configs(cur)
+
+
 def generate_wireguard_container_configs(
     cur, restart_wireguard_container: bool = True
 ) -> None:
