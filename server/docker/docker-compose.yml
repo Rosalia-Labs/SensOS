@@ -16,7 +16,6 @@ services:
     depends_on:
       - sensos-database
       - sensos-wireguard
-      - sensos-registry
     env_file: .env
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -102,6 +101,8 @@ services:
       - "5000"
     networks:
       - sensos_network
+    profiles:
+      - registry
 
   sensos-api-proxy:
     build:
