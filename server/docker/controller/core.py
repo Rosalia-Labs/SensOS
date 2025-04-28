@@ -575,7 +575,7 @@ def generate_wireguard_container_configs(
         )
         for wg_ip, wg_pub in cur.fetchall():
             wg_iface.add_peer(
-                WireGuardInterface.peer_class(
+                WireGuardPeerEntry(
                     PublicKey=wg_pub,
                     AllowedIPs=f"{wg_ip}/32",
                 )
