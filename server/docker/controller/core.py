@@ -429,7 +429,7 @@ def create_network_entry(
         listen_port=wg_port,
     )
     # Persist .conf to disk
-    wg_iface.save_config(overwrite=False)
+    wg_iface.save_config(overwrite=True)
 
     # Grab the new public key
     public_key = wg_iface.get_public_key()
