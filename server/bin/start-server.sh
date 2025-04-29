@@ -107,7 +107,7 @@ fi
 
 #  Build step (if requested)
 if [ "$REBUILD" = true ]; then
-    BUILD_CMD=(docker compose build)
+    BUILD_CMD=(COMPOSE_BAKE=true docker compose build)
     if [ "$NO_CACHE" = true ]; then
         BUILD_CMD+=(--no-cache)
     fi

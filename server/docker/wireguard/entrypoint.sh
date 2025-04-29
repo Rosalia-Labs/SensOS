@@ -8,9 +8,9 @@ WG_CONFIG_DIR="/etc/wireguard"
 
 refresh_status() {
     # remove old status dumps
-    rm -f "$WG_CONFIG_DIR"/wireguard_status_*.txt
+    rm -f "$WG_SOURCE_DIR"/wireguard_status_*.txt
     for iface in $(wg show interfaces); do
-        wg show "$iface" >"$WG_CONFIG_DIR/wireguard_status_${iface}.txt" || true
+        wg show "$iface" >"$WG_SOURCE_DIR/wireguard_status_${iface}.txt" || true
     done
 }
 
