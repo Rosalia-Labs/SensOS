@@ -4,9 +4,9 @@ set -euo pipefail
 # 1) Find the directory this script lives in…
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # …then the repo root is one level up
-SERVER_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # 2) And the docker folder is under it
-WORK_DIR="$SERVER_ROOT/docker"
+WORK_DIR="$REPO_ROOT/server/docker"
 
 cd "$WORK_DIR"
 echo "Working directory: $(pwd)"
