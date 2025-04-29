@@ -22,9 +22,17 @@ from core import (
     restart_container,
     get_container_ip,
     get_db,
-    restart_container,
-    get_container_ip,
     authenticate,
+    create_version_history_table,
+    update_version_history_table,
+    VERSION_MAJOR,
+    VERSION_MINOR,
+    VERSION_PATCH,
+    VERSION_SUFFIX,
+    GIT_COMMIT,
+    GIT_BRANCH,
+    GIT_TAG,
+    GIT_DIRTY,
 )
 
 
@@ -330,3 +338,55 @@ def test_authenticate_failure(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         core.authenticate(credentials)
     assert exc_info.value.status_code == 401
+
+
+def test_create_version_history_table_executes():
+    fake_cur = mock.MagicMock()
+    create_version_history_table(fake_cur)
+    # it should at least issue a CREATE TABLE IF NOT EXISTS sensos.version_history
+    called_sql = fake_cur.execute.call_args_list[0][0][0]
+    assert "CREATE TABLE IF NOT EXISTS sensos.version_history" in called_sql
+
+
+def test_update_version_history_table_inserts_correct_values(monkeypatch):
+    fake_cur = mock.MagicMock()
+    # set predictable env vars
+    monkeypatch.setenv("VERSION_MAJOR", "1")
+    monkeypatch.setenv("VERSION_MINOR", "2")
+    monkeypatch.setenv("VERSION_PATCH", "3")
+    monkeypatch.setenv("VERSION_SUFFIX", "beta")
+    monkeypatch.setenv("GIT_COMMIT", "deadbeef")
+    monkeypatch.setenv("GIT_BRANCH", "main")
+    monkeypatch.setenv("GIT_TAG", "v1.2.3")
+    monkeypatch.setenv("GIT_DIRTY", "true")
+
+    # reload the module-level constants
+    import importlib
+    import core
+
+    importlib.reload(core)
+
+    update_version_history_table(fake_cur)
+
+    # find the INSERT call
+    insert_calls = [
+        call
+        for call in fake_cur.execute.call_args_list
+        if "INSERT INTO sensos.version_history" in call[0][0]
+    ]
+    assert len(insert_calls) == 1
+
+    sql, params = insert_calls[0][0]
+    # check SQL
+    assert "INSERT INTO sensos.version_history" in sql
+    # check that the args tuple matches our monkeypatched values
+    assert params == (
+        "1",  # VERSION_MAJOR
+        "2",  # VERSION_MINOR
+        "3",  # VERSION_PATCH
+        "beta",  # VERSION_SUFFIX
+        "deadbeef",
+        "main",
+        "v1.2.3",
+        "true",
+    )
