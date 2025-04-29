@@ -611,6 +611,10 @@ def search_for_next_available_ip(
     ip_range = ipaddress.ip_network(network, strict=False)
     used_ips = get_assigned_ips(network_id)
 
+    base = ipaddress.ip_network(network, strict=False).network_address
+    used_ips.add(base + 1)
+    used_ips.add(base + 254)
+
     base_bytes = bytearray(ip_range.network_address.packed)
     max_subnet = ip_range.num_addresses // 256
 

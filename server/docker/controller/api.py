@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Constants defining where configuration files are located.
-WG_CONFIG_DIR = Path("/config/wg_confs")
+WG_CONFIG_DIR = Path("/wireguard_config")
 CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 
 
@@ -663,7 +663,7 @@ def wireguard_status_dashboard(
     Displays an HTML dashboard showing WireGuard peer status for all active interfaces.
     Falls back to a warning if no status files are found.
     """
-    status_files = sorted(Path("/config").glob("wireguard_status_*.txt"))
+    status_files = sorted(WG_CONFIG_DIR.glob("wireguard_status_*.txt"))
     if not status_files:
         return HTMLResponse(
             """
