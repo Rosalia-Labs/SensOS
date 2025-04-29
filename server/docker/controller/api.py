@@ -620,7 +620,7 @@ def upload_hardware_profile(
     profile: HardwareProfile,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
-    profile_data = profile.dict()
+    profile_data = profile.model_dump()
     wg_ip = profile_data.pop("wg_ip")  # Extract wg_ip from profile
 
     with get_db() as conn:
