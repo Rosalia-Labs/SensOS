@@ -34,10 +34,10 @@ services:
     cap_add:
       - NET_ADMIN
     volumes:
-      - sensos_wireguard_config:/config
+      - sensos_wireguard_config:/wireguard_config
       - sensos_controller_wg_dir:/etc/wireguard
-      - /var/run/docker.sock:/var/run/docker.sock
       - sensos_api_proxy_wg_config:/api_proxy_config
+      - /var/run/docker.sock:/var/run/docker.sock
     expose:
       - "8000"
     networks:
@@ -53,7 +53,7 @@ services:
     environment:
       LOG_CONFS: "true"
     volumes:
-      - sensos_wireguard_config:/config
+      - sensos_wireguard_config:/wireguard_config
     ports:
       - "51821:51821/udp"
       - "51822:51822/udp"

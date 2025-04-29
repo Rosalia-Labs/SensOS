@@ -1,37 +1,45 @@
 #!/bin/bash
 set -euo pipefail
 
-WG_CONFIG_DIR="/config/wg_confs"
+# where your Controller drops .conf files
+WG_SOURCE_DIR="/wireguard_config"
+# where wg-quick expects them and where we write status
+WG_CONFIG_DIR="/etc/wireguard"
 
 refresh_status() {
+    # remove old status dumps
+    rm -f "$WG_CONFIG_DIR"/wireguard_status_*.txt
     for iface in $(wg show interfaces); do
-        wg show "$iface" >"/config/wireguard_status_${iface}.txt" || true
+        wg show "$iface" >"$WG_CONFIG_DIR/wireguard_status_${iface}.txt" || true
     done
 }
 
 trap 'refresh_status' SIGUSR1
 
-mkdir -p /etc/wireguard
-chown root:root /etc/wireguard
-chmod 0700 /etc/wireguard
+# ensure local config dir exists & is secure
+mkdir -p "$WG_CONFIG_DIR"
+chown root:root "$WG_CONFIG_DIR"
+chmod 0700 "$WG_CONFIG_DIR"
 
-for config_file in "$WG_CONFIG_DIR"/*.conf; do
-    [ -e "$config_file" ] || continue
+# copy & bring up every .conf
+for src in "$WG_SOURCE_DIR"/*.conf; do
+    [ -e "$src" ] || continue
+    name=$(basename "$src" .conf)
+    dest="$WG_CONFIG_DIR/$name.conf"
 
-    vpn=$(basename "$config_file" .conf)
-    dest="/etc/wireguard/$vpn.conf"
+    echo "📋 Installing config $name.conf"
+    cp "$src" "$dest" &&
+        chown root:root "$dest" &&
+        chmod 0600 "$dest"
 
-    cp "$config_file" "$dest" || true
-    chown root:root "$dest" || true
-    chmod 0600 "$dest" || true
-
-    echo "🚀 Bringing up interface $vpn"
-    wg-quick up "$vpn" || echo "⚠️ Failed to bring up $vpn"
+    echo "🚀 Bringing up interface $name"
+    wg-quick up "$name" || echo "⚠️ Failed to bring up $name"
 done
 
-rm -f /config/wireguard_status_*.txt
+# initial status dump
 refresh_status
 
+# background refresher
 (
     while true; do
         sleep 30
