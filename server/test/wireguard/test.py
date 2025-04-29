@@ -12,6 +12,7 @@ from wireguard import (
     WireGuardPeerEntry,
     WireGuardInterface,
     WireGuardConfiguration,
+    WireGuard,
 )
 
 
@@ -107,7 +108,11 @@ def test_invalid_interface_missing_privatekey(tempdir):
 
 def test_interface_end_to_end(tempdir):
     iface = WireGuardInterface(name="wg-test", config_dir=tempdir)
-    iface.set_interface(address="10.0.0.1/24", listen_port=51820)
+    iface.set_interface(
+        address="10.0.0.1/24",
+        listen_port=51820,
+        private_key="dummy_private_key",
+    )
     peer = WireGuardPeerEntry(PublicKey="somepubkey", AllowedIPs="10.0.0.2/32")
     iface.add_peer(peer)
     iface.save_config()
@@ -123,10 +128,15 @@ def test_interface_end_to_end(tempdir):
 
 def test_wireguard_configuration(tempdir):
     config = WireGuardConfiguration(config_dir=tempdir)
+    key = WireGuard().genkey()
 
     iface = config.create_interface(
-        name="wg0", address="10.0.0.1/24", listen_port=51820
+        name="wg0",
+        address="10.0.0.1/24",
+        listen_port=51820,
+        private_key=key,  # ✅ Explicit key
     )
+
     assert iface.config_file.exists()
 
     all_ifaces = config.interfaces()

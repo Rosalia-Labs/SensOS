@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
                 create_peer_location_table(cur)
                 create_initial_network(cur)
                 generate_wireguard_container_configs(cur)
-                generate_api_controller_configs(cur)
+                generate_api_proxy_wireguard_configs(cur)
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
@@ -386,6 +386,9 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
+from wireguard import WireGuardInterface
+
+
 def create_network_entry(
     cur: Cursor,
     name: str,
@@ -420,21 +423,27 @@ def create_network_entry(
     ip_range = generate_default_ip_range(name)
     proxy_ip = ip_range.network_address + 1
 
-    # 3) Use WireGuardInterface to generate & save keys + config
+    # 3) Use WireGuardInterface to create config
     wg_iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
     wg_iface.ensure_directories()
-    # Passing no private_key → set_interface will generate & persist one
-    wg_iface.set_interface(
-        address=wg_public_ip,
+
+    # Explicitly create the base interface (generates private key)
+    wg_iface.set_base_interface(
+        private_key=wg_iface.generate_private_key()
         listen_port=wg_port,
     )
-    # Persist .conf to disk
+    wg_iface.set_address(wg_public_ip)
+
+    # Validate the entry before saving
+    wg_iface.interface_entry.validate()
+
+    # Save to disk
     wg_iface.save_config(overwrite=True)
 
-    # Grab the new public key
+    # 4) Read public key
     public_key = wg_iface.get_public_key()
 
-    # 4) Insert into DB
+    # 5) Insert into DB
     cur.execute(
         """
         INSERT INTO sensos.networks
@@ -446,8 +455,8 @@ def create_network_entry(
     )
     network_id = cur.fetchone()[0]
 
-    # 5) Wire up API proxy + container configs
-    generate_api_controller_configs(cur)
+    # 6) Wire up proxy + container configs
+    generate_api_proxy_wireguard_configs(cur)
     generate_wireguard_container_configs(cur)
 
     return {
@@ -466,7 +475,7 @@ def add_peers_to_wireguard():
             generate_wireguard_container_configs(cur)
 
 
-def generate_api_controller_configs(
+def generate_api_proxy_wireguard_configs(
     cur: Cursor,
     restart_api_proxy_container: bool = True,
 ) -> None:
@@ -611,9 +620,7 @@ def search_for_next_available_ip(
     ip_range = ipaddress.ip_network(network, strict=False)
     used_ips = get_assigned_ips(network_id)
 
-    base = ipaddress.ip_network(network, strict=False).network_address
-    used_ips.add(base + 1)
-    used_ips.add(base + 254)
+    used_ips.add(ip_range.network_address + 1)
 
     base_bytes = bytearray(ip_range.network_address.packed)
     max_subnet = ip_range.num_addresses // 256

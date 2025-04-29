@@ -399,9 +399,9 @@ SERVER_IP = BASE_NET.network_address + 254  # 10.254.0.254
 
 
 @mock.patch("core.get_assigned_ips", return_value=set())
-def test_allocates_first_free_host_but_skips_infra(mock_get_assigned):
+def test_allocates_first_free_host_but_skips_proxy(mock_get_assigned):
     ip = search_for_next_available_ip(BASE_CIDR, network_id=42)
-    # .0.1 and .0.254 are reserved, so the first host handed out is .0.2
+    # .0.1 is reserved, so the first assignable is .0.2
     assert ip == BASE_NET.network_address + 2
 
 
@@ -409,17 +409,16 @@ def test_allocates_first_free_host_but_skips_infra(mock_get_assigned):
     "core.get_assigned_ips",
     return_value={BASE_NET.network_address + i for i in range(1, 10)},
 )
-def test_skips_initial_block_and_continues(mock_get_assigned):
-    # Pretend .0.1–.0.9 are already in the DB; function should still skip .0.254
+def test_skips_assigned_hosts(mock_get_assigned):
+    # .0.1–.0.9 are in use (incl. proxy), so .0.10 is the next available
     ip = search_for_next_available_ip(BASE_CIDR, network_id=42)
-    # first free in that block is .0.10
     assert ip == BASE_NET.network_address + 10
 
 
 @mock.patch("core.get_assigned_ips", return_value={SERVER_IP})
-def test_server_ip_reserved(mock_get_assigned):
-    # Even if the DB says .0.254 is free, we reserve it—so the function won't return .0.254
+def test_server_ip_not_reserved_unless_used(mock_get_assigned):
+    # Only proxy (.0.1) is reserved; .0.254 is not unless in get_assigned_ips
     ip = search_for_next_available_ip(BASE_CIDR, network_id=42)
     assert ip != SERVER_IP
-    # And since nothing else is used, it should be .0.2
+    # .0.2 is still available
     assert ip == BASE_NET.network_address + 2

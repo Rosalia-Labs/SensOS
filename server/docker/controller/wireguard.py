@@ -3,6 +3,7 @@ import stat
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 INTERFACE_ALLOWED_FIELDS = {
     "PrivateKey",
@@ -581,14 +582,13 @@ class WireGuardInterface:
     Represents a WireGuard interface configuration.
 
     Provides in-memory management of [Interface] and [Peer] entries,
-    handles loading/saving configs, and manages private key operations.
+    handles loading/saving configs, and supports setting fields manually.
 
     Attributes:
         name: Interface name (without ".conf").
         _config: WireGuardInterfaceConfigFile object tied to the interface's config file.
         interface_entry: WireGuardInterfaceEntry holding the [Interface] block.
         peer_entries: List of WireGuardPeerEntry objects for [Peer] blocks.
-        _wg: WireGuard helper for key generation and public key computation.
     """
 
     def __init__(self, name: str, config_dir: Path = Path("/etc/wireguard")):
@@ -596,167 +596,189 @@ class WireGuardInterface:
         Initializes the WireGuard interface manager.
 
         Args:
-            name: Interface name (e.g., 'wg0').
-            config_dir: Base directory where configs are stored.
+            name: Name of the interface (e.g., 'wg0').
+            config_dir: Directory where config files are stored.
         """
         self.name = name
         self._config = WireGuardInterfaceConfigFile(config_dir / f"{name}.conf")
-        self.interface_entry: WireGuardInterfaceEntry = None
+        self.interface_entry: Optional[WireGuardInterfaceEntry] = None
         self.peer_entries: list[WireGuardPeerEntry] = []
-        self._wg = WireGuard()
 
     @property
     def config_file(self) -> Path:
-        """Returns the full path to the .conf file."""
+        """
+        Returns:
+            The full path to the interface's configuration file.
+        """
         return self._config.path
 
     def interface_path(self) -> str:
-        """Returns the config file path as a string (for wg-quick and subprocesses)."""
+        """
+        Returns:
+            The config file path as a string (e.g., for wg-quick or subprocesses).
+        """
         return str(self.config_file)
 
     def config_exists(self) -> bool:
-        """Returns True if the config file exists on disk."""
+        """
+        Returns:
+            True if the config file exists on disk, False otherwise.
+        """
         return self._config.exists()
 
     def ensure_directories(self) -> None:
-        """Ensures the parent directory for the config file exists."""
+        """
+        Ensures that the parent directory of the config file exists.
+        Creates it if necessary.
+        """
         self._config.ensure_directories()
 
     def load_config(self) -> None:
         """
-        Loads the config file into memory.
+        Loads the interface and peer configuration from the config file.
 
         Raises:
-            FileNotFoundError: If the config file is missing.
-            ValueError: If the config file is invalid.
+            FileNotFoundError: If the config file does not exist.
+            ValueError: If the config file is malformed or invalid.
         """
         self.interface_entry, self.peer_entries = self._config.load()
 
     def save_config(self, overwrite: bool = False) -> None:
         """
-        Saves the current in-memory interface and peers to disk.
+        Saves the current interface and peer entries to the config file.
 
         Args:
-            overwrite: If True, overwrites an existing config file.
+            overwrite: If True, allows overwriting an existing config file.
 
         Raises:
-            FileExistsError: If config exists and overwrite=False.
-            ValueError: If no interface entry is set.
+            FileExistsError: If file exists and overwrite is False.
+            ValueError: If no interface entry is defined.
         """
         if self.interface_entry is None:
             raise ValueError("No interface set.")
         self._config.save(self.interface_entry, self.peer_entries, overwrite=overwrite)
 
+    def set_base_interface(self, private_key: str, listen_port: int) -> None:
+        """
+        Sets the base fields for the [Interface] block.
+
+        Args:
+            private_key: Base64-encoded private key string.
+            listen_port: Port number to listen on.
+        """
+        self.interface_entry = WireGuardInterfaceEntry(
+            PrivateKey=private_key,
+            ListenPort=str(listen_port),
+        )
+
+    def set_address(self, address: str) -> None:
+        """
+        Sets the Address field in the [Interface] block.
+
+        Args:
+            address: Address string, e.g., '10.0.0.1/24'.
+
+        Raises:
+            ValueError: If the interface is not initialized yet.
+        """
+        if self.interface_entry is None:
+            raise ValueError("Interface not yet initialized.")
+        self.interface_entry.fields["Address"] = address
+
+    def set_interface_options(self, options: dict[str, str]) -> None:
+        """
+        Adds or updates additional fields in the [Interface] block.
+
+        Args:
+            options: Dictionary of key-value pairs to set.
+
+        Raises:
+            ValueError: If the interface is not initialized or validation fails.
+        """
+        if self.interface_entry is None:
+            raise ValueError("Interface not yet initialized.")
+        self.interface_entry.fields.update(options)
+        self.interface_entry.validate()
+
     def set_interface(
         self,
-        address: str,
+        address: Optional[str],
         listen_port: int,
-        private_key: str = None,
+        private_key: str,
         **extra_options,
     ) -> None:
         """
-        Creates or sets the [Interface] block.
+        Fully initializes the [Interface] block with all required and optional fields.
 
         Args:
-            address: IP address and subnet (e.g., "10.0.0.1/24").
-            listen_port: UDP port number to listen on.
-            private_key: Optional private key. If not provided, a key is generated.
+            address: Optional Address field (e.g., '10.0.0.1/24').
+            listen_port: Port number to listen on.
+            private_key: Base64-encoded private key.
             extra_options: Additional key-value pairs for [Interface].
+
+        Raises:
+            ValueError: If validation of the interface block fails.
         """
         self.ensure_directories()
+        self.set_base_interface(private_key, listen_port)
 
-        if private_key is None:
-            private_key = self._wg.genkey()
+        if address:
+            self.set_address(address)
 
-        self.interface_entry = WireGuardInterfaceEntry(
-            Address=address,
-            PrivateKey=private_key,
-            ListenPort=str(listen_port),
-            **extra_options,
-        )
-
-    def add_private_key_if_missing(self) -> None:
-        """
-        Ensures that a PrivateKey exists in the interface entry.
-
-        Only generates a key if missing. Does NOT overwrite.
-
-        Raises:
-            ValueError: If no interface entry is loaded.
-        """
-        if self.interface_entry is None:
-            raise ValueError(f"Interface not loaded or set for {self.name}.")
-        if "PrivateKey" not in self.interface_entry.fields:
-            private_key = self._wg.genkey()
-            self.interface_entry.fields["PrivateKey"] = private_key
-
-    def generate_private_key(self, overwrite: bool = False) -> None:
-        """
-        Generates a new PrivateKey.
-
-        Args:
-            overwrite: If False, raises an error if key already exists.
-
-        Raises:
-            ValueError: If key exists and overwrite=False, or no interface loaded.
-        """
-        if self.interface_entry is None:
-            raise ValueError(f"Interface not loaded or set for {self.name}.")
-        if "PrivateKey" in self.interface_entry.fields and not overwrite:
-            raise ValueError(
-                f"PrivateKey already exists for {self.name}. Pass overwrite=True to replace."
-            )
-        private_key = self._wg.genkey()
-        self.interface_entry.fields["PrivateKey"] = private_key
+        if extra_options:
+            self.set_interface_options(extra_options)
 
     def get_private_key(self) -> str:
-        """Returns the PrivateKey value."""
+        """
+        Returns:
+            The current private key set in the [Interface] block.
+
+        Raises:
+            ValueError: If no interface has been loaded or initialized.
+        """
         if self.interface_entry is None:
             raise ValueError(f"Interface not loaded or set for {self.name}.")
         return self.interface_entry.fields["PrivateKey"]
 
-    def get_public_key(self) -> str:
-        """Computes and returns the corresponding PublicKey."""
-        return self._wg.pubkey(self.get_private_key())
-
-    def get_keys(self) -> tuple[str, str]:
-        """Returns (private_key, public_key) tuple."""
-        private_key = self.get_private_key()
-        public_key = self.get_public_key()
-        return (private_key, public_key)
-
-    def validate_publickey(self, testkey: str) -> bool:
+    def add_peer(self, peer: WireGuardPeerEntry) -> None:
         """
-        Validates that the given public key matches the private key.
+        Appends a new [Peer] entry to the configuration.
 
         Args:
-            testkey: Public key to test.
-
-        Returns:
-            True if matching, False otherwise.
+            peer: The WireGuardPeerEntry to add.
         """
-        return self.get_public_key() == testkey
-
-    def add_peer(self, peer: WireGuardPeerEntry) -> None:
-        """Adds a peer entry."""
         self.peer_entries.append(peer)
 
     def remove_peer(self, peer: WireGuardPeerEntry) -> None:
-        """Removes a peer entry."""
+        """
+        Removes an existing [Peer] entry from the configuration.
+
+        Args:
+            peer: The WireGuardPeerEntry to remove.
+        """
         self.peer_entries.remove(peer)
 
     def render_config(self) -> str:
-        """Renders the current in-memory config as a text string."""
+        """
+        Returns:
+            A full rendered WireGuard configuration string.
+        """
         return self._config.render_config(self.interface_entry, self.peer_entries)
 
     @property
     def interface_def(self) -> WireGuardInterfaceEntry:
-        """Returns the current [Interface] entry."""
+        """
+        Returns:
+            The current WireGuardInterfaceEntry (i.e., the [Interface] block).
+        """
         return self.interface_entry
 
     @property
     def peer_defs(self) -> list[WireGuardPeerEntry]:
-        """Returns the list of [Peer] entries."""
+        """
+        Returns:
+            A list of all [Peer] entries currently configured.
+        """
         return self.peer_entries
 
 
