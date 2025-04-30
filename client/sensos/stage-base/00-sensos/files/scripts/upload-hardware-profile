@@ -90,15 +90,12 @@ def main():
         if server_ip:
             print(f"ℹ️ Detected WireGuard API at {server_ip}:{port}")
         else:
-            print(
-                "❌ Missing --config-server and could not detect API on WireGuard network",
-                file=sys.stderr,
-            )
+            print("❌ Could not detect configuration server.", file=sys.stderr)
             return
 
-    api_password = read_api_password()
+    api_password = get_api_password(server_ip, port)
     if not api_password:
-        print("❌ API password unavailable. Aborting.", file=sys.stderr)
+        print("❌ No valid API password found. Exiting.", file=sys.stderr)
         return
 
     upload_hardware_profile(server_ip, port, api_password)

@@ -780,7 +780,7 @@ class LocationUpdateRequest(BaseModel):
     longitude: float
 
 
-@router.post("/set-peer_location")
+@router.post("/set-peer-location")
 def set_client_location(
     req: LocationUpdateRequest,
     credentials: HTTPBasicCredentials = Depends(authenticate),

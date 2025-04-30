@@ -30,6 +30,17 @@ def send_location(server_ip, port, wg_ip, api_password, latitude, longitude):
         print(f"❌ Request failed: {e}", file=sys.stderr)
 
 
+def write_local_location_conf(latitude, longitude):
+    os.makedirs("/sensos/etc", exist_ok=True)
+    path = "/sensos/etc/location.conf"
+    try:
+        with open(path, "w") as f:
+            f.write(f"LATITUDE={latitude}\nLONGITUDE={longitude}\n")
+        print(f"✅ Location written to {path}")
+    except Exception as e:
+        print(f"❌ Failed to write to {path}: {e}", file=sys.stderr)
+
+
 def main():
     arg_defs = [
         (["--latitude"], {"type": float, "help": "Latitude"}),
@@ -42,6 +53,9 @@ def main():
     if args.latitude is None or args.longitude is None:
         print("❌ Both --latitude and --longitude must be provided.", file=sys.stderr)
         return
+
+    # Always write location locally
+    write_local_location_conf(args.latitude, args.longitude)
 
     conf = read_network_conf()
     server_ip = args.config_server or conf.get("SERVER_IP")

@@ -54,16 +54,29 @@ def detect_wireguard_api():
                 k, v = line.strip().split("=", 1)
                 config[k] = v
 
-    server_ip = config.get("SERVER_IP")
     port = config.get("SERVER_PORT", DEFAULT_PORT)
+    proxy_ip = config.get("API_PROXY_IP")
+    server_ip = config.get("SERVER_IP")
 
-    url = f"http://{server_ip}:{port}/"
-    try:
-        resp = requests.get(url, timeout=2)
-        if resp.ok:
-            return server_ip, port
-    except Exception:
-        pass
+    # Try proxy IP first — internal WireGuard address
+    if proxy_ip:
+        url = f"http://{proxy_ip}:{port}/"
+        try:
+            resp = requests.get(url, timeout=2)
+            if resp.ok:
+                return proxy_ip, port
+        except Exception:
+            pass
+
+    # Fallback to public endpoint
+    if server_ip:
+        url = f"http://{server_ip}:{port}/"
+        try:
+            resp = requests.get(url, timeout=2)
+            if resp.ok:
+                return server_ip, port
+        except Exception:
+            pass
 
     return None, None
 
