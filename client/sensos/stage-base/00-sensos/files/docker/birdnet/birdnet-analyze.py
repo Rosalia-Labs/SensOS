@@ -51,6 +51,7 @@ interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
+
 with open(LABELS_PATH, "r") as f:
     LABELS = [
         f"{common} ({sci})" if "_" in line else line.strip()
@@ -59,8 +60,29 @@ with open(LABELS_PATH, "r") as f:
     ]
 
 
+def table_exists(conn, table_name):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'sensos' AND table_name = %s
+            )
+            """,
+            (table_name,),
+        )
+        return cur.fetchone()["exists"]
+
+
 def initialize_schema():
     with psycopg.connect(DB_PARAMS) as conn:
+        while True:
+            if not table_exists(conn, "audio_files"):
+                logger.info("Waiting for sensos.audio_files table to be created.")
+                time.sleep(60)
+            else:
+                break
+
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
@@ -74,7 +96,7 @@ def initialize_schema():
                 start_frame BIGINT NOT NULL,
                 zeroed BOOLEAN NOT NULL DEFAULT FALSE
                 );
-            """
+                """
             )
 
             cur.execute(
@@ -85,7 +107,7 @@ def initialize_schema():
                     rms FLOAT,
                     snr FLOAT
                 );
-            """
+                """
             )
 
             cur.execute(
@@ -94,7 +116,7 @@ def initialize_schema():
                     segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
                     spectrum JSONB
                 );
-            """
+                """
             )
 
             cur.execute(
@@ -103,7 +125,7 @@ def initialize_schema():
                     segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
                     spectrum JSONB
                 );
-            """
+                """
             )
 
             cur.execute(
@@ -112,7 +134,7 @@ def initialize_schema():
                     segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
                     vector vector(1024)
                 );
-            """
+                """
             )
 
             cur.execute(
@@ -123,7 +145,7 @@ def initialize_schema():
                     score FLOAT,
                     PRIMARY KEY (segment_id, label)
                 );
-            """
+                """
             )
 
             cur.execute(
@@ -133,7 +155,7 @@ def initialize_schema():
                     hill_number FLOAT,
                     simpson_index FLOAT
                 );
-            """
+                """
             )
 
             conn.commit()
@@ -217,6 +239,7 @@ def invoke_birdnet(audio):
 
 
 def main():
+
     initialize_schema()
 
     while True:

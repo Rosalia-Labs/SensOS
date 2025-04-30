@@ -922,7 +922,6 @@ class WireGuardService:
     def __init__(self, config_dir: Path = Path("/etc/wireguard")):
         self.config_dir = config_dir
         self.quick = WireGuardQuick()
-        self.wg = WireGuard()
 
     def list_interfaces(self) -> list[str]:
         """Return a list of interface names based on config files present."""

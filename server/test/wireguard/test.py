@@ -533,10 +533,11 @@ def test_malformed_endpoint_in_peer(tempdir):
 def test_wireguard_genkey(monkeypatch):
     def fake_run(*args, **kwargs):
         class Result:
-            stdout = b"testprivatekey\n"
+            stdout = "testprivatekey\n"
 
         return Result()
 
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/wg")
     monkeypatch.setattr("subprocess.run", fake_run)
 
     wg = WireGuard()
@@ -547,10 +548,11 @@ def test_wireguard_genkey(monkeypatch):
 def test_wireguard_pubkey(monkeypatch):
     def fake_run(*args, **kwargs):
         class Result:
-            stdout = b"testpublickey\n"
+            stdout = "testpublickey\n"
 
         return Result()
 
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/wg")
     monkeypatch.setattr("subprocess.run", fake_run)
 
     wg = WireGuard()
