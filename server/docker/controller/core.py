@@ -401,7 +401,6 @@ def create_network_entry(
     Creates a new network entry in the DB, plus on-disk WireGuard config.
     If a network with this name already exists, returns its details immediately.
     """
-    # 1) Early-return if the name already exists
     cur.execute(
         """
         SELECT id, ip_range, wg_public_ip, wg_port, wg_public_key
@@ -421,14 +420,11 @@ def create_network_entry(
             "wg_public_key": existing[4],
         }
 
-    # 2) Determine IP range and server IP
     ip_range = generate_default_ip_range(name)
 
-    # 3) Use WireGuardInterface to create config
     wg_iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
     wg_iface.ensure_directories()
 
-    # Explicitly create the base interface (generates private key)
     private_key = wg.genkey()
     wg_iface.set_interface(
         address=wg_public_ip,
@@ -436,16 +432,12 @@ def create_network_entry(
         listen_port=wg_port,
     )
 
-    # Validate the entry before saving
     wg_iface.interface_entry.validate()
 
-    # Save to disk
     wg_iface.save_config(overwrite=True)
 
-    # 4) Read public key
     public_key = wg.pubkey(private_key)
 
-    # 5) Insert into DB
     cur.execute(
         """
         INSERT INTO sensos.networks
@@ -457,7 +449,6 @@ def create_network_entry(
     )
     network_id = cur.fetchone()[0]
 
-    # 6) Wire up proxy + container configs
     generate_api_proxy_wireguard_configs(cur)
     generate_wireguard_container_configs(cur)
 
@@ -513,10 +504,11 @@ def generate_api_proxy_wireguard_configs(
             private_key=priv_key,
         )
 
+        iface.peer_defs.clear()
         iface.add_peer(
             WireGuardPeerEntry(
                 PublicKey=server_pub_key,
-                Endpoint=f"{get_container_ip('sensos-wireguard')}:{wg_port}",
+                Endpoint=f"sensos-wireguard:{wg_port}",
                 AllowedIPs=str(ip_range),
                 PersistentKeepalive="25",
             )

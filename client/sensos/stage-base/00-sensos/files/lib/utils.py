@@ -362,3 +362,40 @@ def get_registry_password_from_info(registry_info):
         file=sys.stderr,
     )
     return None
+
+
+def is_wireguard_active_from_conf(max_handshake_age=90):
+    config = read_network_conf()
+    interface = config.get("NETWORK_NAME")
+    if not interface:
+        print("❌ NETWORK_NAME not found in network.conf", file=sys.stderr)
+        return False
+
+    try:
+        output = subprocess.check_output(["wg", "show", interface], text=True)
+    except subprocess.CalledProcessError:
+        return False
+
+    for line in output.splitlines():
+        if "latest handshake:" in line:
+            if "ago" in line:
+                parts = line.strip().split()
+                try:
+                    seconds_ago = int(parts[2])
+                    return seconds_ago < max_handshake_age
+                except (IndexError, ValueError):
+                    continue
+    return False
+
+
+def get_api_base_url():
+    config = read_network_conf()
+    port = config.get("SERVER_PORT", DEFAULT_PORT)
+
+    if is_wireguard_active_from_conf() and "API_PROXY_IP" in config:
+        return f"http://{config['API_PROXY_IP']}:{port}"
+    elif "SERVER_IP" in config:
+        return f"http://{config['SERVER_IP']}:{port}"
+    else:
+        print("❌ Error: No API endpoint found in network.conf", file=sys.stderr)
+        return None

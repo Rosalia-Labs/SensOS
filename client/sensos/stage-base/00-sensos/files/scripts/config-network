@@ -737,12 +737,16 @@ def write_client_settings(args, server_wg_ip):
         print("❌ Error: Incomplete client settings. Not writing settings file.")
         return
 
+    proxy_ip = compute_api_server_wg_ip(server_wg_ip)
     settings_dir = "/sensos/etc"
     settings_file = os.path.join(settings_dir, "network.conf")
     os.makedirs(settings_dir, exist_ok=True)
 
     content = (
-        f"SERVER_IP={server_wg_ip}\nSERVER_PORT=8000\nNETWORK_NAME={args.network}\n"
+        f"SERVER_IP={server_wg_ip}\n"
+        f"SERVER_PORT=8000\n"
+        f"NETWORK_NAME={args.network}\n"
+        f"API_PROXY_IP={proxy_ip}\n"
     )
     if args.connectivity_profile:
         content += f"CONNECTIVITY_PROFILE={args.connectivity_profile}\n"
@@ -751,7 +755,6 @@ def write_client_settings(args, server_wg_ip):
         f.write(content)
 
     os.chmod(settings_file, 0o644)
-
     print(f"✅ Client settings written to {settings_file}")
 
 
