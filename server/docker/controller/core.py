@@ -429,11 +429,12 @@ def create_network_entry(
     wg_iface.ensure_directories()
 
     # Explicitly create the base interface (generates private key)
-    wg_iface.set_base_interface(
-        private_key=wg.genkey(),
+    private_key = wg.genkey()
+    wg_iface.set_interface(
+        address=wg_public_ip,
+        private_key=private_key,
         listen_port=wg_port,
     )
-    wg_iface.set_address(wg_public_ip)
 
     # Validate the entry before saving
     wg_iface.interface_entry.validate()
@@ -442,7 +443,7 @@ def create_network_entry(
     wg_iface.save_config(overwrite=True)
 
     # 4) Read public key
-    public_key = wg_iface.get_public_key()
+    public_key = wg.pubkey(private_key)
 
     # 5) Insert into DB
     cur.execute(
