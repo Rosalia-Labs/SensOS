@@ -658,18 +658,21 @@ class WireGuardInterface:
             raise ValueError("No interface set.")
         self._config.save(self.interface_entry, self.peer_entries, overwrite=overwrite)
 
-    def set_base_interface(self, private_key: str, listen_port: int) -> None:
+    def set_base_interface(
+        self, private_key: str, listen_port: Optional[int] = None
+    ) -> None:
         """
         Sets the base fields for the [Interface] block.
 
         Args:
             private_key: Base64-encoded private key string.
-            listen_port: Port number to listen on.
+            listen_port: Port number to listen on (optional).
         """
         self.interface_entry = WireGuardInterfaceEntry(
             PrivateKey=private_key,
-            ListenPort=str(listen_port),
         )
+        if listen_port is not None:
+            self.interface_entry.fields["ListenPort"] = str(listen_port)
 
     def set_address(self, address: str) -> None:
         """
@@ -703,21 +706,29 @@ class WireGuardInterface:
     def set_interface(
         self,
         address: Optional[str],
-        listen_port: int,
-        private_key: str,
+        listen_port: Optional[int] = None,
+        private_key: str = None,
         **extra_options,
     ) -> None:
         """
-        Fully initializes the [Interface] block with all required and optional fields.
+        Initializes or updates the [Interface] section for this WireGuard interface.
+
+        This method sets the basic fields required to define the interface, including the
+        private key and optional listen port and address. Additional configuration options
+        such as MTU, DNS, or custom pre/post hooks can be provided via keyword arguments.
 
         Args:
-            address: Optional Address field (e.g., '10.0.0.1/24').
-            listen_port: Port number to listen on.
-            private_key: Base64-encoded private key.
-            extra_options: Additional key-value pairs for [Interface].
+            address: Optional IP address and subnet (e.g., '10.0.0.2/32'). If not provided,
+                     the configuration must be completed before the interface can be used.
+            listen_port: Optional UDP listen port for the interface. If omitted, the OS
+                         will assign a port dynamically when the interface is brought up.
+            private_key: Required WireGuard private key in base64 format. If None, a later
+                         call must set it before saving or activating the configuration.
+            **extra_options: Optional additional fields for the [Interface] section,
+                            such as 'MTU', 'DNS', 'Table', or script hooks like 'PostUp'.
 
         Raises:
-            ValueError: If validation of the interface block fails.
+            ValueError: If `private_key` is not provided or if validation fails on any field.
         """
         self.ensure_directories()
         self.set_base_interface(private_key, listen_port)
@@ -850,8 +861,8 @@ class WireGuardConfiguration:
     def create_interface(
         self,
         name: str,
-        address: str,
-        listen_port: int,
+        address: Optional[str] = None,
+        listen_port: Optional[int] = None,
         private_key: str = None,
         save: bool = True,
         **extra_options,
@@ -861,8 +872,8 @@ class WireGuardConfiguration:
 
         Args:
             name: Interface name (without .conf extension).
-            address: IP address and subnet (e.g., "10.0.0.1/24").
-            listen_port: UDP port to listen on.
+            address: Optional IP address and subnet (e.g., "10.0.0.1/24").
+            listen_port: Optional UDP port to listen on.
             private_key: Optional private key. If not provided, a key is generated.
             save: If True (default), writes the config file immediately.
             extra_options: Additional optional settings for the [Interface] block.
