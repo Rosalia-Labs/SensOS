@@ -102,6 +102,8 @@ async def lifespan(app: FastAPI):
                 create_client_status_table(cur)
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
+                generate_api_proxy_wireguard_configs(cur, False)
+                generate_controller_wireguard_configs(cur)
                 create_initial_network(cur)
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
