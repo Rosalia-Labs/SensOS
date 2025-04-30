@@ -18,7 +18,12 @@ from typing import Tuple, Optional
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from wireguard import WireGuardService, WireGuardInterface, WireGuardPeerEntry
+from wireguard import (
+    WireGuardService,
+    WireGuardInterface,
+    WireGuardPeerEntry,
+    WireGuard,
+)
 
 # ------------------------------------------------------------
 # Logging & Configuration
@@ -95,8 +100,6 @@ async def lifespan(app: FastAPI):
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
                 create_initial_network(cur)
-                generate_wireguard_container_configs(cur)
-                generate_api_proxy_wireguard_configs(cur)
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
@@ -386,9 +389,6 @@ def register_wireguard_key_in_db(wg_ip: str, wg_public_key: str):
     return {"wg_ip": wg_ip, "wg_public_key": wg_public_key}
 
 
-from wireguard import WireGuardInterface
-
-
 def create_network_entry(
     cur: Cursor,
     name: str,
@@ -429,7 +429,7 @@ def create_network_entry(
 
     # Explicitly create the base interface (generates private key)
     wg_iface.set_base_interface(
-        private_key=wg_iface.generate_private_key()
+        private_key=wg_iface.generate_private_key(),
         listen_port=wg_port,
     )
     wg_iface.set_address(wg_public_ip)
@@ -499,43 +499,38 @@ def generate_api_proxy_wireguard_configs(
         proxy_ip = ip_range.network_address + 1
         proxy_ip_str = str(proxy_ip)
 
-        cur.execute(
-            "SELECT 1 FROM sensos.wireguard_peers WHERE network_id = %s AND wg_ip = %s",
-            (network_id, proxy_ip_str),
-        )
-        is_registered = cur.fetchone() is not None
-
-        # 2) load existing priv-key if you already have a .conf on disk
         iface = WireGuardInterface(name=name, config_dir=API_PROXY_CONFIG_DIR)
         priv_key = None
         if iface.config_exists():
             iface.load_config()
             priv_key = iface.get_private_key()
 
-        # 3) set the interface exactly once
         iface.set_interface(
             address=f"{proxy_ip_str}/32",
             listen_port=wg_port,
             private_key=priv_key,
         )
 
-        # 4) rebuild the single [Peer] block for the server
-        iface.peer_entries = [
+        iface.add_peer(
             WireGuardPeerEntry(
                 PublicKey=server_pub_key,
                 Endpoint=f"{get_container_ip('sensos-wireguard')}:{wg_port}",
                 AllowedIPs=str(ip_range),
                 PersistentKeepalive="25",
             )
-        ]
+        )
 
-        # 5) write the .conf to disk
         iface.save_config(overwrite=True)
 
-        # 6) only if Postgres had no row yet…
-        if not is_registered:
+        cur.execute(
+            "SELECT 1 FROM sensos.wireguard_peers WHERE network_id = %s AND wg_ip = %s",
+            (network_id, proxy_ip_str),
+        )
+        if cur.fetchone() is None:
             insert_peer(network_id, proxy_ip_str, note="API Proxy Container")
-            register_wireguard_key_in_db(proxy_ip_str, iface.get_public_key())
+            register_wireguard_key_in_db(
+                proxy_ip_str, WireGuard.pubkey(iface.get_private_key())
+            )
 
     if restart_api_proxy_container:
         restart_container("sensos-api-proxy")
@@ -555,23 +550,21 @@ def generate_wireguard_container_configs(
     networks = cur.fetchall()
 
     for network_id, name, ip_range_cidr, wg_port in networks:
-        net = ipaddress.ip_network(ip_range_cidr, strict=False)
-        server_ip = net.network_address + 254
-        server_ip_str = str(server_ip)
 
-        # 2) load or generate the server’s private key
         iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
-        priv_key = None
-        if iface.config_exists():
-            iface.load_config()
+        if not iface.config_exists():
+            raise RuntimeError(f"Missing WireGuard config for network '{name}'")
+        iface.load_config()
+        try:
             priv_key = iface.get_private_key()
+        except Exception as e:
+            raise RuntimeError(f"Incomplete config for network '{name}': {e}")
 
-        # 3) set address & port exactly once
-        iface.set_interface(
-            address=f"{server_ip_str}/32",
-            listen_port=wg_port,
+        iface.set_base_interface(
             private_key=priv_key,
+            listen_port=wg_port,
         )
+        iface.interface_entry.validate()
 
         # 4) rebuild peers list from the DB (clients + api-proxy)
         cur.execute(
