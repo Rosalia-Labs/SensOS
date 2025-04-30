@@ -60,6 +60,8 @@ WG_CONFIG_DIR = Path("/wireguard_config")
 API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+wg = WireGuard()
+
 
 # ------------------------------------------------------------
 # Application Lifespan
@@ -428,7 +430,7 @@ def create_network_entry(
 
     # Explicitly create the base interface (generates private key)
     wg_iface.set_base_interface(
-        private_key=WireGuard.genkey(),
+        private_key=wg.genkey(),
         listen_port=wg_port,
     )
     wg_iface.set_address(wg_public_ip)
@@ -528,7 +530,7 @@ def generate_api_proxy_wireguard_configs(
         if cur.fetchone() is None:
             insert_peer(network_id, proxy_ip_str, note="API Proxy Container")
             register_wireguard_key_in_db(
-                proxy_ip_str, WireGuard.pubkey(iface.get_private_key())
+                proxy_ip_str, wg.pubkey(iface.get_private_key())
             )
 
     if restart_api_proxy_container:
