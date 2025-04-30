@@ -421,7 +421,6 @@ def create_network_entry(
 
     # 2) Determine IP range and server IP
     ip_range = generate_default_ip_range(name)
-    proxy_ip = ip_range.network_address + 1
 
     # 3) Use WireGuardInterface to create config
     wg_iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
@@ -429,7 +428,7 @@ def create_network_entry(
 
     # Explicitly create the base interface (generates private key)
     wg_iface.set_base_interface(
-        private_key=wg_iface.generate_private_key(),
+        private_key=WireGuard.genkey(),
         listen_port=wg_port,
     )
     wg_iface.set_address(wg_public_ip)
