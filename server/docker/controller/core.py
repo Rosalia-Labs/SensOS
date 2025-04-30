@@ -220,47 +220,6 @@ def restart_container(container_name: str):
         logger.error(f"Error restarting container '{container_name}': {e}")
 
 
-def start_controller_wireguard():
-    """
-    Loads or updates WireGuard configurations from the controller configuration directory.
-
-    Scans the /etc/wireguard directory for configuration files. For each file, it either:
-      - Updates an already running WireGuard interface via wg-quick and wg syncconf.
-      - Or brings up a new WireGuard interface using wg-quick up.
-
-    Returns:
-        None
-    """
-    logger.info("🔍 Scanning /etc/wireguard for configs…")
-    svc = WireGuardService(config_dir=CONTROLLER_CONFIG_DIR)
-    quick = svc.quick
-    wg = svc.wg
-
-    for name in svc.list_interfaces():
-        iface = svc.get_interface(name)
-        try:
-            # If interface is already up, sync its config
-            wg.show(name)
-            logger.info(f"🔄 Syncing running interface {name}")
-            stripped = quick.strip(iface)
-            # write strip output to temp file and syncconf
-            with tempfile.NamedTemporaryFile("w+", delete=False) as tmp:
-                tmp.write(stripped)
-                tmp.flush()
-                wg.syncconf(name, Path(tmp.name))
-            logger.info(f"✅ Synced {name}")
-        except Exception:
-            # probably not up yet
-            logger.info(f"🚀 Bringing up new interface {name}")
-            try:
-                quick.up(iface)
-                logger.info(f"✅ Brought up {name}")
-            except Exception as e:
-                logger.error(f"❌ Failed to bring up {name}: {e}")
-
-    logger.info("✅ Controller WireGuard setup complete.")
-
-
 def resolve_hostname(value: str):
     """
     Resolves a hostname or returns the value if it is already a valid IP address.
@@ -451,6 +410,7 @@ def create_network_entry(
     network_id = cur.fetchone()[0]
 
     generate_api_proxy_wireguard_configs(cur)
+    generate_controller_wireguard_configs(cur)
     generate_wireguard_container_configs(cur)
 
     return {
@@ -463,7 +423,7 @@ def create_network_entry(
     }
 
 
-def add_peers_to_wireguard():
+def update_wireguard_configs():
     with get_db() as conn:
         with conn.cursor() as cur:
             generate_wireguard_container_configs(cur)
@@ -562,7 +522,7 @@ def generate_controller_wireguard_configs(
             priv_key = iface.get_private_key()
 
         iface.set_interface(
-            listen_port=wg_port,
+            address=f"{controller_ip_str}/32",
             private_key=priv_key,
         )
 

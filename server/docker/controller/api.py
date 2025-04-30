@@ -30,13 +30,13 @@ from core import (
     get_network_details,
     search_for_next_available_ip,
     register_wireguard_key_in_db,
-    start_controller_wireguard,
-    add_peers_to_wireguard,
+    update_wireguard_configs,
     create_network_entry,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 # Constants defining where configuration files are located.
 WG_CONFIG_DIR = Path("/wireguard_config")
@@ -137,7 +137,6 @@ def create_network(
         with get_db() as conn:
             result = create_network_entry(conn.cursor(), name, wg_public_ip, wg_port)
             logger.info(f"create_network_entry returned: {result}")
-            start_controller_wireguard()
 
         return result
 
@@ -265,6 +264,7 @@ class RegisterWireguardKeyRequest(BaseModel):
 @router.post("/register-wireguard-key")
 def register_wireguard_key(
     request: RegisterWireguardKeyRequest,
+    background_tasks: BackgroundTasks,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     """Endpoint that registers a WireGuard key for an existing peer."""
@@ -276,7 +276,7 @@ def register_wireguard_key(
             content={"error": f"Peer '{request.wg_ip}' not found."},
         )
 
-    add_peers_to_wireguard()
+    background_tasks.add_task(update_wireguard_configs)
 
     return result
 
