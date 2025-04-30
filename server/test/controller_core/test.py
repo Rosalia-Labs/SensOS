@@ -422,3 +422,34 @@ def test_server_ip_not_reserved_unless_used(mock_get_assigned):
     assert ip != SERVER_IP
     # .0.2 is still available
     assert ip == BASE_NET.network_address + 2
+
+
+@mock.patch("core.wg.genkey", return_value="PRIVATE_KEY")
+@mock.patch("core.wg.pubkey", return_value="PUBLIC_KEY")
+@mock.patch("core.WireGuardInterface")
+def test_create_network_entry_new(mock_iface_cls, mock_pubkey, mock_genkey):
+    mock_cur = mock.MagicMock()
+    mock_cur.fetchone.side_effect = [
+        None,
+        (42,),
+    ]  # First call: no network exists; second: INSERT returns ID 42
+
+    mock_iface = mock.MagicMock()
+    mock_iface_cls.return_value = mock_iface
+
+    result = core.create_network_entry(
+        cur=mock_cur,
+        name="testnet",
+        wg_public_ip="10.0.0.1",
+        wg_port=51820,
+    )
+
+    # Assertions
+    assert result["id"] == 42
+    assert result["wg_public_key"] == "PUBLIC_KEY"
+    assert mock_iface.set_interface.called
+    assert mock_iface.save_config.called
+    mock_cur.execute.assert_any_call(
+        mock.ANY,
+        ("testnet", mock.ANY, "10.0.0.1", 51820, "PUBLIC_KEY"),
+    )

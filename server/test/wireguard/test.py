@@ -528,3 +528,31 @@ def test_malformed_endpoint_in_peer(tempdir):
     config = WireGuardInterfaceConfigFile(config_file)
     interface_entry, peer_entries = config.load()
     assert peer_entries[0].endpoint == "300.300.300.300:12345"
+
+
+def test_wireguard_genkey(monkeypatch):
+    def fake_run(*args, **kwargs):
+        class Result:
+            stdout = b"testprivatekey\n"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    wg = WireGuard()
+    key = wg.genkey()
+    assert key == "testprivatekey"
+
+
+def test_wireguard_pubkey(monkeypatch):
+    def fake_run(*args, **kwargs):
+        class Result:
+            stdout = b"testpublickey\n"
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    wg = WireGuard()
+    pubkey = wg.pubkey("dummy_private_key")
+    assert pubkey == "testpublickey"
