@@ -51,16 +51,12 @@ def test_config_file_save_and_load(tempdir):
     config_file = tempdir / "wg0.conf"
     config = WireGuardInterfaceConfigFile(config_file)
 
-    # Create in-memory entries manually
     interface_entry = WireGuardInterfaceEntry(
         PrivateKey="privkey", Address="10.0.0.1/24", ListenPort="51820"
     )
     peer_entry = WireGuardPeerEntry(PublicKey="peerkey", AllowedIPs="0.0.0.0/0")
 
-    # Save to file
     config.save(interface_entry, [peer_entry])
-
-    # Now load back
     loaded_interface, loaded_peers = config.load()
 
     assert loaded_interface.private_key == "privkey"
@@ -86,7 +82,7 @@ def test_invalid_peer_missing_fields(tempdir):
 
     config = WireGuardInterfaceConfigFile(config_file)
 
-    with pytest.raises(ValueError, match="Missing required field 'PublicKey'"):
+    with pytest.raises(ValueError, match=r"Missing required.*PublicKey"):
         config.load()
 
 
@@ -102,17 +98,18 @@ def test_invalid_interface_missing_privatekey(tempdir):
 
     config = WireGuardInterfaceConfigFile(config_file)
 
-    with pytest.raises(ValueError, match="Missing required field 'PrivateKey'"):
+    with pytest.raises(ValueError, match=r"Missing required.*PrivateKey"):
         config.load()
 
 
 def test_interface_end_to_end(tempdir):
     iface = WireGuardInterface(name="wg-test", config_dir=tempdir)
-    iface.set_interface(
-        address="10.0.0.1/24",
-        listen_port=51820,
-        private_key="dummy_private_key",
+    entry = WireGuardInterfaceEntry(
+        PrivateKey="dummy_private_key",
+        Address="10.0.0.1/24",
+        ListenPort="51820",
     )
+    iface.set_interface(entry)
     peer = WireGuardPeerEntry(PublicKey="somepubkey", AllowedIPs="10.0.0.2/32")
     iface.add_peer(peer)
     iface.save_config()
@@ -130,11 +127,14 @@ def test_wireguard_configuration(tempdir):
     config = WireGuardConfiguration(config_dir=tempdir)
     key = WireGuard().genkey()
 
+    entry = WireGuardInterfaceEntry(
+        PrivateKey=key,
+        Address="10.0.0.1/24",
+        ListenPort="51820",
+    )
     iface = config.create_interface(
         name="wg0",
-        address="10.0.0.1/24",
-        listen_port=51820,
-        private_key=key,  # ✅ Explicit key
+        interface_entry=entry,
     )
 
     assert iface.config_file.exists()
@@ -274,7 +274,7 @@ def test_peer_missing_allowed_ips(tempdir):
     )
 
     config = WireGuardInterfaceConfigFile(config_file)
-    with pytest.raises(ValueError, match="Missing required field 'AllowedIPs'"):
+    with pytest.raises(ValueError, match=r"Missing required.*AllowedIPs"):
         config.load()
 
 
@@ -371,7 +371,7 @@ def test_interface_entry_missing_private_key():
         Address="10.0.0.1/24",
         ListenPort="51820",
     )
-    with pytest.raises(ValueError, match="Missing required field 'PrivateKey'"):
+    with pytest.raises(ValueError, match=r"Missing required.*PrivateKey"):
         entry.validate()
 
 
@@ -379,7 +379,7 @@ def test_peer_entry_missing_public_key():
     peer = WireGuardPeerEntry(
         AllowedIPs="0.0.0.0/0",
     )
-    with pytest.raises(ValueError, match="Missing required field 'PublicKey'"):
+    with pytest.raises(ValueError, match=r"Missing required.*PublicKey"):
         peer.validate()
 
 

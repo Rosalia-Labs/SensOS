@@ -401,8 +401,8 @@ SERVER_IP = BASE_NET.network_address + 254  # 10.254.0.254
 @mock.patch("core.get_assigned_ips", return_value=set())
 def test_allocates_first_free_host_but_skips_proxy(mock_get_assigned):
     ip = search_for_next_available_ip(BASE_CIDR, network_id=42)
-    # .0.1 is reserved, so the first assignable is .0.2
-    assert ip == BASE_NET.network_address + 2
+    # .0.1 and .0.2 are reserved, so the first assignable is .0.3
+    assert ip == BASE_NET.network_address + 3
 
 
 @mock.patch(
@@ -417,11 +417,10 @@ def test_skips_assigned_hosts(mock_get_assigned):
 
 @mock.patch("core.get_assigned_ips", return_value={SERVER_IP})
 def test_server_ip_not_reserved_unless_used(mock_get_assigned):
-    # Only proxy (.0.1) is reserved; .0.254 is not unless in get_assigned_ips
+    # Only .0.254 is assigned; .0.1 and .0.2 are reserved
     ip = search_for_next_available_ip(BASE_CIDR, network_id=42)
     assert ip != SERVER_IP
-    # .0.2 is still available
-    assert ip == BASE_NET.network_address + 2
+    assert ip == BASE_NET.network_address + 3
 
 
 @mock.patch("core.wg.genkey", return_value="PRIVATE_KEY")
