@@ -558,3 +558,39 @@ def test_wireguard_pubkey(monkeypatch):
     wg = WireGuard()
     pubkey = wg.pubkey("dummy_private_key")
     assert pubkey == "testpublickey"
+
+
+def test_save_interface_with_integer_field(tempdir):
+    config_file = tempdir / "int_field.conf"
+    config = WireGuardInterfaceConfigFile(config_file)
+
+    entry = WireGuardInterfaceEntry(
+        PrivateKey="abc123",
+        Address="10.0.0.1/24",
+        ListenPort=51820,  # ← Int instead of str
+    )
+
+    config.save(entry, [])
+
+    content = config_file.read_text()
+    assert "ListenPort = 51820" in content
+
+
+def test_save_peer_with_integer_keepalive(tempdir):
+    config_file = tempdir / "peer_with_keepalive.conf"
+    config = WireGuardInterfaceConfigFile(config_file)
+
+    interface = WireGuardInterfaceEntry(
+        PrivateKey="abc123",
+        Address="10.0.0.1/24",
+    )
+    peer = WireGuardPeerEntry(
+        PublicKey="def456",
+        AllowedIPs="0.0.0.0/0",
+        PersistentKeepalive=25,  # ← Int value
+    )
+
+    config.save(interface, [peer])
+
+    content = config_file.read_text()
+    assert "PersistentKeepalive = 25" in content

@@ -560,7 +560,8 @@ class WireGuardInterfaceConfigFile:
         interface_entry.validate()
         lines.append("[Interface]")
         for key in sorted(interface_entry.fields):
-            lines.append(f"{key} = {interface_entry.fields[key].strip()}")
+            value = str(interface_entry.fields[key]).strip()
+            lines.append(f"{key} = {value}")
         lines.append("")  # blank line after [Interface]
 
         # Write [Peer] blocks
@@ -568,7 +569,8 @@ class WireGuardInterfaceConfigFile:
             peer.validate()
             lines.append("[Peer]")
             for key in sorted(peer.fields):
-                lines.append(f"{key} = {peer.fields[key].strip()}")
+                value = str(peer.fields[key]).strip()
+                lines.append(f"{key} = {value}")
             lines.append("")  # blank line after each [Peer]
 
         if lines and lines[-1] == "":
