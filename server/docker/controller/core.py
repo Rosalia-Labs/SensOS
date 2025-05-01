@@ -55,11 +55,12 @@ GIT_DIRTY = os.getenv("GIT_DIRTY", "false")
 
 CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
 API_PROXY_CONFIG_DIR = Path("/api_proxy_config")
-WG_CONFIG_DIR = Path("/wireguard_config")
+WG_CONTAINER_CONFIG_DIR = Path("/wireguard_config")
 
 # ensure dirs
+CONTROLLER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 API_PROXY_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-WG_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+WG_CONTAINER_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 wg = WireGuard()
 wgs = WireGuardService()
@@ -103,8 +104,6 @@ async def lifespan(app: FastAPI):
                 create_client_status_table(cur)
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
-                generate_api_proxy_wireguard_configs(cur, False)
-                generate_controller_wireguard_configs(cur)
                 create_initial_network(cur)
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
@@ -385,7 +384,7 @@ def create_network_entry(
 
     ip_range = generate_default_ip_range(name)
 
-    wg_iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
+    wg_iface = WireGuardInterface(name=name, config_dir=WG_CONTAINER_CONFIG_DIR)
     wg_iface.ensure_directories()
 
     private_key = wg.genkey()
@@ -522,7 +521,7 @@ def generate_controller_wireguard_configs(
         controller_ip = ip_range.network_address + 2
         controller_ip_str = str(controller_ip)
 
-        iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
+        iface = WireGuardInterface(name=name, config_dir=CONTROLLER_CONFIG_DIR)
         priv_key = None
         if iface.config_exists():
             iface.load_config()
@@ -576,7 +575,7 @@ def generate_wireguard_container_configs(
 
     for network_id, name, ip_range_cidr, wg_port in networks:
 
-        iface = WireGuardInterface(name=name, config_dir=WG_CONFIG_DIR)
+        iface = WireGuardInterface(name=name, config_dir=WG_CONTAINER_CONFIG_DIR)
         if not iface.config_exists():
             raise RuntimeError(f"Missing WireGuard config for network '{name}'")
         iface.load_config()
@@ -924,6 +923,9 @@ def create_initial_network(cur):
     if existing_network:
         network_id = existing_network[0]
         logger.info(f"✅ Network '{network_name}' already exists (ID: {network_id}).")
+        generate_api_proxy_wireguard_configs(cur)
+        generate_controller_wireguard_configs(cur)
+        generate_wireguard_container_configs(cur)
         return network_id
 
     logger.info(f"📡 Network '{network_name}' not found. Creating...")
