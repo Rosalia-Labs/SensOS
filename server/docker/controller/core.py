@@ -391,9 +391,9 @@ def create_network_entry(
     private_key = wg.genkey()
     wg_iface.set_interface(
         WireGuardInterfaceEntry(
-            address=wg_public_ip,
-            private_key=private_key,
-            listen_port=wg_port,
+            Address=wg_public_ip,
+            PrivateKey=private_key,
+            ListenPort=wg_port,
         )
     )
 
@@ -466,9 +466,9 @@ def generate_api_proxy_wireguard_configs(
 
         iface.set_interface(
             WireGuardInterfaceEntry(
-                address=f"{proxy_ip_str}/32",
-                listen_port=wg_port,
-                private_key=priv_key,
+                Address=f"{proxy_ip_str}/32",
+                ListenPort=wg_port,
+                PrivateKey=priv_key,
             )
         )
 
@@ -530,8 +530,8 @@ def generate_controller_wireguard_configs(
 
         iface.set_interface(
             WireGuardInterfaceEntry(
-                address=f"{controller_ip_str}/32",
-                private_key=priv_key,
+                Address=f"{controller_ip_str}/32",
+                PrivateKey=priv_key,
             )
         )
 
@@ -587,8 +587,8 @@ def generate_wireguard_container_configs(
 
         iface.set_interface(
             WireGuardInterfaceEntry(
-                private_key=priv_key,
-                listen_port=wg_port,
+                PrivateKey=priv_key,
+                ListenPort=wg_port,
             )
         )
         iface.interface_entry.validate()
