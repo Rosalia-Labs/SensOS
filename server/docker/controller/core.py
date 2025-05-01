@@ -105,6 +105,7 @@ async def lifespan(app: FastAPI):
                 create_hardware_profile_table(cur)
                 create_peer_location_table(cur)
                 create_initial_network(cur)
+                verify_wireguard_keys_against_database(cur)
         logger.info("✅ Database schema and tables initialized successfully.")
     except Exception as e:
         logger.error(f"❌ Error initializing database: {e}", exc_info=True)
@@ -950,7 +951,7 @@ def create_initial_network(cur):
     return result["id"]
 
 
-def verify_wireguard_keys_against_database():
+def verify_wireguard_keys_against_database(cur):
     """
     Verifies that the public key derived from each WireGuard private key
     matches the active public key recorded in the database for each peer.
@@ -975,19 +976,17 @@ def verify_wireguard_keys_against_database():
                 priv_key = iface.get_private_key()
                 derived_pubkey = wg.pubkey(priv_key)
 
-                with get_db() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            SELECT k.wg_public_key
-                              FROM sensos.wireguard_peers p
-                              JOIN sensos.wireguard_keys k
-                                ON p.id = k.peer_id
-                             WHERE k.is_active = TRUE AND p.wg_ip = %s;
-                        """,
-                            (wg_ip,),
-                        )
-                        row = cur.fetchone()
+                cur.execute(
+                    """
+                    SELECT k.wg_public_key
+                        FROM sensos.wireguard_peers p
+                        JOIN sensos.wireguard_keys k
+                        ON p.id = k.peer_id
+                        WHERE k.is_active = TRUE AND p.wg_ip = %s;
+                """,
+                    (wg_ip,),
+                )
+                row = cur.fetchone()
 
                 if row is None:
                     logger.warning(
