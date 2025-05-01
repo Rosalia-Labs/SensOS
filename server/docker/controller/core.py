@@ -522,10 +522,11 @@ def generate_controller_wireguard_configs(
         controller_ip_str = str(controller_ip)
 
         iface = WireGuardInterface(name=name, config_dir=CONTROLLER_CONFIG_DIR)
-        priv_key = None
         if iface.config_exists():
             iface.load_config()
             priv_key = iface.get_private_key()
+        else:
+            priv_key = wg.genkey()
 
         iface.set_interface(
             WireGuardInterfaceEntry(

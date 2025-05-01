@@ -573,9 +573,6 @@ class WireGuardInterfaceConfigFile:
                 lines.append(f"{key} = {value}")
             lines.append("")  # blank line after each [Peer]
 
-        if lines and lines[-1] == "":
-            lines.pop()
-
         config_text = "\n".join(lines)
         self.path.write_text(config_text)
         os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
@@ -829,15 +826,15 @@ class WireGuardQuick:
                 f"WireGuard Quick binary '{self.wg_quick_binary}' not found in PATH"
             )
 
-    def up(self, interface: WireGuardInterface) -> None:
+    def up(self, iface: WireGuardInterface) -> None:
         subprocess.run(
-            [self.wg_quick_binary, "up", interface.interface_path()],
+            ["wg-quick", "up", iface.name],
             check=True,
         )
 
-    def down(self, interface: WireGuardInterface) -> None:
+    def down(self, iface: WireGuardInterface) -> None:
         subprocess.run(
-            [self.wg_quick_binary, "down", interface.interface_path()],
+            ["wg-quick", "down", iface.name],
             check=True,
         )
 
