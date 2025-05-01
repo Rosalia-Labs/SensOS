@@ -26,6 +26,9 @@ PEER_ALLOWED_FIELDS = {
     "PersistentKeepalive",
 }
 
+INTERFACE_REQUIRED_FIELDS = {"PrivateKey", "Address"}
+PEER_REQUIRED_FIELDS = {"PublicKey", "AllowedIPs"}
+
 
 def parse_sections(path: Path, strict: bool = True) -> dict[str, list[list[str]]]:
     section_map = {}
@@ -340,11 +343,11 @@ class WireGuardInterfaceEntry(WireGuardEntry):
         Raises:
             ValueError: If required fields are missing or unknown fields are present.
         """
-        if "PrivateKey" not in self.fields:
+        missing = INTERFACE_REQUIRED_FIELDS - self.fields.keys()
+        if missing:
             raise ValueError(
-                "Missing required field 'PrivateKey' in [Interface] section."
+                f"Missing required field(s) in [Interface] section: {', '.join(missing)}"
             )
-
         for key in self.fields:
             if key not in INTERFACE_ALLOWED_FIELDS:
                 raise ValueError(f"Unknown field '{key}' in [Interface] section.")
@@ -415,12 +418,11 @@ class WireGuardPeerEntry(WireGuardEntry):
         Raises:
             ValueError: If required fields are missing or unknown fields are present.
         """
-        for required in ("PublicKey", "AllowedIPs"):
-            if required not in self.fields:
-                raise ValueError(
-                    f"Missing required field '{required}' in [Peer] section."
-                )
-
+        missing = PEER_REQUIRED_FIELDS - self.fields.keys()
+        if missing:
+            raise ValueError(
+                f"Missing required field(s) in [Peer] section: {', '.join(missing)}"
+            )
         for key in self.fields:
             if key not in PEER_ALLOWED_FIELDS:
                 raise ValueError(f"Unknown field '{key}' in [Peer] section.")
@@ -658,86 +660,18 @@ class WireGuardInterface:
             raise ValueError("No interface set.")
         self._config.save(self.interface_entry, self.peer_entries, overwrite=overwrite)
 
-    def set_base_interface(
-        self, private_key: str, listen_port: Optional[int] = None
-    ) -> None:
+    def set_interface(self, entry: WireGuardInterfaceEntry) -> None:
         """
-        Sets the base fields for the [Interface] block.
+        Sets the WireGuard [Interface] block for this interface.
 
         Args:
-            private_key: Base64-encoded private key string.
-            listen_port: Port number to listen on (optional).
-        """
-        self.interface_entry = WireGuardInterfaceEntry(
-            PrivateKey=private_key,
-        )
-        if listen_port is not None:
-            self.interface_entry.fields["ListenPort"] = str(listen_port)
-
-    def set_address(self, address: str) -> None:
-        """
-        Sets the Address field in the [Interface] block.
-
-        Args:
-            address: Address string, e.g., '10.0.0.1/24'.
+            entry: A valid WireGuardInterfaceEntry instance.
 
         Raises:
-            ValueError: If the interface is not initialized yet.
+            ValueError: If the entry fails validation.
         """
-        if self.interface_entry is None:
-            raise ValueError("Interface not yet initialized.")
-        self.interface_entry.fields["Address"] = address
-
-    def set_interface_options(self, options: dict[str, str]) -> None:
-        """
-        Adds or updates additional fields in the [Interface] block.
-
-        Args:
-            options: Dictionary of key-value pairs to set.
-
-        Raises:
-            ValueError: If the interface is not initialized or validation fails.
-        """
-        if self.interface_entry is None:
-            raise ValueError("Interface not yet initialized.")
-        self.interface_entry.fields.update(options)
-        self.interface_entry.validate()
-
-    def set_interface(
-        self,
-        address: Optional[str],
-        listen_port: Optional[int] = None,
-        private_key: str = None,
-        **extra_options,
-    ) -> None:
-        """
-        Initializes or updates the [Interface] section for this WireGuard interface.
-
-        This method sets the basic fields required to define the interface, including the
-        private key and optional listen port and address. Additional configuration options
-        such as MTU, DNS, or custom pre/post hooks can be provided via keyword arguments.
-
-        Args:
-            address: Optional IP address and subnet (e.g., '10.0.0.2/32'). If not provided,
-                     the configuration must be completed before the interface can be used.
-            listen_port: Optional UDP listen port for the interface. If omitted, the OS
-                         will assign a port dynamically when the interface is brought up.
-            private_key: Required WireGuard private key in base64 format. If None, a later
-                         call must set it before saving or activating the configuration.
-            **extra_options: Optional additional fields for the [Interface] section,
-                            such as 'MTU', 'DNS', 'Table', or script hooks like 'PostUp'.
-
-        Raises:
-            ValueError: If `private_key` is not provided or if validation fails on any field.
-        """
-        self.ensure_directories()
-        self.set_base_interface(private_key, listen_port)
-
-        if address:
-            self.set_address(address)
-
-        if extra_options:
-            self.set_interface_options(extra_options)
+        entry.validate()
+        self.interface_entry = entry
 
     def get_private_key(self) -> str:
         """
@@ -859,35 +793,27 @@ class WireGuardConfiguration:
         return iface
 
     def create_interface(
-        self,
-        name: str,
-        address: Optional[str] = None,
-        listen_port: Optional[int] = None,
-        private_key: str = None,
-        save: bool = True,
-        **extra_options,
+        self, name: str, interface_entry: WireGuardInterfaceEntry, save: bool = True
     ) -> WireGuardInterface:
         """
-        Creates a new WireGuard interface configuration.
+        Creates a new WireGuard interface configuration using a complete [Interface] entry.
+
+        This method constructs a `WireGuardInterface` object from the provided `WireGuardInterfaceEntry`
+        and optionally saves it to disk.
 
         Args:
-            name: Interface name (without .conf extension).
-            address: Optional IP address and subnet (e.g., "10.0.0.1/24").
-            listen_port: Optional UDP port to listen on.
-            private_key: Optional private key. If not provided, a key is generated.
-            save: If True (default), writes the config file immediately.
-            extra_options: Additional optional settings for the [Interface] block.
+            name: Interface name (without the '.conf' extension).
+            interface_entry: A fully constructed `WireGuardInterfaceEntry` defining the [Interface] block.
+            save: If True (default), immediately writes the configuration to a file.
 
         Returns:
-            WireGuardInterface object.
+            A `WireGuardInterface` instance with the given configuration.
 
         Raises:
-            InterfaceAlreadyExistsError: If a config file already exists.
+            InterfaceAlreadyExistsError: If a configuration file for the interface already exists.
         """
         iface = WireGuardInterface(name, self.config_dir)
-        if iface.config_exists():
-            raise InterfaceAlreadyExistsError(f"Interface '{name}' already exists.")
-        iface.set_interface(address, listen_port, private_key, **extra_options)
+        iface.set_interface(interface_entry)
         if save:
             iface.save_config()
         return iface

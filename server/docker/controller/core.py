@@ -21,6 +21,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from wireguard import (
     WireGuardService,
     WireGuardInterface,
+    WireGuardInterfaceEntry,
     WireGuardPeerEntry,
     WireGuard,
 )
@@ -389,9 +390,11 @@ def create_network_entry(
 
     private_key = wg.genkey()
     wg_iface.set_interface(
-        address=wg_public_ip,
-        private_key=private_key,
-        listen_port=wg_port,
+        WireGuardInterfaceEntry(
+            address=wg_public_ip,
+            private_key=private_key,
+            listen_port=wg_port,
+        )
     )
 
     wg_iface.interface_entry.validate()
@@ -462,9 +465,11 @@ def generate_api_proxy_wireguard_configs(
             priv_key = iface.get_private_key()
 
         iface.set_interface(
-            address=f"{proxy_ip_str}/32",
-            listen_port=wg_port,
-            private_key=priv_key,
+            WireGuardInterfaceEntry(
+                address=f"{proxy_ip_str}/32",
+                listen_port=wg_port,
+                private_key=priv_key,
+            )
         )
 
         iface.peer_defs.clear()
@@ -524,8 +529,10 @@ def generate_controller_wireguard_configs(
             priv_key = iface.get_private_key()
 
         iface.set_interface(
-            address=f"{controller_ip_str}/32",
-            private_key=priv_key,
+            WireGuardInterfaceEntry(
+                address=f"{controller_ip_str}/32",
+                private_key=priv_key,
+            )
         )
 
         iface.peer_defs.clear()
@@ -578,9 +585,11 @@ def generate_wireguard_container_configs(
         except Exception as e:
             raise RuntimeError(f"Incomplete config for network '{name}': {e}")
 
-        iface.set_base_interface(
-            private_key=priv_key,
-            listen_port=wg_port,
+        iface.set_interface(
+            WireGuardInterfaceEntry(
+                private_key=priv_key,
+                listen_port=wg_port,
+            )
         )
         iface.interface_entry.validate()
 
