@@ -1,4 +1,5 @@
 import os
+import re
 import stat
 import shutil
 import subprocess
@@ -28,6 +29,33 @@ PEER_ALLOWED_FIELDS = {
 
 INTERFACE_REQUIRED_FIELDS = {"PrivateKey"}
 PEER_REQUIRED_FIELDS = {"PublicKey", "AllowedIPs"}
+
+BASE64_32_BYTE_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+
+
+def _is_valid_wg_key(key: str) -> bool:
+    return isinstance(key, str) and BASE64_32_BYTE_RE.fullmatch(key) is not None
+
+
+def validate_no_ip_conflicts(self) -> None:
+    """
+    Ensures that the interface IP and all peer AllowedIPs do not overlap.
+    """
+    used_ips = set()
+
+    if self.interface_def.address:
+        ip = self.interface_def.address.split("/")[0]
+        if ip in used_ips:
+            raise ValueError(f"Duplicate IP address in interface: {ip}")
+        used_ips.add(ip)
+
+    for peer in self.peer_defs:
+        allowed = peer.allowed_ips.split(",")
+        for cidr in allowed:
+            ip = cidr.strip().split("/")[0]
+            if ip in used_ips:
+                raise ValueError(f"IP conflict between interface and peer: {ip}")
+            used_ips.add(ip)
 
 
 def parse_sections(path: Path, strict: bool = True) -> dict[str, list[list[str]]]:
