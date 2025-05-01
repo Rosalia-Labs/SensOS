@@ -37,7 +37,7 @@ def _is_valid_wg_key(key: str) -> bool:
     return isinstance(key, str) and BASE64_32_BYTE_RE.fullmatch(key) is not None
 
 
-def validate_no_ip_conflicts(self) -> None:
+def _validate_no_ip_conflicts(self) -> None:
     """
     Ensures that the interface IP and all peer AllowedIPs do not overlap.
     """
@@ -58,7 +58,7 @@ def validate_no_ip_conflicts(self) -> None:
             used_ips.add(ip)
 
 
-def parse_sections(path: Path, strict: bool = True) -> dict[str, list[list[str]]]:
+def _parse_sections(path: Path, strict: bool = True) -> dict[str, list[list[str]]]:
     section_map = {}
     current_section = None
     current_lines = []
@@ -365,12 +365,6 @@ class WireGuardInterfaceEntry(WireGuardEntry):
         return self.fields.get("ListenPort")
 
     def validate(self) -> None:
-        """
-        Validates that required fields are present and all keys are allowed.
-
-        Raises:
-            ValueError: If required fields are missing or unknown fields are present.
-        """
         missing = INTERFACE_REQUIRED_FIELDS - self.fields.keys()
         if missing:
             raise ValueError(
@@ -379,6 +373,10 @@ class WireGuardInterfaceEntry(WireGuardEntry):
         for key in self.fields:
             if key not in INTERFACE_ALLOWED_FIELDS:
                 raise ValueError(f"Unknown field '{key}' in [Interface] section.")
+        if "PrivateKey" in self.fields and not _is_valid_wg_key(
+            self.fields["PrivateKey"]
+        ):
+            raise ValueError("Invalid PrivateKey format in [Interface] section.")
 
     def __repr__(self) -> str:
         """
@@ -440,12 +438,6 @@ class WireGuardPeerEntry(WireGuardEntry):
         return self.fields.get("PersistentKeepalive")
 
     def validate(self) -> None:
-        """
-        Validates that required fields are present and all keys are allowed.
-
-        Raises:
-            ValueError: If required fields are missing or unknown fields are present.
-        """
         missing = PEER_REQUIRED_FIELDS - self.fields.keys()
         if missing:
             raise ValueError(
@@ -454,6 +446,14 @@ class WireGuardPeerEntry(WireGuardEntry):
         for key in self.fields:
             if key not in PEER_ALLOWED_FIELDS:
                 raise ValueError(f"Unknown field '{key}' in [Peer] section.")
+        if "PublicKey" in self.fields and not _is_valid_wg_key(
+            self.fields["PublicKey"]
+        ):
+            raise ValueError("Invalid PublicKey format in [Peer] section.")
+        if "PresharedKey" in self.fields and not _is_valid_wg_key(
+            self.fields["PresharedKey"]
+        ):
+            raise ValueError("Invalid PresharedKey format in [Peer] section.")
 
     def __repr__(self) -> str:
         """
@@ -525,7 +525,7 @@ class WireGuardInterfaceConfigFile:
         if not self.exists():
             raise FileNotFoundError(f"Config file {self.path} does not exist.")
 
-        section_map = parse_sections(self.path, strict=strict)
+        section_map = _parse_sections(self.path, strict=strict)
 
         if "Interface" not in section_map:
             raise ValueError(f"Missing [Interface] section in {self.path}")
@@ -568,38 +568,34 @@ class WireGuardInterfaceConfigFile:
         peer_entries: list[WireGuardPeerEntry],
         overwrite: bool = False,
     ) -> None:
-        """
-        Saves a [Interface] entry and [Peer] entries to disk.
-
-        Args:
-            interface_entry: The interface entry to save.
-            peer_entries: List of peer entries to save.
-            overwrite: If False, raise an error if file already exists.
-
-        Raises:
-            FileExistsError: If the file already exists and overwrite is False.
-        """
         if self.exists() and not overwrite:
             raise FileExistsError(f"Config file already exists at {self.path}")
 
+        # Create a temporary WireGuardInterface object to run validation logic
+        wg_iface = WireGuardInterface(self.path.stem, self.path.parent)
+        wg_iface.set_interface(interface_entry)
+        for peer in peer_entries:
+            wg_iface.add_peer(peer)
+
+        # Validate IP conflicts before saving
+        _validate_no_ip_conflicts(wg_iface)
+
         lines = []
 
-        # Write [Interface] block
         interface_entry.validate()
         lines.append("[Interface]")
         for key in sorted(interface_entry.fields):
             value = str(interface_entry.fields[key]).strip()
             lines.append(f"{key} = {value}")
-        lines.append("")  # blank line after [Interface]
+        lines.append("")
 
-        # Write [Peer] blocks
         for peer in peer_entries:
             peer.validate()
             lines.append("[Peer]")
             for key in sorted(peer.fields):
                 value = str(peer.fields[key]).strip()
                 lines.append(f"{key} = {value}")
-            lines.append("")  # blank line after each [Peer]
+            lines.append("")
 
         config_text = "\n".join(lines)
         self.path.write_text(config_text)

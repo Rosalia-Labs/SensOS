@@ -2,11 +2,12 @@
 
 import os
 import shutil
-import tempfile
+import base64
 import pytest
+import tempfile
 from pathlib import Path
 from wireguard import (
-    parse_sections,
+    _parse_sections,
     WireGuardInterfaceConfigFile,
     WireGuardInterfaceEntry,
     WireGuardPeerEntry,
@@ -14,6 +15,16 @@ from wireguard import (
     WireGuardConfiguration,
     WireGuard,
 )
+
+
+def _generate_fake_wg_key() -> str:
+    """
+    Generates a fake but valid WireGuard key for testing purposes.
+
+    Returns:
+        A base64-encoded 32-byte string ending in '='.
+    """
+    return base64.b64encode(os.urandom(32)).decode("ascii")
 
 
 @pytest.fixture
@@ -26,58 +37,66 @@ def tempdir():
 
 
 def test_parse_sections_simple(tempdir):
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
+
     f = tempdir / "config.conf"
     f.write_text(
-        """
-    [Interface]
-    PrivateKey = abcdef
-    Address = 10.0.0.1/24
+        f"""
+        [Interface]
+        PrivateKey = {privkey}
+        Address = 10.0.0.1/24
 
-    [Peer]
-    PublicKey = xyz
-    AllowedIPs = 0.0.0.0/0
-    """
+        [Peer]
+        PublicKey = {pubkey}
+        AllowedIPs = 0.0.0.0/0
+        """
     )
 
-    sections = parse_sections(f)
+    sections = _parse_sections(f)
 
     assert "Interface" in sections
     assert "Peer" in sections
-    assert "PrivateKey = abcdef" in sections["Interface"][0]
-    assert "PublicKey = xyz" in sections["Peer"][0]
+    assert f"PrivateKey = {privkey}" in sections["Interface"][0]
+    assert f"PublicKey = {pubkey}" in sections["Peer"][0]
 
 
 def test_config_file_save_and_load(tempdir):
     config_file = tempdir / "wg0.conf"
     config = WireGuardInterfaceConfigFile(config_file)
 
+    private_key = _generate_fake_wg_key()
+
     interface_entry = WireGuardInterfaceEntry(
-        PrivateKey="privkey", Address="10.0.0.1/24", ListenPort="51820"
+        PrivateKey=private_key, Address="10.0.0.1/24", ListenPort="51820"
     )
-    peer_entry = WireGuardPeerEntry(PublicKey="peerkey", AllowedIPs="0.0.0.0/0")
+
+    peer_key = _generate_fake_wg_key()
+    peer_entry = WireGuardPeerEntry(PublicKey=peer_key, AllowedIPs="0.0.0.0/0")
 
     config.save(interface_entry, [peer_entry])
     loaded_interface, loaded_peers = config.load()
 
-    assert loaded_interface.private_key == "privkey"
+    assert loaded_interface.private_key == private_key
     assert loaded_interface.address == "10.0.0.1/24"
     assert loaded_interface.listen_port == "51820"
     assert len(loaded_peers) == 1
-    assert loaded_peers[0].public_key == "peerkey"
+    assert loaded_peers[0].public_key == peer_key
 
 
 def test_invalid_peer_missing_fields(tempdir):
     config_file = tempdir / "bad.conf"
+    private_key = _generate_fake_wg_key()
     config_file.write_text(
-        """
-    [Interface]
-    PrivateKey = dummy
-    Address = 10.0.0.1/24
-    ListenPort = 51820
+        f"""
+        [Interface]
+        PrivateKey = {private_key}
+        Address = 10.0.0.1/24
+        ListenPort = 51820
 
-    [Peer]
-    AllowedIPs = 0.0.0.0/0
-    """
+        [Peer]
+        AllowedIPs = 0.0.0.0/0
+        """
     )
 
     config = WireGuardInterfaceConfigFile(config_file)
@@ -104,13 +123,15 @@ def test_invalid_interface_missing_privatekey(tempdir):
 
 def test_interface_end_to_end(tempdir):
     iface = WireGuardInterface(name="wg-test", config_dir=tempdir)
+    privkey = _generate_fake_wg_key()
     entry = WireGuardInterfaceEntry(
-        PrivateKey="dummy_private_key",
+        PrivateKey=f"{privkey}",
         Address="10.0.0.1/24",
         ListenPort="51820",
     )
     iface.set_interface(entry)
-    peer = WireGuardPeerEntry(PublicKey="somepubkey", AllowedIPs="10.0.0.2/32")
+    pubkey = _generate_fake_wg_key()
+    peer = WireGuardPeerEntry(PublicKey=f"{pubkey}", AllowedIPs="10.0.0.2/32")
     iface.add_peer(peer)
     iface.save_config()
 
@@ -149,15 +170,17 @@ def test_wireguard_configuration(tempdir):
 
 def test_minimal_valid_config(tempdir):
     config_file = tempdir / "good.conf"
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
+        f"""
         [Interface]
-        PrivateKey = ABCDEF
+        PrivateKey = {privkey}
         Address = 10.0.0.1/24
         ListenPort = 51820
 
         [Peer]
-        PublicKey = PEERKEY
+        PublicKey = {pubkey}
         AllowedIPs = 0.0.0.0/0
         """
     )
@@ -165,11 +188,11 @@ def test_minimal_valid_config(tempdir):
     config = WireGuardInterfaceConfigFile(config_file)
     interface_entry, peer_entries = config.load()
 
-    assert interface_entry.private_key == "ABCDEF"
+    assert interface_entry.private_key == privkey
     assert interface_entry.address == "10.0.0.1/24"
     assert interface_entry.listen_port == "51820"
     assert len(peer_entries) == 1
-    assert peer_entries[0].public_key == "PEERKEY"
+    assert peer_entries[0].public_key == pubkey
 
 
 def test_blank_file(tempdir):
@@ -183,12 +206,13 @@ def test_blank_file(tempdir):
 
 def test_missing_interface_section(tempdir):
     config_file = tempdir / "no_interface.conf"
+    pubkey = _generate_fake_wg_key()
     config_file.write_text(
+        f"""
+        [Peer]
+        PublicKey = {pubkey}
+        AllowedIPs = 0.0.0.0/0
         """
-    [Peer]
-    PublicKey = PEERKEY
-    AllowedIPs = 0.0.0.0/0
-    """
     )
 
     config = WireGuardInterfaceConfigFile(config_file)
@@ -198,16 +222,17 @@ def test_missing_interface_section(tempdir):
 
 def test_unknown_section(tempdir):
     config_file = tempdir / "unknown_section.conf"
+    privkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
-    [Interface]
-    PrivateKey = ABCDEF
-    Address = 10.0.0.1/24
-    ListenPort = 51820
+        f"""
+        [Interface]
+        PrivateKey = {privkey}
+        Address = 10.0.0.1/24
+        ListenPort = 51820
 
-    [UnknownSection]
-    Foo = Bar
-    """
+        [UnknownSection]
+        Foo = Bar
+        """
     )
 
     config = WireGuardInterfaceConfigFile(config_file)
@@ -217,15 +242,17 @@ def test_unknown_section(tempdir):
 
 def test_duplicate_interface_sections(tempdir):
     config_file = tempdir / "duplicate_interface.conf"
+    privkey1 = _generate_fake_wg_key()
+    privkey2 = _generate_fake_wg_key()
     config_file.write_text(
-        """
+        f"""
         [Interface]
-        PrivateKey = ABCDEF
+        PrivateKey = {privkey1}
         Address = 10.0.0.1/24
         ListenPort = 51820
 
         [Interface]
-        PrivateKey = XYZ
+        PrivateKey = {privkey2}
         Address = 10.0.0.1/24
         ListenPort = 51820
         """
@@ -240,18 +267,20 @@ def test_duplicate_interface_sections(tempdir):
 
 def test_unknown_field_in_peer(tempdir):
     config_file = tempdir / "bad_field.conf"
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
-    [Interface]
-    PrivateKey = ABCDEF
-    Address = 10.0.0.1/24
-    ListenPort = 51820
+        f"""
+        [Interface]
+        PrivateKey = {privkey}
+        Address = 10.0.0.1/24
+        ListenPort = 51820
 
-    [Peer]
-    PublicKey = PEERKEY
-    AllowedIPs = 0.0.0.0/0
-    Foo = Bar
-    """
+        [Peer]
+        PublicKey = {pubkey}
+        AllowedIPs = 0.0.0.0/0
+        Foo = Bar
+        """
     )
 
     config = WireGuardInterfaceConfigFile(config_file)
@@ -261,16 +290,18 @@ def test_unknown_field_in_peer(tempdir):
 
 def test_peer_missing_allowed_ips(tempdir):
     config_file = tempdir / "missing_allowedips.conf"
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
-    [Interface]
-    PrivateKey = ABCDEF
-    Address = 10.0.0.1/24
-    ListenPort = 51820
+        f"""
+        [Interface]
+        PrivateKey = {privkey}
+        Address = 10.0.0.1/24
+        ListenPort = 51820
 
-    [Peer]
-    PublicKey = PEERKEY
-    """
+        [Peer]
+        PublicKey = {pubkey}
+        """
     )
 
     config = WireGuardInterfaceConfigFile(config_file)
@@ -280,90 +311,96 @@ def test_peer_missing_allowed_ips(tempdir):
 
 def test_line_outside_section_strict(tempdir):
     config_file = tempdir / "outside_line.conf"
+    privkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
-    This is a bad line
+        f"""
+        This is a bad line
 
-    [Interface]
-    PrivateKey = ABCDEF
-    Address = 10.0.0.1/24
-    ListenPort = 51820
-    """
+        [Interface]
+        PrivateKey = {privkey}
+        Address = 10.0.0.1/24
+        ListenPort = 51820
+        """
     )
 
     with pytest.raises(ValueError, match="Line outside any section"):
-        parse_sections(config_file, strict=True)
+        _parse_sections(config_file, strict=True)
 
 
 def test_line_outside_section_non_strict(tempdir):
     config_file = tempdir / "outside_line_nonstrict.conf"
+    privkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
-    This is a bad line
+        f"""
+        This is a bad line
 
-    [Interface]
-    PrivateKey = ABCDEF
-    Address = 10.0.0.1/24
-    ListenPort = 51820
-    """
+        [Interface]
+        PrivateKey = {privkey}
+        Address = 10.0.0.1/24
+        ListenPort = 51820
+        """
     )
 
-    section_map = parse_sections(config_file, strict=False)
+    section_map = _parse_sections(config_file, strict=False)
     assert "Interface" in section_map
-    assert any("PrivateKey = ABCDEF" in l for l in section_map["Interface"])
+    assert any(f"PrivateKey = {privkey}" in l for l in section_map["Interface"])
 
 
 def test_wireguard_interface_entry_from_lines_and_to_lines():
+    privkey = _generate_fake_wg_key()
     lines = [
-        "PrivateKey = abc123",
+        f"PrivateKey = {privkey}",
         "Address = 10.0.0.1/24",
         "ListenPort = 51820",
     ]
     entry = WireGuardInterfaceEntry.from_lines(lines)
-    assert entry.private_key == "abc123"
+    assert entry.private_key == privkey
     assert entry.address == "10.0.0.1/24"
     assert entry.listen_port == "51820"
 
     output_lines = entry.to_lines()
     assert output_lines[0] == "[Interface]"
-    assert "PrivateKey = abc123" in output_lines
+    assert f"PrivateKey = {privkey}" in output_lines
     assert "Address = 10.0.0.1/24" in output_lines
     assert "ListenPort = 51820" in output_lines
 
 
 def test_wireguard_peer_entry_from_lines_and_to_lines():
+    pubkey = _generate_fake_wg_key()
     lines = [
-        "PublicKey = def456",
+        f"PublicKey = {pubkey}",
         "AllowedIPs = 0.0.0.0/0",
         "Endpoint = example.com:51820",
     ]
     peer = WireGuardPeerEntry.from_lines(lines)
-    assert peer.public_key == "def456"
+    assert peer.public_key == pubkey
     assert peer.allowed_ips == "0.0.0.0/0"
     assert peer.endpoint == "example.com:51820"
 
     output_lines = peer.to_lines()
     assert output_lines[0] == "[Peer]"
-    assert "PublicKey = def456" in output_lines
+    assert f"PublicKey = {pubkey}" in output_lines
     assert "AllowedIPs = 0.0.0.0/0" in output_lines
     assert "Endpoint = example.com:51820" in output_lines
 
 
 def test_interface_entry_validation_success():
+    privkey = _generate_fake_wg_key()
     entry = WireGuardInterfaceEntry(
-        PrivateKey="abc123",
+        PrivateKey=privkey,
         Address="10.0.0.1/24",
         ListenPort="51820",
     )
-    entry.validate()  # Should not raise
+    entry.validate()
 
 
 def test_peer_entry_validation_success():
+    pubkey = _generate_fake_wg_key()
     peer = WireGuardPeerEntry(
-        PublicKey="def456",
+        PublicKey=pubkey,
         AllowedIPs="0.0.0.0/0",
     )
-    peer.validate()  # Should not raise
+    peer.validate()
 
 
 def test_interface_entry_missing_private_key():
@@ -384,8 +421,9 @@ def test_peer_entry_missing_public_key():
 
 
 def test_peer_entry_unknown_field():
+    pubkey = _generate_fake_wg_key()
     peer = WireGuardPeerEntry(
-        PublicKey="def456",
+        PublicKey=pubkey,
         AllowedIPs="0.0.0.0/0",
         UnknownField="oops",
     )
@@ -396,37 +434,41 @@ def test_peer_entry_unknown_field():
 
 
 def test_entries_equality():
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     entry1 = WireGuardInterfaceEntry(
-        PrivateKey="abc123",
+        PrivateKey=privkey,
         Address="10.0.0.1/24",
         ListenPort="51820",
     )
     entry2 = WireGuardInterfaceEntry(
-        PrivateKey="abc123",
+        PrivateKey=privkey,
         Address="10.0.0.1/24",
         ListenPort="51820",
     )
     assert entry1 == entry2
 
     peer1 = WireGuardPeerEntry(
-        PublicKey="def456",
+        PublicKey=pubkey,
         AllowedIPs="0.0.0.0/0",
     )
     peer2 = WireGuardPeerEntry(
-        PublicKey="def456",
+        PublicKey=pubkey,
         AllowedIPs="0.0.0.0/0",
     )
     assert peer1 == peer2
 
 
 def test_entries_inequality_different_section():
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     entry = WireGuardInterfaceEntry(
-        PrivateKey="abc123",
+        PrivateKey=privkey,
         Address="10.0.0.1/24",
         ListenPort="51820",
     )
     peer = WireGuardPeerEntry(
-        PublicKey="abc123",
+        PublicKey=pubkey,
         AllowedIPs="10.0.0.0/24",
     )
     assert entry != peer
@@ -435,10 +477,11 @@ def test_entries_inequality_different_section():
 def test_whitespace_in_section_name(tempdir):
     """Test that a section name with spaces is treated as missing [Interface]."""
     config_file = tempdir / "bad_section.conf"
+    privkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
+        f"""
         [The Interface]
-        PrivateKey = ABCDEF
+        PrivateKey = {privkey}
         Address = 10.0.0.1/24
         ListenPort = 51820
         """
@@ -450,36 +493,38 @@ def test_whitespace_in_section_name(tempdir):
 
 def test_whitespace_in_key_or_value(tempdir):
     """Test that whitespace in key or value does not crash, but is preserved."""
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     config_file = tempdir / "whitespace_key_value.conf"
     config_file.write_text(
-        """
+        f"""
         [Interface]
-        PrivateKey    =    ABCDEF
+        PrivateKey    =    {privkey}
         Address    =    10.0.0.1/24
         ListenPort   =   51820
 
         [Peer]
-        PublicKey   =   PEERKEY
+        PublicKey   =   {pubkey}
         AllowedIPs  =   0.0.0.0/0
         """
     )
     config = WireGuardInterfaceConfigFile(config_file)
     interface_entry, peer_entries = config.load()
 
-    assert interface_entry.private_key == "ABCDEF"
+    assert interface_entry.private_key == privkey
     assert interface_entry.address == "10.0.0.1/24"
     assert interface_entry.listen_port == "51820"
-    assert peer_entries[0].public_key == "PEERKEY"
+    assert peer_entries[0].public_key == pubkey
     assert peer_entries[0].allowed_ips == "0.0.0.0/0"
 
 
 def test_malformed_ip_in_interface(tempdir):
-    """Test that a malformed Address does not raise (currently no IP format checking)."""
     config_file = tempdir / "bad_ip.conf"
+    privkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
+        f"""
         [Interface]
-        PrivateKey = ABCDEF
+        PrivateKey = {privkey}
         Address = not_an_ip
         ListenPort = 51820
         """
@@ -490,17 +535,18 @@ def test_malformed_ip_in_interface(tempdir):
 
 
 def test_malformed_ip_in_peer(tempdir):
-    """Test that a malformed AllowedIPs does not raise (currently no IP format checking)."""
     config_file = tempdir / "bad_peer_ip.conf"
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
+        f"""
         [Interface]
-        PrivateKey = ABCDEF
+        PrivateKey = {privkey}
         Address = 10.0.0.1/24
         ListenPort = 51820
 
         [Peer]
-        PublicKey = PEERKEY
+        PublicKey = {pubkey}
         AllowedIPs = 999.999.999.999/99
         """
     )
@@ -510,17 +556,18 @@ def test_malformed_ip_in_peer(tempdir):
 
 
 def test_malformed_endpoint_in_peer(tempdir):
-    """Test that a malformed Endpoint does not raise (currently no format checking)."""
     config_file = tempdir / "bad_endpoint.conf"
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
     config_file.write_text(
-        """
+        f"""
         [Interface]
-        PrivateKey = ABCDEF
+        PrivateKey = {privkey}
         Address = 10.0.0.1/24
         ListenPort = 51820
 
         [Peer]
-        PublicKey = PEERKEY
+        PublicKey = {pubkey}
         AllowedIPs = 0.0.0.0/0
         Endpoint = 300.300.300.300:12345
         """
@@ -564,10 +611,11 @@ def test_save_interface_with_integer_field(tempdir):
     config_file = tempdir / "int_field.conf"
     config = WireGuardInterfaceConfigFile(config_file)
 
+    privkey = _generate_fake_wg_key()
     entry = WireGuardInterfaceEntry(
-        PrivateKey="abc123",
+        PrivateKey=privkey,
         Address="10.0.0.1/24",
-        ListenPort=51820,  # ← Int instead of str
+        ListenPort=51820,  # Int instead of str is okay
     )
 
     config.save(entry, [])
@@ -580,12 +628,15 @@ def test_save_peer_with_integer_keepalive(tempdir):
     config_file = tempdir / "peer_with_keepalive.conf"
     config = WireGuardInterfaceConfigFile(config_file)
 
+    privkey = _generate_fake_wg_key()
+    pubkey = _generate_fake_wg_key()
+
     interface = WireGuardInterfaceEntry(
-        PrivateKey="abc123",
+        PrivateKey=privkey,
         Address="10.0.0.1/24",
     )
     peer = WireGuardPeerEntry(
-        PublicKey="def456",
+        PublicKey=pubkey,
         AllowedIPs="0.0.0.0/0",
         PersistentKeepalive=25,  # ← Int value
     )
