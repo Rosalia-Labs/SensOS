@@ -26,7 +26,7 @@ PEER_ALLOWED_FIELDS = {
     "PersistentKeepalive",
 }
 
-INTERFACE_REQUIRED_FIELDS = {"PrivateKey", "Address"}
+INTERFACE_REQUIRED_FIELDS = {"PrivateKey"}
 PEER_REQUIRED_FIELDS = {"PublicKey", "AllowedIPs"}
 
 

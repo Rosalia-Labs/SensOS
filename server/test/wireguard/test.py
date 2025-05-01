@@ -594,3 +594,12 @@ def test_save_peer_with_integer_keepalive(tempdir):
 
     content = config_file.read_text()
     assert "PersistentKeepalive = 25" in content
+
+
+def test_interface_entry_missing_address():
+    entry = WireGuardInterfaceEntry(
+        PrivateKey="abc123",
+        ListenPort="51820",
+    )
+    with pytest.raises(ValueError, match=r"Missing required.*Address"):
+        entry.validate()
