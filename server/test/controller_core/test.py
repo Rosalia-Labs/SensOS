@@ -452,3 +452,45 @@ def test_create_network_entry_new(mock_iface_cls, mock_pubkey, mock_genkey):
         mock.ANY,
         ("testnet", mock.ANY, "10.0.0.1", 51820, "PUBLIC_KEY"),
     )
+
+
+@mock.patch("core.get_db")
+@mock.patch("core.wg.pubkey")
+@mock.patch("core.WireGuardInterface")
+def test_verify_wireguard_keys_against_database(
+    mock_iface_cls, mock_pubkey, mock_get_db
+):
+    # Mock derived public key
+    mock_pubkey.return_value = "DERIVED_PUBLIC_KEY"
+
+    # Mock WireGuardInterface instance
+    mock_iface = mock.MagicMock()
+    mock_iface.interface_entry.Address = "10.0.0.2/32"
+    mock_iface.get_private_key.return_value = "PRIVATE_KEY"
+    mock_iface_cls.return_value = mock_iface
+
+    # Simulated file
+    fake_file = mock.MagicMock()
+    fake_file.stem = "iface1"
+
+    # Patch Path.glob method across all Path instances
+    with mock.patch.object(core.Path, "glob", return_value=[fake_file]):
+        # Setup DB cursor to return expected public key
+        mock_cursor = mock.MagicMock()
+        mock_cursor.fetchone.return_value = ("DERIVED_PUBLIC_KEY",)
+        mock_conn = mock.MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_get_db.return_value.__enter__.return_value = mock_conn
+
+        # Run the function
+        core.verify_wireguard_keys_against_database()
+
+        # Check key derivation
+        assert mock_pubkey.call_count == 3
+        mock_pubkey.assert_has_calls([mock.call("PRIVATE_KEY")] * 3)
+        assert mock_cursor.execute.call_count == 3
+        for call_args in mock_cursor.execute.call_args_list:
+            sql, params = call_args[0]
+            assert "FROM sensos.wireguard_peers" in sql
+            assert params == ("10.0.0.2",)
+        assert mock_cursor.execute.call_args[0][1] == ("10.0.0.2",)

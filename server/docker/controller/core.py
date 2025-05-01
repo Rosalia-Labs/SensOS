@@ -948,3 +948,65 @@ def create_initial_network(cur):
     result = create_network_entry(cur, network_name, wg_public_ip, wg_port)
     logger.info(f"✅ Created network '{network_name}' (ID: {result['id']}).")
     return result["id"]
+
+
+def verify_wireguard_keys_against_database():
+    """
+    Verifies that the public key derived from each WireGuard private key
+    matches the active public key recorded in the database for each peer.
+
+    Logs a warning for any mismatches.
+    """
+    logger.info(
+        "🔍 Verifying WireGuard key consistency across config files and database..."
+    )
+    mismatches = 0
+
+    for config_dir in [
+        CONTROLLER_CONFIG_DIR,
+        API_PROXY_CONFIG_DIR,
+        WG_CONTAINER_CONFIG_DIR,
+    ]:
+        for file in config_dir.glob("*.conf"):
+            try:
+                iface = WireGuardInterface(name=file.stem, config_dir=config_dir)
+                iface.load_config()
+                wg_ip = iface.interface_entry.Address.split("/")[0]
+                priv_key = iface.get_private_key()
+                derived_pubkey = wg.pubkey(priv_key)
+
+                with get_db() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            SELECT k.wg_public_key
+                              FROM sensos.wireguard_peers p
+                              JOIN sensos.wireguard_keys k
+                                ON p.id = k.peer_id
+                             WHERE k.is_active = TRUE AND p.wg_ip = %s;
+                        """,
+                            (wg_ip,),
+                        )
+                        row = cur.fetchone()
+
+                if row is None:
+                    logger.warning(
+                        f"⚠️ No expected public key in DB for IP {wg_ip} (from {file})"
+                    )
+                    continue
+
+                expected_pubkey = row[0]
+                if derived_pubkey != expected_pubkey:
+                    logger.warning(
+                        f"❌ Mismatch for {wg_ip}: derived {derived_pubkey}, expected {expected_pubkey}"
+                    )
+                    mismatches += 1
+                else:
+                    logger.info(f"✅ Match for {wg_ip}: {derived_pubkey}")
+            except Exception as e:
+                logger.error(f"❌ Error verifying {file}: {e}")
+
+    if mismatches == 0:
+        logger.info("🎉 All WireGuard keys match the database.")
+    else:
+        logger.warning(f"⚠️ {mismatches} mismatches found in WireGuard keys.")
