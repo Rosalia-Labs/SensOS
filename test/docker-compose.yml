@@ -1,0 +1,30 @@
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: sensos-test-server
+    networks:
+      - sensos-test-net
+    tty: true
+    stdin_open: true
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: sensos-test-client
+    networks:
+      - sensos-test-net
+    tty: true
+    stdin_open: true
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  sensos-test-net:
+    driver: bridge
