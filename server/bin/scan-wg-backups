@@ -2,7 +2,6 @@
 
 import re
 import tarfile
-import tempfile
 import subprocess
 from pathlib import Path
 from collections import defaultdict
@@ -12,14 +11,18 @@ KEY_RE = re.compile(r"^PrivateKey\s*=\s*(\S+)", re.MULTILINE)
 DATE_RE = re.compile(r"_(\d{8}_\d{6})\.tgz$")
 
 
-def extract_date_from_filename(filename: str) -> datetime:
+def extract_date_from_filename(filename: str) -> datetime | None:
     match = DATE_RE.search(filename)
     if match:
         return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
     return None
 
 
-def extract_private_key_from_tgz(tgz_path: Path) -> str | None:
+def extract_keys_from_tgz(tgz_path: Path) -> list[tuple[str, str]]:
+    """
+    Returns a list of (private_key, network_name) tuples found in *.conf files inside the archive.
+    """
+    results = []
     with tarfile.open(tgz_path, "r:gz") as tar:
         for member in tar.getmembers():
             if member.isfile() and member.name.endswith(".conf"):
@@ -28,11 +31,13 @@ def extract_private_key_from_tgz(tgz_path: Path) -> str | None:
                     content = f.read().decode("utf-8", errors="ignore")
                     match = KEY_RE.search(content)
                     if match:
-                        return match.group(1)
-    return None
+                        privkey = match.group(1)
+                        network_name = Path(member.name).stem
+                        results.append((privkey, network_name))
+    return results
 
 
-def generate_public_key(private_key: str) -> str | None:
+def generate_public_key(private_key: str) -> str:
     try:
         result = subprocess.run(
             ["wg", "pubkey"],
@@ -42,36 +47,45 @@ def generate_public_key(private_key: str) -> str | None:
             check=True,
         )
         return result.stdout.decode().strip()
-    except Exception as e:
-        return None
+    except Exception:
+        return "(wg missing)"
 
 
 def main():
-    backup_dir = Path(".")  # Or set to desired directory
+    backup_dir = Path(".")
     files = sorted(backup_dir.glob("wg_*.tgz"))
 
-    key_info = defaultdict(list)  # private_key -> list of (date, file)
+    key_info = defaultdict(list)  # (private_key, network_name) → list of dates
 
     for f in files:
         date = extract_date_from_filename(f.name)
         if not date:
             continue
 
-        privkey = extract_private_key_from_tgz(f)
-        if not privkey:
-            continue
+        entries = extract_keys_from_tgz(f)
+        for privkey, network_name in entries:
+            key_info[(privkey, network_name)].append(date)
 
-        key_info[privkey].append(date)
-
-    print(f"{'FIRST_DATE':<20} {'LAST_DATE':<20} {'PRIVATE_KEY':<45} {'PUBLIC_KEY'}")
-    print("-" * 120)
-
-    for privkey, dates in sorted(key_info.items(), key=lambda x: min(x[1])):
+    # Prepare sorted output entries
+    output_rows = []
+    for (privkey, network_name), dates in key_info.items():
         first = min(dates)
         last = max(dates)
-        pubkey = generate_public_key(privkey) or "(wg missing)"
+        pubkey = generate_public_key(privkey)
+        output_rows.append((network_name, last, first, pubkey, privkey))
+
+    # Sort by: network name, last date DESC, first date, public key
+    output_rows.sort(key=lambda x: (x[0], -x[1].timestamp(), x[2], x[3]))
+
+    # Print results
+    print(
+        f"{'NETWORK':<20} {'FIRST_DATE':<20} {'LAST_DATE':<20} {'PRIVATE_KEY':<45} {'PUBLIC_KEY'}"
+    )
+    print("-" * 140)
+
+    for network_name, last, first, pubkey, privkey in output_rows:
         print(
-            f"{first:%Y-%m-%d %H:%M:%S}  {last:%Y-%m-%d %H:%M:%S}  {privkey:<45} {pubkey}"
+            f"{network_name:<20} {first:%Y-%m-%d %H:%M:%S}  {last:%Y-%m-%d %H:%M:%S}  {privkey:<45} {pubkey}"
         )
 
 
