@@ -374,6 +374,27 @@ def create_network_entry(
     )
     existing = cur.fetchone()
     if existing:
+        # Validate against existing private key
+        iface = WireGuardInterface(name=name, config_dir=WG_CONTAINER_CONFIG_DIR)
+        if not iface.config_exists():
+            raise RuntimeError(
+                f"⚠️ Existing network '{name}' found in DB but missing config file at {iface.config_path}. "
+                "Refusing to regenerate key to prevent mismatch."
+            )
+
+        iface.load_config()
+        on_disk_priv = iface.get_private_key()
+        derived_pub = wg.pubkey(on_disk_priv)
+        db_pub = existing[4]
+
+        if derived_pub != db_pub:
+            raise RuntimeError(
+                f"❌ Existing network '{name}' has mismatched public key:\n"
+                f"   - DB:      {db_pub}\n"
+                f"   - Derived: {derived_pub}\n"
+                f"   Refusing to continue. Restore correct private key or fix DB."
+            )
+
         return {
             "id": existing[0],
             "name": name,

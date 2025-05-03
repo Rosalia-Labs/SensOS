@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+
+import re
+import tarfile
+import tempfile
+import subprocess
+from pathlib import Path
+from collections import defaultdict
+from datetime import datetime
+
+KEY_RE = re.compile(r"^PrivateKey\s*=\s*(\S+)", re.MULTILINE)
+DATE_RE = re.compile(r"_(\d{8}_\d{6})\.tgz$")
+
+
+def extract_date_from_filename(filename: str) -> datetime:
+    match = DATE_RE.search(filename)
+    if match:
+        return datetime.strptime(match.group(1), "%Y%m%d_%H%M%S")
+    return None
+
+
+def extract_private_key_from_tgz(tgz_path: Path) -> str | None:
+    with tarfile.open(tgz_path, "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.isfile() and member.name.endswith(".conf"):
+                f = tar.extractfile(member)
+                if f:
+                    content = f.read().decode("utf-8", errors="ignore")
+                    match = KEY_RE.search(content)
+                    if match:
+                        return match.group(1)
+    return None
+
+
+def generate_public_key(private_key: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["wg", "pubkey"],
+            input=private_key.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        return result.stdout.decode().strip()
+    except Exception as e:
+        return None
+
+
+def main():
+    backup_dir = Path(".")  # Or set to desired directory
+    files = sorted(backup_dir.glob("wg_*.tgz"))
+
+    key_info = defaultdict(list)  # private_key -> list of (date, file)
+
+    for f in files:
+        date = extract_date_from_filename(f.name)
+        if not date:
+            continue
+
+        privkey = extract_private_key_from_tgz(f)
+        if not privkey:
+            continue
+
+        key_info[privkey].append(date)
+
+    print(f"{'FIRST_DATE':<20} {'LAST_DATE':<20} {'PRIVATE_KEY':<45} {'PUBLIC_KEY'}")
+    print("-" * 120)
+
+    for privkey, dates in sorted(key_info.items(), key=lambda x: min(x[1])):
+        first = min(dates)
+        last = max(dates)
+        pubkey = generate_public_key(privkey) or "(wg missing)"
+        print(
+            f"{first:%Y-%m-%d %H:%M:%S}  {last:%Y-%m-%d %H:%M:%S}  {privkey:<45} {pubkey}"
+        )
+
+
+if __name__ == "__main__":
+    main()
