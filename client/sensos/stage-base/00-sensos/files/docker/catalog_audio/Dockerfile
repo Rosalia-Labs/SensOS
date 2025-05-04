@@ -17,5 +17,5 @@ COPY requirements.txt .
 
 RUN pip install -r requirements.txt
 
-COPY scan_files.py .
-CMD ["python", "scan_files.py"]
+COPY catalog_audio.py .
+CMD ["python", "catalog_audio.py"]

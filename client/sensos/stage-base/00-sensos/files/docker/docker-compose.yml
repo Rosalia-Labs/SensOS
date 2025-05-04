@@ -15,9 +15,9 @@ services:
       timeout: 5s
       retries: 5
 
-  sensos-client-scan-files:
-    image: sensos-client-scan-files
-    container_name: sensos-client-scan-files
+  sensos-client-catalog-audio:
+    image: sensos-client-catalog-audio
+    container_name: sensos-client-catalog-audio
     restart: always
     depends_on:
       - sensos-client-database
@@ -49,6 +49,7 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
+      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
       - ./birdnet/model:/model
     deploy:
       restart_policy:

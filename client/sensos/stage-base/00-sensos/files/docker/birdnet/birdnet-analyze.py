@@ -90,11 +90,12 @@ def initialize_schema():
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sensos.audio_segments (
-                id SERIAL PRIMARY KEY,
-                file_id INTEGER NOT NULL REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
-                channel INT NOT NULL,
-                start_frame BIGINT NOT NULL,
-                zeroed BOOLEAN NOT NULL DEFAULT FALSE
+                    id SERIAL PRIMARY KEY,
+                    file_id INTEGER NOT NULL REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
+                    channel INT NOT NULL,
+                    start_frame BIGINT NOT NULL,
+                    zeroed BOOLEAN NOT NULL DEFAULT FALSE,
+                    UNIQUE (file_id, channel, start_frame)
                 );
                 """
             )
@@ -158,26 +159,34 @@ def initialize_schema():
                 """
             )
 
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.birdnet_processed_files (
+                    file_id INTEGER PRIMARY KEY REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
+                    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
+                    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+
             conn.commit()
             logger.info("✅ Schema initialized.")
 
 
-def get_next_file():
-    with psycopg.connect(DB_PARAMS) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT af.file_path
-                FROM sensos.audio_files af
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM sensos.audio_segments s
-                    WHERE s.file_path = af.file_path
-                )
-                ORDER BY af.cataloged_at
-                LIMIT 1;
-                """
-            )
-            return cur.fetchone()
+def get_next_file(cur):
+    cur.execute(
+        """
+        SELECT af.id, af.file_path
+        FROM sensos.audio_files af
+        WHERE NOT EXISTS (
+            SELECT 1 FROM sensos.birdnet_processed_files pf
+            WHERE pf.file_id = af.id
+        )
+        ORDER BY af.cataloged_at
+        LIMIT 1;
+        """
+    )
+    return cur.fetchone()
 
 
 def flat_sigmoid(x, sensitivity=-1, bias=1.0):
@@ -238,121 +247,168 @@ def invoke_birdnet(audio):
     )
 
 
-def main():
+def fetch_and_verify_metadata(cur, file_id):
+    """
+    Fetch metadata from the database for the given file_id,
+    verify it against actual file contents, and return:
+      - full absolute Path to the file
+      - metadata dict with fields: channels, sample_rate, frames, format, subtype
 
+    Raises ValueError if verification fails or file is missing.
+    """
+    cur.execute(
+        """
+        SELECT file_path, channels, sample_rate, frames, format, subtype
+        FROM sensos.audio_files
+        WHERE id = %s;
+        """,
+        (file_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"No file entry found for id {file_id}")
+
+    path = CATALOGED / Path(row["file_path"]).relative_to("cataloged")
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+
+    info = sf.info(path)
+    if (
+        info.channels != row["channels"]
+        or info.samplerate != row["sample_rate"]
+        or info.frames != row["frames"]
+        or info.format != row["format"]
+        or info.subtype != row["subtype"]
+    ):
+        raise ValueError(f"Metadata mismatch for file {row['file_path']}")
+
+    return path, {
+        "channels": info.channels,
+        "sample_rate": info.samplerate,
+        "frames": info.frames,
+        "format": info.format,
+        "subtype": info.subtype,
+    }
+
+
+def get_file_and_metadata(cur):
+    file_entry = get_next_file(cur)
+    if not file_entry:
+        return None
+    file_id, file_path = file_entry
+    abs_path, meta = fetch_and_verify_metadata(cur, file_id)
+    return file_id, file_path, abs_path, meta
+
+
+def process_file(file_id, file_path, abs_path, meta):
+    logger.info(
+        f"Processing {file_path} ({meta['channels']} ch, {meta['frames']/meta['sample_rate']:.1f} s)"
+    )
+
+    with sf.SoundFile(abs_path.as_posix(), "r") as f:
+        if f.channels != meta["channels"] or f.samplerate != SAMPLE_RATE:
+            logger.warning("Unexpected file format")
+
+        with psycopg.connect(DB_PARAMS) as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    count = analyze_segments(f, cur, file_id, meta["channels"])
+                    cur.execute(
+                        """
+                        INSERT INTO sensos.birdnet_processed_files (file_id, segment_count)
+                        VALUES (%s, %s);
+                        """,
+                        (file_id, count),
+                    )
+
+
+def analyze_segments(f, cur, file_id, channels) -> int:
+    segment_count = 0
+
+    for start in range(0, int(f.frames) - SEGMENT_SIZE + 1, STEP_SIZE):
+        f.seek(start)
+        raw_audio_all = f.read(SEGMENT_SIZE, dtype="int32", always_2d=True)
+
+        for ch in range(channels):
+            raw_audio = raw_audio_all[:, ch]
+            if len(raw_audio) != SEGMENT_SIZE:
+                continue
+
+            segment_id = insert_segment(cur, file_id, ch, start)
+            analyze_and_store_features(cur, segment_id, raw_audio)
+            segment_count += 1
+
+    return segment_count
+
+
+def insert_segment(cur, file_id, ch, start):
+    cur.execute(
+        """
+        INSERT INTO sensos.audio_segments (file_id, channel, start_frame)
+        VALUES (%s, %s, %s)
+        RETURNING id;
+        """,
+        (file_id, ch, start),
+    )
+    return cur.fetchone()[0]
+
+
+def analyze_and_store_features(cur, segment_id, raw_audio):
+    peak, rms, snr = compute_audio_features(raw_audio)
+    float_audio = raw_audio.astype(np.float32)
+    full_spec = compute_binned_spectrum(
+        float_audio, 50, SAMPLE_RATE // 2, FULL_SPECTRUM_BINS
+    )
+    bio_spec = compute_binned_spectrum(float_audio, 1000, 8000, BIOACOUSTIC_BINS)
+    normalized_audio = scale_by_max_value(float_audio)
+    embedding, top_scores, hill, simpson = invoke_birdnet(normalized_audio)
+
+    cur.execute(
+        "INSERT INTO sensos.sound_statistics (segment_id, peak_amplitude, rms, snr) VALUES (%s, %s, %s, %s);",
+        (segment_id, peak, rms, snr),
+    )
+    cur.execute(
+        "INSERT INTO sensos.full_spectrum (segment_id, spectrum) VALUES (%s, %s);",
+        (segment_id, json.dumps(full_spec)),
+    )
+    cur.execute(
+        "INSERT INTO sensos.bioacoustic_spectrum (segment_id, spectrum) VALUES (%s, %s);",
+        (segment_id, json.dumps(bio_spec)),
+    )
+    cur.execute(
+        "INSERT INTO sensos.birdnet_embeddings (segment_id, vector) VALUES (%s, %s);",
+        (segment_id, embedding.tolist()),
+    )
+    for label, score in top_scores.items():
+        cur.execute(
+            "INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES (%s, %s, %s);",
+            (segment_id, label, score),
+        )
+    cur.execute(
+        "INSERT INTO sensos.score_statistics (segment_id, hill_number, simpson_index) VALUES (%s, %s, %s);",
+        (segment_id, hill, simpson),
+    )
+
+
+def main():
     initialize_schema()
 
     while True:
-        file_entry = get_next_file()
-        if not file_entry:
-            logger.info("No unprocessed files found. Sleeping 60s...")
-            time.sleep(60)
-            continue
-
-        file_id, file_path, channels, duration = file_entry
-        abs_path = CATALOGED / Path(file_path).relative_to("cataloged")
-        logger.info(f"Processing {file_path} ({channels} ch, {duration:.1f} s)")
-
         try:
-            with sf.SoundFile(abs_path.as_posix(), "r") as f:
-                if f.channels != channels or f.samplerate != SAMPLE_RATE:
-                    logger.warning("Unexpected file format")
+            with psycopg.connect(DB_PARAMS) as conn:
+                with conn.cursor() as cur:
+                    result = get_file_and_metadata(cur)
+                    if result is None:
+                        logger.info("No unprocessed files found. Sleeping 60s...")
+                        time.sleep(60)
+                        continue
+                    file_id, file_path, abs_path, meta = result
 
-                with psycopg.connect(DB_PARAMS) as conn:
-                    with conn.transaction():
-                        with conn.cursor() as cur:
-                            for start in range(
-                                0, int(f.frames) - SEGMENT_SIZE + 1, STEP_SIZE
-                            ):
-                                f.seek(start)
-                                raw_audio_all = f.read(
-                                    SEGMENT_SIZE, dtype="int32", always_2d=True
-                                )
-
-                                for ch in range(channels):
-                                    raw_audio = raw_audio_all[:, ch]
-                                    if len(raw_audio) != SEGMENT_SIZE:
-                                        continue
-
-                                    peak, rms, snr = compute_audio_features(raw_audio)
-                                    float_audio = raw_audio.astype(np.float32)
-                                    full_spec = compute_binned_spectrum(
-                                        float_audio,
-                                        50,
-                                        SAMPLE_RATE // 2,
-                                        FULL_SPECTRUM_BINS,
-                                    )
-                                    bio_spec = compute_binned_spectrum(
-                                        float_audio, 1000, 8000, BIOACOUSTIC_BINS
-                                    )
-                                    normalized_audio = scale_by_max_value(float_audio)
-                                    embedding, top_scores, hill, simpson = (
-                                        invoke_birdnet(normalized_audio)
-                                    )
-
-                                    cur.execute(
-                                        """
-                                        INSERT INTO sensos.audio_segments (file_id, channel, start_frame)
-                                        VALUES (%s, %s, %s)
-                                        RETURNING id;
-                                        """,
-                                        (file_id, ch, start),
-                                    )
-                                    segment_id = cur.fetchone()[0]
-
-                                    cur.execute(
-                                        """
-                                        INSERT INTO sensos.sound_statistics (segment_id, peak_amplitude, rms, snr)
-                                        VALUES (%s, %s, %s, %s);
-                                        """,
-                                        (segment_id, peak, rms, snr),
-                                    )
-
-                                    cur.execute(
-                                        """
-                                        INSERT INTO sensos.full_spectrum (segment_id, spectrum)
-                                        VALUES (%s, %s);
-                                        """,
-                                        (segment_id, json.dumps(full_spec)),
-                                    )
-
-                                    cur.execute(
-                                        """
-                                        INSERT INTO sensos.bioacoustic_spectrum (segment_id, spectrum)
-                                        VALUES (%s, %s);
-                                        """,
-                                        (segment_id, json.dumps(bio_spec)),
-                                    )
-
-                                    cur.execute(
-                                        """
-                                        INSERT INTO sensos.birdnet_embeddings (segment_id, vector)
-                                        VALUES (%s, %s);
-                                        """,
-                                        (segment_id, embedding.tolist()),
-                                    )
-
-                                    for label, score in top_scores.items():
-                                        cur.execute(
-                                            """
-                                            INSERT INTO sensos.birdnet_scores (segment_id, label, score)
-                                            VALUES (%s, %s, %s);
-                                            """,
-                                            (segment_id, label, score),
-                                        )
-
-                                    cur.execute(
-                                        """
-                                        INSERT INTO sensos.score_statistics (segment_id, hill_number, simpson_index)
-                                        VALUES (%s, %s, %s);
-                                        """,
-                                        (segment_id, hill, simpson),
-                                    )
-
-            logger.info(f"✅ Finished processing {file_path}")
+            process_file(file_id, file_path, abs_path, meta)
 
         except Exception as e:
-            logger.exception(f"❌ Failed to process {file_path}. Rolled back.")
+            logger.exception("❌ Failed to process file. Rolled back.")
+            time.sleep(10)
 
 
 if __name__ == "__main__":
