@@ -71,7 +71,7 @@ def table_exists(conn, table_name):
             """,
             (table_name,),
         )
-        return cur.fetchone()["exists"]
+        return cur.fetchone()[0]
 
 
 def initialize_schema():
@@ -97,6 +97,13 @@ def initialize_schema():
                     zeroed BOOLEAN NOT NULL DEFAULT FALSE,
                     UNIQUE (file_id, channel, start_frame)
                 );
+                """
+            )
+
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
+                ON sensos.audio_segments(file_id);
                 """
             )
 

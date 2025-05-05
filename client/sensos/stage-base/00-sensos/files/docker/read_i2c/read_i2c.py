@@ -25,15 +25,15 @@ conn = psycopg.connect(
 conn.execute("CREATE SCHEMA IF NOT EXISTS sensos")
 conn.execute(
     """
-CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
-    id SERIAL PRIMARY KEY,
-    device_address TEXT NOT NULL,
-    sensor_type TEXT,
-    key TEXT NOT NULL,
-    value DOUBLE PRECISION,
-    timestamp TIMESTAMPTZ DEFAULT NOW()
-)
-"""
+    CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
+        id SERIAL PRIMARY KEY,
+        device_address TEXT NOT NULL,
+        sensor_type TEXT,
+        key TEXT NOT NULL,
+        value DOUBLE PRECISION,
+        timestamp TIMESTAMPTZ DEFAULT NOW()
+    )
+    """
 )
 conn.commit()
 
@@ -102,11 +102,10 @@ if not sensors:
     logging.error("No sensors initialized. Exiting.")
     exit(1)
 
-# Read loop
-while True:
-    for addr, sensor, sensor_type in sensors:
-        readings = {}
 
+def record_readings(addr, sensor, sensor_type, conn):
+    readings = {}
+    try:
         if sensor_type.startswith("bme280"):
             readings = {
                 "temperature": sensor.temperature,
@@ -114,45 +113,45 @@ while True:
                 "pressure": sensor.pressure,
             }
 
-        elif sensor_type == "scd30":
-            if sensor.data_available:
-                readings = {
-                    "temperature": sensor.temperature,
-                    "humidity": sensor.relative_humidity,
-                    "co2": sensor.CO2,
-                }
+        elif sensor_type == "scd30" and sensor.data_available:
+            readings = {
+                "temperature": sensor.temperature,
+                "humidity": sensor.relative_humidity,
+                "co2": sensor.CO2,
+            }
 
-        elif sensor_type == "scd4x":
-            if sensor.data_ready:
-                readings = {
-                    "temperature": sensor.temperature,
-                    "humidity": sensor.relative_humidity,
-                    "co2": sensor.CO2,
-                }
-            else:
-                continue  # skip if no new data
+        elif sensor_type == "scd4x" and sensor.data_ready:
+            readings = {
+                "temperature": sensor.temperature,
+                "humidity": sensor.relative_humidity,
+                "co2": sensor.CO2,
+            }
 
         elif sensor_type.startswith("vegetronix:"):
             channel = sensor_type.split(":")[1]
-            try:
-                voltage = sensor.voltage
-                readings = {channel: voltage}
-            except Exception as e:
-                logging.warning(f"Error reading Vegetronix channel {channel}: {e}")
-                continue
+            readings = {channel: sensor.voltage}
 
-        else:
-            continue  # Unknown sensor
+    except Exception as e:
+        logging.warning(f"Sensor read failed for {sensor_type} at {addr}: {e}")
+        return
 
-        try:
+    try:
+        with conn.cursor() as cur:
             for key, value in readings.items():
-                conn.execute(
-                    "INSERT INTO sensos.i2c_readings (...) VALUES (%s, %s, %s, %s)",
+                cur.execute(
+                    """
+                    INSERT INTO sensos.i2c_readings (device_address, sensor_type, key, value)
+                    VALUES (%s, %s, %s, %s)
+                    """,
                     (addr, sensor_type, key, value),
                 )
-        except Exception as e:
-            logging.error(f"DB insert failed for {sensor_type} at {addr}: {e}")
-
+        conn.commit()
         logging.info(f"Recorded data from {addr} ({sensor_type}): {readings}")
-    conn.commit()
+    except Exception as e:
+        logging.error(f"DB insert failed for {sensor_type} at {addr}: {e}")
+
+
+while True:
+    for addr, sensor, sensor_type in sensors:
+        record_readings(addr, sensor, sensor_type, conn)
     time.sleep(60)

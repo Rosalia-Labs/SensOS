@@ -53,8 +53,8 @@ def ensure_schema(cursor):
             frames BIGINT,
             channels INTEGER,
             sample_rate INTEGER,
-            format TEXT CHECK,   
-            subtype TEXT CHECK,
+            format TEXT,   
+            subtype TEXT,
             capture_timestamp TIMESTAMPTZ,
             cataloged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
@@ -64,8 +64,6 @@ def ensure_schema(cursor):
         """
         CREATE INDEX IF NOT EXISTS audio_files_file_path_index
         ON sensos.audio_files(file_path);
-        CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
-        ON sensos.audio_segments(file_id);
         CREATE INDEX IF NOT EXISTS audio_files_capture_timestamp_index
         ON sensos.audio_files(capture_timestamp);
         CREATE INDEX IF NOT EXISTS audio_files_capture_channels_idx

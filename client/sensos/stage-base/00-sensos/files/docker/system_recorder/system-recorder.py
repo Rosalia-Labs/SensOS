@@ -109,13 +109,13 @@ def insert_stats(conn, stats):
     with conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO system_stats (
+            INSERT INTO sensos.system_stats (
                 recorded_at, hostname, uptime_seconds,
                 disk_available_gb, memory_used_mb, memory_total_mb,
                 load_1m, load_5m, load_15m, sensor_stats
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
+            """,
             (
                 datetime.utcnow(),
                 platform.node(),
