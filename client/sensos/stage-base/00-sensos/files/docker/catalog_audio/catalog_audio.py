@@ -247,7 +247,8 @@ def wait_for_db(max_retries=30, delay=5):
     for i in range(max_retries):
         try:
             with psycopg.connect(**DB_PARAMS) as conn:
-                conn.execute("SELECT 1")
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
             logging.info("Database is ready.")
             return
         except Exception as e:

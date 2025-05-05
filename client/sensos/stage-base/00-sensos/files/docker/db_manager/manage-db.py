@@ -73,7 +73,7 @@ def overwrite_segment_with_zeros(
         return False
 
 
-def zero_human_vocal_segments(conn):
+def zero_human_vocal_segments(conn) -> tuple[bool, bool]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -88,7 +88,7 @@ def zero_human_vocal_segments(conn):
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE bs.label ILIKE '%Human vocal%'
               AND af.file_path IS NOT NULL
-              AND NOT ag.zeroed
+              AND NOT ag.vocal_check
             ORDER BY ag.start_frame
             LIMIT 1
             """
@@ -96,8 +96,8 @@ def zero_human_vocal_segments(conn):
         seg = cur.fetchone()
 
     if not seg:
-        logger.info("No more human vocal segments to zero.")
-        return False
+        logger.info("No more human vocal segments to process.")
+        return False, False
 
     frame_count = seg["end_frame"] - seg["start_frame"]
     if frame_count <= 0:
@@ -108,15 +108,14 @@ def zero_human_vocal_segments(conn):
         seg["file_path"], seg["start_frame"], frame_count, seg["channel"]
     )
 
-    if success:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE sensos.audio_segments SET zeroed = TRUE WHERE id = %s",
-                (seg["segment_id"],),
-            )
-            conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sensos.audio_segments SET vocal_check = TRUE WHERE id = %s",
+            (seg["segment_id"],),
+        )
+        conn.commit()
 
-    return success
+    return True, success
 
 
 def main():
@@ -130,9 +129,13 @@ def main():
                     )
                     time.sleep(60)
                     continue
-                segment_found = zero_human_vocal_segments(conn)
+
+                segment_found, success = zero_human_vocal_segments(conn)
+
                 if not segment_found:
                     time.sleep(60)
+                elif not success:
+                    logger.warning("Segment found but zeroing failed")
 
         except Exception as e:
             logger.error(f"Error: {e}")

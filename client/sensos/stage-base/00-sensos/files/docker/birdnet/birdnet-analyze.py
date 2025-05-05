@@ -95,7 +95,7 @@ def initialize_schema():
                     channel INT NOT NULL,
                     start_frame BIGINT NOT NULL,
                     end_frame BIGINT NOT NULL CHECK (end_frame > start_frame),
-                    zeroed BOOLEAN NOT NULL DEFAULT FALSE,
+                    vocal_check BOOLEAN NOT NULL DEFAULT FALSE,
                     UNIQUE (file_id, channel, start_frame)
                 );
                 """
@@ -278,19 +278,20 @@ def fetch_and_verify_metadata(cur, file_id):
     if row is None:
         raise ValueError(f"No file entry found for id {file_id}")
 
-    path = CATALOGED / Path(row["file_path"]).relative_to("cataloged")
+    file_path, channels, sample_rate, frames, fmt, subtype = row
+    path = CATALOGED / Path(file_path).relative_to("cataloged")
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
     info = sf.info(path)
     if (
-        info.channels != row["channels"]
-        or info.samplerate != row["sample_rate"]
-        or info.frames != row["frames"]
-        or info.format != row["format"]
-        or info.subtype != row["subtype"]
+        info.channels != channels
+        or info.samplerate != sample_rate
+        or info.frames != frames
+        or info.format != fmt
+        or info.subtype != subtype
     ):
-        raise ValueError(f"Metadata mismatch for file {row['file_path']}")
+        raise ValueError(f"Metadata mismatch for file {file_path}")
 
     return path, {
         "channels": info.channels,
