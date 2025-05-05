@@ -153,12 +153,15 @@ def process_files(cur) -> int:
                 )
             continue
 
-        if is_not_open(path):
+        if is_stable(path):
             try:
                 process_file(cur, path)
                 count += 1
             except Exception as e:
                 logging.error(f"Unhandled error processing {path}: {e}")
+        else:
+            logging.info(f"Skipped unstable file: {path}")
+
     return count
 
 
@@ -229,19 +232,15 @@ def process_file(cursor, path: Path):
         cursor.connection.rollback()
 
 
-def is_not_open(path: Path) -> bool:
-    """Return True if the file is not open by another process (Linux only)."""
+def is_stable(path: Path, threshold: float = 2.0) -> bool:
+    """
+    Return True if the file has not been modified in the last `threshold` seconds.
+    """
     try:
-        result = subprocess.run(
-            ["lsof", "--", str(path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        return result.returncode != 0
+        mtime = path.stat().st_mtime
     except FileNotFoundError:
-        logging.warning("lsof not found; skipping open file checks")
-        return True
+        return False
+    return (time.time() - mtime) > threshold
 
 
 def wait_for_db(max_retries=30, delay=5):
