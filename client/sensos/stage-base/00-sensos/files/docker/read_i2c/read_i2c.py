@@ -4,6 +4,8 @@ import board
 import busio
 import psycopg
 import logging
+import sys
+from psycopg.rows import dict_row
 
 import adafruit_scd30
 import adafruit_scd4x
@@ -11,96 +13,126 @@ import adafruit_ads1x15.ads1015 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
 from adafruit_bme280 import Adafruit_BME280_I2C
 
-# Optional: set up basic logging to stdout
-logging.basicConfig(level=logging.INFO)
+# Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logger = logging.getLogger("sensor-poller")
 
-# PostgreSQL connection
-conn = psycopg.connect(
-    dbname=os.environ["POSTGRES_DB"],
-    user=os.environ["POSTGRES_USER"],
-    password=os.environ["POSTGRES_PASSWORD"],
-    host=os.environ["DB_HOST"],
-    port=os.environ["DB_PORT"],
-)
-conn.execute("CREATE SCHEMA IF NOT EXISTS sensos")
-conn.execute(
-    """
-    CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
-        id SERIAL PRIMARY KEY,
-        device_address TEXT NOT NULL,
-        sensor_type TEXT,
-        key TEXT NOT NULL,
-        value DOUBLE PRECISION,
-        timestamp TIMESTAMPTZ DEFAULT NOW()
-    )
-    """
-)
-conn.commit()
+# Constants
+POLL_INTERVAL = 60
+REDISCOVERY_INTERVAL = 600  # 10 minutes
 
-# Initialize I2C
-i2c = busio.I2C(board.SCL, board.SDA)
-while not i2c.try_lock():
-    pass
-detected_addresses = i2c.scan()
-i2c.unlock()
+DB_PARAMS = {
+    "dbname": os.environ.get("POSTGRES_DB"),
+    "user": os.environ.get("POSTGRES_USER"),
+    "password": os.environ.get("POSTGRES_PASSWORD"),
+    "host": os.environ.get("DB_HOST"),
+    "port": os.environ.get("DB_PORT"),
+}
 
-# Sensor init
-sensors = []
 
-# BME280
-for addr in detected_addresses:
-    try:
-        sensor = Adafruit_BME280_I2C(i2c, address=addr)
-        _ = sensor.temperature
-        sensors.append((hex(addr), sensor, f"bme280:{hex(addr)}"))
-        logging.info(f"Initialized BME280 at address {hex(addr)}")
-    except Exception:
-        pass
-
-# SCD30 (0x61)
-try:
-    scd30 = adafruit_scd30.SCD30(i2c)
-    if scd30.data_available:
-        _ = scd30.CO2
-        sensors.append(("0x61", scd30, "scd30"))
-        logging.info("Initialized SCD30 CO₂ sensor at address 0x61")
-except Exception as e:
-    logging.warning(f"Could not initialize SCD30: {e}")
-
-# Vegetronix via ADS1015 (assumed at 0x48)
-try:
-    ads = ADS.ADS1015(i2c, data_rate=128)
-    ads.gain = 1
-    for ch_name, ch_enum in {
-        "A0": ADS.P0,
-        "A1": ADS.P1,
-        "A2": ADS.P2,
-        "A3": ADS.P3,
-    }.items():
+def connect_with_retry():
+    while True:
         try:
-            analog_in = AnalogIn(ads, ch_enum)
-            sensors.append(("0x48", analog_in, f"vegetronix:{ch_name}"))
-            logging.info(f"Initialized Vegetronix sensor on {ch_name}")
+            conn = psycopg.connect(**DB_PARAMS, row_factory=dict_row)
+            logger.info("Connected to database.")
+            return conn
         except Exception as e:
-            logging.warning(f"Failed to init Vegetronix channel {ch_name}: {e}")
-except Exception as e:
-    logging.warning(f"Could not initialize ADS1015 (Vegetronix): {e}")
+            logger.warning(f"Database connection failed: {e}")
+            time.sleep(5)
 
-# SCD4x (SCD40/SCD41) – typically at 0x62
-try:
-    scd4x = adafruit_scd4x.SCD4X(i2c)
-    scd4x.start_periodic_measurement()
-    time.sleep(1)  # wait for first measurement
-    if scd4x.data_ready:
-        _ = scd4x.CO2
-        sensors.append(("0x62", scd4x, "scd4x"))
-        logging.info("Initialized SCD4x CO₂ sensor at address 0x62")
-except Exception as e:
-    logging.warning(f"Could not initialize SCD4x: {e}")
 
-if not sensors:
-    logging.error("No sensors initialized. Exiting.")
-    exit(1)
+def setup_schema(conn):
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS sensos")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
+                    id SERIAL PRIMARY KEY,
+                    device_address TEXT NOT NULL,
+                    sensor_type TEXT,
+                    key TEXT NOT NULL,
+                    value DOUBLE PRECISION,
+                    timestamp TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to create schema or table: {e}")
+        conn.rollback()
+
+
+def safe_i2c_scan(i2c):
+    try:
+        while not i2c.try_lock():
+            time.sleep(0.1)
+        addresses = i2c.scan()
+        return addresses
+    except Exception as e:
+        logger.error(f"I2C scan failed: {e}")
+        return []
+    finally:
+        try:
+            i2c.unlock()
+        except Exception:
+            pass
+
+
+def rediscover_sensors(i2c):
+    sensors = []
+    detected_addresses = safe_i2c_scan(i2c)
+
+    for addr in detected_addresses:
+        try:
+            sensor = Adafruit_BME280_I2C(i2c, address=addr)
+            _ = sensor.temperature
+            sensors.append((hex(addr), sensor, f"bme280:{hex(addr)}"))
+            logger.info(f"Initialized BME280 at {hex(addr)}")
+        except Exception:
+            pass
+
+    try:
+        scd30 = adafruit_scd30.SCD30(i2c)
+        if scd30.data_available:
+            _ = scd30.CO2
+            sensors.append(("0x61", scd30, "scd30"))
+            logger.info("Initialized SCD30")
+    except Exception as e:
+        logger.warning(f"SCD30 init failed: {e}")
+
+    try:
+        ads = ADS.ADS1015(i2c, data_rate=128)
+        ads.gain = 1
+        for ch_name, ch_enum in {
+            "A0": ADS.P0,
+            "A1": ADS.P1,
+            "A2": ADS.P2,
+            "A3": ADS.P3,
+        }.items():
+            try:
+                analog_in = AnalogIn(ads, ch_enum)
+                sensors.append(("0x48", analog_in, f"vegetronix:{ch_name}"))
+                logger.info(f"Initialized Vegetronix on {ch_name}")
+            except Exception as e:
+                logger.warning(f"Vegetronix {ch_name} init failed: {e}")
+    except Exception as e:
+        logger.warning(f"ADS1015 init failed: {e}")
+
+    try:
+        scd4x = adafruit_scd4x.SCD4X(i2c)
+        scd4x.start_periodic_measurement()
+        time.sleep(1)
+        if scd4x.data_ready:
+            _ = scd4x.CO2
+            sensors.append(("0x62", scd4x, "scd4x"))
+            logger.info("Initialized SCD4x")
+    except Exception as e:
+        logger.warning(f"SCD4x init failed: {e}")
+
+    if not sensors:
+        logger.warning("No sensors detected on rediscovery.")
+    return sensors
 
 
 def record_readings(addr, sensor, sensor_type, conn):
@@ -112,27 +144,23 @@ def record_readings(addr, sensor, sensor_type, conn):
                 "humidity": sensor.humidity,
                 "pressure": sensor.pressure,
             }
-
         elif sensor_type == "scd30" and sensor.data_available:
             readings = {
                 "temperature": sensor.temperature,
                 "humidity": sensor.relative_humidity,
                 "co2": sensor.CO2,
             }
-
         elif sensor_type == "scd4x" and sensor.data_ready:
             readings = {
                 "temperature": sensor.temperature,
                 "humidity": sensor.relative_humidity,
                 "co2": sensor.CO2,
             }
-
         elif sensor_type.startswith("vegetronix:"):
             channel = sensor_type.split(":")[1]
             readings = {channel: sensor.voltage}
-
     except Exception as e:
-        logging.warning(f"Sensor read failed for {sensor_type} at {addr}: {e}")
+        logger.warning(f"Sensor read failed for {sensor_type} at {addr}: {e}")
         return
 
     try:
@@ -146,12 +174,45 @@ def record_readings(addr, sensor, sensor_type, conn):
                     (addr, sensor_type, key, value),
                 )
         conn.commit()
-        logging.info(f"Recorded data from {addr} ({sensor_type}): {readings}")
+        logger.info(f"Recorded {len(readings)} readings from {addr} ({sensor_type})")
     except Exception as e:
-        logging.error(f"DB insert failed for {sensor_type} at {addr}: {e}")
+        logger.error(f"DB insert failed for {sensor_type} at {addr}: {e}")
+        conn.rollback()
 
 
-while True:
-    for addr, sensor, sensor_type in sensors:
-        record_readings(addr, sensor, sensor_type, conn)
-    time.sleep(60)
+def main():
+    conn = connect_with_retry()
+    setup_schema(conn)
+
+    try:
+        i2c = busio.I2C(board.SCL, board.SDA)
+    except Exception as e:
+        logger.error(f"Failed to initialize I2C: {e}")
+        sys.exit(1)
+
+    sensors = []
+    last_discovery = 0
+
+    try:
+        while True:
+            now = time.time()
+            if not sensors or now - last_discovery > REDISCOVERY_INTERVAL:
+                logger.info("Running sensor rediscovery...")
+                sensors = rediscover_sensors(i2c)
+                last_discovery = now
+
+            if sensors:
+                for addr, sensor, sensor_type in sensors:
+                    record_readings(addr, sensor, sensor_type, conn)
+            else:
+                logger.info("No sensors currently available.")
+
+            time.sleep(POLL_INTERVAL)
+    except KeyboardInterrupt:
+        logger.info("Stopping sensor poller.")
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

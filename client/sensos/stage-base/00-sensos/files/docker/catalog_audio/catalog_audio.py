@@ -181,11 +181,6 @@ def process_file(cursor, path: Path):
             logging.error(f"Could not read metadata from {path}: {e}")
             return
 
-        duration = info.frames / info.samplerate
-        channels = info.channels
-        sr = info.samplerate
-        fmt = info.format
-        subtype = info.subtype
         timestamp = extract_timestamp(path)
 
         tmp_path = new_path.with_suffix(".tmp")
@@ -194,17 +189,32 @@ def process_file(cursor, path: Path):
         sf.write(tmp_path, data, sr, format="FLAC")
         tmp_path.replace(new_path)
 
+        # Re-read metadata from the final FLAC file
+        try:
+            final_info = sf.info(new_path)
+        except Exception as e:
+            logging.error(f"Could not read FLAC metadata from {new_path}: {e}")
+            return
+
         os.remove(path)
 
         cursor.execute(
             """
             INSERT INTO sensos.audio_files (
-                file_path, duration, channels, sample_rate,
+                file_path, frames, channels, sample_rate,
                 format, subtype, capture_timestamp
             )
             VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s));
             """,
-            (new_rel, duration, channels, sr, fmt, subtype, timestamp),
+            (
+                new_rel,
+                final_info.frames,
+                final_info.channels,
+                final_info.samplerate,
+                final_info.format,
+                final_info.subtype,
+                timestamp,
+            ),
         )
         cursor.connection.commit()
         logging.info(f"Processed and recorded {new_rel}")

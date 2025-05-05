@@ -77,13 +77,19 @@ def zero_human_vocal_segments(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT ag.id AS segment_id, af.file_path, ag.channel, ag.start_frame, ag.duration_s
+            SELECT
+                ag.id AS segment_id,
+                af.file_path,
+                ag.channel,
+                ag.start_frame,
+                ag.end_frame
             FROM sensos.birdnet_scores bs
             JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE bs.label ILIKE '%Human vocal%'
-                AND af.file_path IS NOT NULL
-                AND NOT ag.zeroed
+              AND af.file_path IS NOT NULL
+              AND NOT ag.zeroed
+            ORDER BY ag.start_frame
             LIMIT 1
             """
         )
@@ -93,7 +99,11 @@ def zero_human_vocal_segments(conn):
         logger.info("No more human vocal segments to zero.")
         return False
 
-    frame_count = int(seg["duration_s"] * 48000)
+    frame_count = seg["end_frame"] - seg["start_frame"]
+    if frame_count <= 0:
+        logger.warning(f"Invalid frame range for segment {seg['segment_id']}")
+        return False
+
     success = overwrite_segment_with_zeros(
         seg["file_path"], seg["start_frame"], frame_count, seg["channel"]
     )
@@ -105,7 +115,8 @@ def zero_human_vocal_segments(conn):
                 (seg["segment_id"],),
             )
             conn.commit()
-    return True
+
+    return success
 
 
 def main():

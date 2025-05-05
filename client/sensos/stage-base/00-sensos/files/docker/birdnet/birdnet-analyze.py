@@ -94,6 +94,7 @@ def initialize_schema():
                     file_id INTEGER NOT NULL REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
                     channel INT NOT NULL,
                     start_frame BIGINT NOT NULL,
+                    end_frame BIGINT NOT NULL CHECK (end_frame > start_frame),
                     zeroed BOOLEAN NOT NULL DEFAULT FALSE,
                     UNIQUE (file_id, channel, start_frame)
                 );
@@ -104,6 +105,8 @@ def initialize_schema():
                 """
                 CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
                 ON sensos.audio_segments(file_id);
+                CREATE INDEX IF NOT EXISTS audio_segments_file_start_index
+                ON sensos.audio_segments(file_id, start_frame);
                 """
             )
 
@@ -341,21 +344,21 @@ def analyze_segments(f, cur, file_id, channels) -> int:
             if len(raw_audio) != SEGMENT_SIZE:
                 continue
 
-            segment_id = insert_segment(cur, file_id, ch, start)
+            segment_id = insert_segment(cur, file_id, ch, start, start + SEGMENT_SIZE)
             analyze_and_store_features(cur, segment_id, raw_audio)
             segment_count += 1
 
     return segment_count
 
 
-def insert_segment(cur, file_id, ch, start):
+def insert_segment(cur, file_id, ch, start, end):
     cur.execute(
         """
-        INSERT INTO sensos.audio_segments (file_id, channel, start_frame)
-        VALUES (%s, %s, %s)
+        INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame)
+        VALUES (%s, %s, %s, %s)
         RETURNING id;
         """,
-        (file_id, ch, start),
+        (file_id, ch, start, end),
     )
     return cur.fetchone()[0]
 
