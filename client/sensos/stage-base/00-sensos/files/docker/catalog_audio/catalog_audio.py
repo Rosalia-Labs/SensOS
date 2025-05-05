@@ -98,13 +98,13 @@ def check_catalog(cur):
                 )
             continue
 
-        if path.suffix.lower() != ".flac":
+        if path.suffix.lower() != ".wav":
             # Move it back to queued for reprocessing
             dest_path = QUEUED / path.relative_to(CATALOGED)
             try:
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(path), str(dest_path))
-                logging.warning(f"Moved non-FLAC file back to queued: {path}")
+                logging.warning(f"Moved non-WAV file back to queued: {path}")
                 moved_back += 1
             except Exception as e:
                 logging.error(f"Failed to move {path} to queued/: {e}")
@@ -130,7 +130,7 @@ def check_catalog(cur):
 
     if restored or moved_back:
         logging.info(
-            f"Restored {restored} orphaned .flac files; moved {moved_back} non-FLAC files back to queued/"
+            f"Restored {restored} orphaned .wav files; moved {moved_back} non-WAV files back to queued/"
         )
 
 
@@ -167,7 +167,7 @@ def process_files(cur) -> int:
 
 def process_file(cursor, path: Path):
     rel_input = path.relative_to(QUEUED)
-    output_name = path.stem + ".flac"
+    output_name = path.stem + ".wav"
     new_path = CATALOGED / rel_input.parent / output_name
     new_rel = new_path.relative_to(ROOT).as_posix()
 
@@ -189,14 +189,14 @@ def process_file(cursor, path: Path):
         tmp_path = new_path.with_suffix(".tmp")
         data, sr = sf.read(path, always_2d=True)
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(tmp_path, data, sr, format="FLAC")
+        sf.write(tmp_path, data, sr, format="WAV", subtype=info.subtype)
         tmp_path.replace(new_path)
 
-        # Re-read metadata from the final FLAC file
+        # Re-read metadata from the final WAV file
         try:
             final_info = sf.info(new_path)
         except Exception as e:
-            logging.error(f"Could not read FLAC metadata from {new_path}: {e}")
+            logging.error(f"Could not read WAV metadata from {new_path}: {e}")
             return
 
         os.remove(path)
