@@ -81,57 +81,67 @@ def safe_i2c_scan(i2c):
 
 def rediscover_sensors(i2c):
     sensors = []
-    detected_addresses = safe_i2c_scan(i2c)
 
-    for addr in detected_addresses:
+    # BME280
+    bme280_addrs = os.environ.get("BME280_ADDRS", "")
+    for addr_str in bme280_addrs.split(","):
+        addr_str = addr_str.strip()
+        if not addr_str:
+            continue
         try:
+            addr = int(addr_str, 16)
             sensor = Adafruit_BME280_I2C(i2c, address=addr)
             _ = sensor.temperature
-            sensors.append((hex(addr), sensor, f"bme280:{hex(addr)}"))
-            logger.info(f"Initialized BME280 at {hex(addr)}")
-        except Exception:
-            pass
+            sensors.append((addr_str, sensor, f"bme280:{addr_str}"))
+            logger.info(f"Initialized BME280 at {addr_str}")
+        except Exception as e:
+            logger.warning(f"BME280 init failed at {addr_str}: {e}")
 
-    try:
-        scd30 = adafruit_scd30.SCD30(i2c)
-        if scd30.data_available:
-            _ = scd30.CO2
-            sensors.append(("0x61", scd30, "scd30"))
-            logger.info("Initialized SCD30")
-    except Exception as e:
-        logger.warning(f"SCD30 init failed: {e}")
+    # SCD30
+    if os.environ.get("SCD30", "").lower() == "true":
+        try:
+            scd30 = adafruit_scd30.SCD30(i2c)
+            if scd30.data_available:
+                _ = scd30.CO2
+                sensors.append(("0x61", scd30, "scd30"))
+                logger.info("Initialized SCD30")
+        except Exception as e:
+            logger.warning(f"SCD30 init failed: {e}")
 
-    try:
-        ads = ADS.ADS1015(i2c, data_rate=128)
-        ads.gain = 1
-        for ch_name, ch_enum in {
-            "A0": ADS.P0,
-            "A1": ADS.P1,
-            "A2": ADS.P2,
-            "A3": ADS.P3,
-        }.items():
-            try:
-                analog_in = AnalogIn(ads, ch_enum)
-                sensors.append(("0x48", analog_in, f"vegetronix:{ch_name}"))
-                logger.info(f"Initialized Vegetronix on {ch_name}")
-            except Exception as e:
-                logger.warning(f"Vegetronix {ch_name} init failed: {e}")
-    except Exception as e:
-        logger.warning(f"ADS1015 init failed: {e}")
+    # ADS1015 and Vegetronix
+    if os.environ.get("ADS1015", "").lower() == "true":
+        try:
+            ads = ADS.ADS1015(i2c, data_rate=128)
+            ads.gain = 1
+            channels = os.environ.get("VEGETRONIX_CHANNELS", "").split(",")
+            channel_map = {"A0": ADS.P0, "A1": ADS.P1, "A2": ADS.P2, "A3": ADS.P3}
+            for ch in channels:
+                ch = ch.strip()
+                if ch in channel_map:
+                    try:
+                        analog_in = AnalogIn(ads, channel_map[ch])
+                        sensors.append(("0x48", analog_in, f"vegetronix:{ch}"))
+                        logger.info(f"Initialized Vegetronix on {ch}")
+                    except Exception as e:
+                        logger.warning(f"Vegetronix {ch} init failed: {e}")
+        except Exception as e:
+            logger.warning(f"ADS1015 init failed: {e}")
 
-    try:
-        scd4x = adafruit_scd4x.SCD4X(i2c)
-        scd4x.start_periodic_measurement()
-        time.sleep(1)
-        if scd4x.data_ready:
-            _ = scd4x.CO2
-            sensors.append(("0x62", scd4x, "scd4x"))
-            logger.info("Initialized SCD4x")
-    except Exception as e:
-        logger.warning(f"SCD4x init failed: {e}")
+    # SCD4x
+    if os.environ.get("SCD4X", "").lower() == "true":
+        try:
+            scd4x = adafruit_scd4x.SCD4X(i2c)
+            scd4x.start_periodic_measurement()
+            time.sleep(1)
+            if scd4x.data_ready:
+                _ = scd4x.CO2
+                sensors.append(("0x62", scd4x, "scd4x"))
+                logger.info("Initialized SCD4x")
+        except Exception as e:
+            logger.warning(f"SCD4x init failed: {e}")
 
     if not sensors:
-        logger.warning("No sensors detected on rediscovery.")
+        logger.warning("No sensors initialized. Check env vars.")
     return sensors
 
 

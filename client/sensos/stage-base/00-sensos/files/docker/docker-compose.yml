@@ -107,6 +107,11 @@ services:
     depends_on:
       - sensos-client-database
     environment:
+      BME280_ADDR: ${BME280_ADDR}
+      SCD30: ${SCD30}
+      SCD4X: ${SCD4X}
+      ADS1015: ${ADS1015}
+      VEGETRONIX_CHANNELS: ${VEGETRONIX_CHANNELS}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

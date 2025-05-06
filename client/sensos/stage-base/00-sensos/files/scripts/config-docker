@@ -41,6 +41,11 @@ audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
 audio_format_code="${audio_format_code:-S32_LE}"
 connectivity_profile="${connectivity_profile:-unrestricted}"
 
+register_option --bme280-addr bme280_addr "Hex address of BME280 sensor" "$(get_default bme280_addr)"
+register_option --scd30 scd30 "Enable SCD30 sensor (true/false)" "$(get_default scd30 false)"
+register_option --scd4x scd4x "Enable SCD4X sensor (true/false)" "$(get_default scd4x false)"
+register_option --ads1015 ads1015 "Enable ADS1015 (true/false)" "$(get_default ads1015 false)"
+register_option --vegetronix-channels vegetronix_channels "Comma-separated Vegetronix channels (e.g. A0,A1)" "$(get_default vegetronix_channels)"
 register_option --postgres-db postgres_db "Set database name" "$(get_default postgres_db postgres)"
 register_option --postgres-user postgres_user "Set database user" "$(get_default postgres_user postgres)"
 register_option --postgres-password postgres_password "Set database password" "$(get_default postgres_password sensos)"
@@ -65,6 +70,11 @@ fi
 # Write .env file
 env_file="$docker_compose_dir/.env"
 cat >"$env_file" <<EOF
+BME280_ADDR=${bme280_addr}
+SCD30=${scd30}
+SCD4X=${scd4x}
+ADS1015=${ads1015}
+VEGETRONIX_CHANNELS=${vegetronix_channels}
 POSTGRES_DB=${postgres_db}
 POSTGRES_USER=${postgres_user}
 POSTGRES_PASSWORD=${postgres_password}
