@@ -1,38 +1,35 @@
-#!/bin/bash
-# load-defaults.sh: Load default variable values from an INI-style config file.
-
-# Usage: load_defaults "/sensos/etc/defaults.conf" "config-arecord.sh"
+# /sensos/lib/load-defaults.sh
+# Usage: load_defaults /path/to/defaults.conf script-name-without-.sh
 
 load_defaults() {
     local file="$1"
     local caller_name="$2"
 
-    # Normalize: config-arecord.sh → config_arecord
-    local section
-    section=$(basename "$caller_name" | sed 's/\.sh$//' | tr '-' '_')
+    local section="${caller_name%.sh}"
+    section="${section//-/_}"
 
-    [ -f "$file" ] || return 0
+    [ -f "$file" ] || {
+        echo "Missing file: $file"
+        return 0
+    }
 
     local current_section=""
     while IFS= read -r line || [[ -n "$line" ]]; do
-        # Strip comments and whitespace
         line="${line%%#*}"
         line="${line%%;*}"
         line="$(echo "$line" | xargs)"
         [ -z "$line" ] && continue
 
-        if [[ "$line" =~ \[(.*)\] ]]; then
+        if [[ "$line" =~ ^\[(.*)\]$ ]]; then
             current_section="${BASH_REMATCH[1]}"
-        elif [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_-]*= ]]; then
+        elif [[ "$line" == *=* ]]; then
             if [[ "$current_section" == "global" || "$current_section" == "$section" ]]; then
-                key="${line%%=*}"
-                value="${line#*=}"
-
-                # Normalize: convert dashes to underscores in key
-                key="$(echo "$key" | xargs | tr '-' '_')"
-                value="$(echo "$value" | xargs | sed -e 's/^"//' -e 's/"$//')"
-
-                # Assign as variable
+                local key="${line%%=*}"
+                local value="${line#*=}"
+                key="$(echo "$key" | tr '-' '_' | xargs)"
+                value="$(echo "$value" | xargs)"
+                value="${value%\"}"
+                value="${value#\"}"
                 eval "$key=\"\$value\""
             fi
         fi
