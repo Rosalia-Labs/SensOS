@@ -22,7 +22,6 @@ from fastapi.security import HTTPBasicCredentials
 from pydantic import BaseModel, IPvAnyAddress
 
 
-# Import only the shared functions and objects from core (so there is no duplication)
 from core import (
     get_db,
     insert_peer,
@@ -38,9 +37,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# Constants defining where configuration files are located.
-WG_CONFIG_DIR = Path("/wireguard_config")
-CONTROLLER_CONFIG_DIR = Path("/etc/wireguard")
+WG_STATUS_DIR = Path("/wireguard_config")
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -282,15 +279,15 @@ def register_wireguard_key(
 
 
 class RegisterSSHKeyRequest(BaseModel):
-    wg_ip: str  # Replace network_id and peer_id with wg_ip
+    wg_ip: str
     username: str
     uid: int
     ssh_public_key: str
-    key_type: str  # e.g., 'ed25519', 'rsa', 'ecdsa'
-    key_size: int  # e.g., 2048, 4096 (for RSA)
-    key_comment: Optional[str] = None  # Optional, e.g., 'user@hostname'
-    fingerprint: str  # Unique fingerprint of the key
-    expires_at: Optional[datetime] = None  # Optional expiration date
+    key_type: str
+    key_size: int
+    key_comment: Optional[str] = None
+    fingerprint: str
+    expires_at: Optional[datetime] = None
 
 
 @router.post("/exchange-ssh-keys")
@@ -316,7 +313,7 @@ def exchange_ssh_keys(
                     detail=f"Peer with WireGuard IP '{request.wg_ip}' not found.",
                 )
 
-            network_id, peer_id = result  # Extract network and peer IDs
+            network_id, peer_id = result
 
             # Insert the SSH public key with all relevant fields
             cur.execute(
@@ -342,14 +339,14 @@ def exchange_ssh_keys(
                 ),
             )
 
-            inserted_key = cur.fetchone()  # Check if insertion was successful
+            inserted_key = cur.fetchone()
 
             if not inserted_key:
                 raise HTTPException(
                     status_code=409, detail="SSH key already exists for this peer."
                 )
 
-        conn.commit()  # Ensure the change is committed
+        conn.commit()
 
     ssh_public_key_path = "/home/sensos/.ssh/id_ed25519.pub"
 
@@ -603,7 +600,7 @@ def get_network_info(
 
 
 class HardwareProfile(BaseModel):
-    wg_ip: str  # Used internally to link to peer
+    wg_ip: str
     hostname: str
     model: str
     kernel_version: str
@@ -621,8 +618,7 @@ def upload_hardware_profile(
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     profile_data = profile.model_dump()
-    wg_ip = profile_data.pop("wg_ip")  # Extract wg_ip from profile
-
+    wg_ip = profile_data.pop("wg_ip")
     with get_db() as conn:
         with conn.cursor() as cur:
             # Internally fetch peer_id; do not expose it
@@ -663,7 +659,7 @@ def wireguard_status_dashboard(
     Displays an HTML dashboard showing WireGuard peer status for all active interfaces.
     Falls back to a warning if no status files are found.
     """
-    status_files = sorted(WG_CONFIG_DIR.glob("wireguard_status_*.txt"))
+    status_files = sorted(WG_STATUS_DIR.glob("wireguard_status_*.txt"))
     if not status_files:
         return HTMLResponse(
             """
@@ -802,7 +798,7 @@ def set_client_location(
                 INSERT INTO sensos.peer_locations (peer_id, location)
                 VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326));
                 """,
-                (peer_id, req.longitude, req.latitude),  # Note: lon, lat order!
+                (peer_id, req.longitude, req.latitude),
             )
             conn.commit()
 

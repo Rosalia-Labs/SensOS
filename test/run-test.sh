@@ -30,8 +30,8 @@ echo " - $SERVER_TAR"
 echo " - $CLIENT_TAR"
 
 # 🚧 TODO: Build the Docker images
-# docker build -t sensos-test-server "$SERVER_DST"
-# docker build -t sensos-test-client "$CLIENT_DST"
+echo "🔧 Building test containers..."
+docker compose -f "$TEST_DIR/docker-compose.yml" build
 
 # 🚧 TODO: Start containers using docker-compose.yml
 # docker compose -f "$TEST_DIR/docker-compose.yml" up
