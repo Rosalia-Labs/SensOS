@@ -203,9 +203,18 @@ def flat_sigmoid(x, sensitivity=-1, bias=1.0):
     return 1 / (1.0 + np.exp(sensitivity * np.clip((x + (bias - 1.0) * 10.0), -20, 20)))
 
 
-def compute_audio_features(audio):
-    peak = float(np.max(np.abs(audio)))
-    rms = float(np.sqrt(np.mean(audio**2)))
+def compute_audio_features(audio: np.ndarray) -> tuple[float, float, float]:
+    # Convert to float32 to avoid overflow
+    audio = audio.astype(np.float64)
+
+    # Flatten in case audio is multichannel
+    flat_audio = audio.flatten()
+
+    # Compute peak and RMS
+    peak = float(np.max(np.abs(flat_audio)))
+    rms = float(np.sqrt(np.mean(flat_audio**2)))
+
+    # Compute SNR
     snr = float(20 * np.log10(peak / rms)) if rms > 1e-12 else 0.0
     return peak, rms, snr
 

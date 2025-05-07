@@ -2,5 +2,8 @@ adafruit-circuitpython-bme280
 adafruit-circuitpython-busdevice
 adafruit-circuitpython-scd30
 adafruit-circuitpython-scd4x
+adafruit-blinka
 psycopg[binary]
+RPi.GPIO
 smbus2
+lgpio

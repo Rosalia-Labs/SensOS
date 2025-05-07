@@ -56,7 +56,9 @@ parse_switches "$script_name" "$@"
 
 # Load sensor configs if available
 source /sensos/etc/i2c-sensors.conf 2>/dev/null || true
-source /sensos/etc/vegetronix-sensors.conf 2>/dev/null || true
+if [[ -f /sensos/etc/vegetronix-sensors.conf ]]; then
+    VEGETRONIX_CHANNELS=$(grep -E '^[A-Z0-9]+=.*' /sensos/etc/vegetronix-sensors.conf | paste -sd';' -)
+fi
 
 # Ensure output directory exists
 docker_compose_dir=/sensos/docker
