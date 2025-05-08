@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, mock_open, MagicMock
 import os
 import subprocess
+import tempfile
 
 # Assuming utils.py is in /sensos/lib, adjust import path as needed
 import sys
@@ -79,6 +80,36 @@ class TestUtils(unittest.TestCase):
 
         with patch("subprocess.check_output", side_effect=side_effect):
             self.assertEqual(utils.safe_cmd_output("echo 42"), "42")
+
+    def test_parses_valid_config(self):
+        content = """
+            # This is a comment
+            KEY1=value1
+            KEY2 = value with spaces
+            KEY3=123
+
+            # Another comment
+            KEY4 = true
+
+            """
+
+        with tempfile.NamedTemporaryFile("w+", delete=False) as f:
+            f.write(content)
+            temp_path = f.name
+
+        try:
+            result = utils.read_kv_config(temp_path)
+            self.assertEqual(result["KEY1"], "value1")
+            self.assertEqual(result["KEY2"], "value with spaces")
+            self.assertEqual(result["KEY3"], "123")
+            self.assertEqual(result["KEY4"], "true")
+            self.assertNotIn("#", result)
+        finally:
+            os.remove(temp_path)
+
+    def test_returns_empty_dict_if_missing(self):
+        path = "/tmp/does-not-exist.conf"
+        self.assertEqual(utils.read_kv_config(path), {})
 
 
 if __name__ == "__main__":

@@ -412,3 +412,17 @@ def get_api_base_url():
     else:
         print("❌ Error: No API endpoint found in network.conf", file=sys.stderr)
         return None
+
+
+def read_kv_config(path):
+    config = {}
+    if not os.path.exists(path):
+        return config
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            config[key.strip()] = val.strip()
+    return config

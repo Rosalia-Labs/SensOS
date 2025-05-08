@@ -1,3 +1,8 @@
-adafruit-circuitpython-bme280
-adafruit-circuitpython-busdevice
 adafruit-blinka
+adafruit-circuitpython-busdevice
+adafruit-circuitpython-bme280
+adafruit-circuitpython-ads1x15
+adafruit-circuitpython-scd30
+adafruit-circuitpython-scd4x
+requests
+lgpio

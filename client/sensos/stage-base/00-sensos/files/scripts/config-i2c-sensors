@@ -23,6 +23,8 @@ register_option --scd30 scd30 "Enable SCD30 (true/false)" "$(get_default SCD30 f
 register_option --scd4x scd4x "Enable SCD4X (true/false)" "$(get_default SCD4X false)"
 register_option --ads1015 ads1015 "Enable ADS1015 (true/false)" "$(get_default ADS1015 false)"
 register_option --i2c-gps i2c_gps "Enable GPS module on I2C bus (true/false)" "$(get_default I2C_GPS false)"
+register_option --enable-service enable_service "Enable systemd timer" "$(get_default enable_service true)"
+register_option --start-service start_service "Start systemd timer" "$(get_default start_service false)"
 
 parse_switches "$script_name" "$@"
 
@@ -45,3 +47,15 @@ EOF
 
 echo "Done. Config contents:"
 cat "$config_path"
+
+if [[ "$enable_service" == "true" ]]; then
+    echo "🔧 Enabling read-i2c-sensors.timer..."
+    sudo systemctl daemon-reload
+    sudo systemctl enable read-i2c-sensors.timer
+fi
+
+if [[ "$start_service" == "true" ]]; then
+    echo "▶️ Starting read-i2c-sensors.timer..."
+    sudo systemctl daemon-reload
+    sudo systemctl start read-i2c-sensors.timer
+fi
