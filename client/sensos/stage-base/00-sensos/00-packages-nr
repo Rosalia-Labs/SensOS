@@ -11,6 +11,8 @@ sox
 i2c-tools
 lsof
 chrony
-
-
-
+python3-venv
+build-essential
+libffi-dev
+libssl-dev
+sqlite3
