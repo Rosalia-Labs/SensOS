@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-import os
 import sys
-import json
+import time
+import math
 import sqlite3
 import datetime
 from pathlib import Path
@@ -31,7 +31,7 @@ def ensure_schema(conn):
     conn.commit()
 
 
-def read_bme280(addr_str: str):
+def read_bme280(addr_str: str = None):
     try:
         import board
         import busio
@@ -51,7 +51,7 @@ def read_bme280(addr_str: str):
         return None
 
 
-def read_ads1015():
+def read_ads1015(addr_str: str = None):
     try:
         import board
         import busio
@@ -72,7 +72,7 @@ def read_ads1015():
         return None
 
 
-def read_scd30():
+def read_scd30(addr_str: str = None):
     try:
         import board
         import busio
@@ -94,7 +94,7 @@ def read_scd30():
         return None
 
 
-def read_scd4x():
+def read_scd4x(addr_str: str = None):
     try:
         import board
         import busio
@@ -119,7 +119,7 @@ def read_scd4x():
         return None
 
 
-def read_i2c_gps():
+def read_i2c_gps(addr_str: str = None):
     # Placeholder — update based on actual hardware
     try:
         raise NotImplementedError("GPS reader not implemented")
@@ -137,79 +137,71 @@ def flatten_sensor_data(sensor_data, device_address, sensor_type, timestamp):
     ]
 
 
+def get_interval(key: str, default: int = 60) -> int:
+    try:
+        return int(config.get(key, default))
+    except ValueError:
+        return default
+
+
+
 def main():
     setup_logging("read_i2c_sensors.log")
 
-    now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    sensors = [
+        ("BME280_0x76", "0x76", "BME280", read_bme280),
+        ("BME280_0x77", "0x77", "BME280", read_bme280),
+        ("ADS1015", "0x48", "ADS1015", read_ads1015),
+        ("SCD30", "0x61", "SCD30", read_scd30),
+        ("SCD4X", "0x62", "SCD4X", read_scd4x),
+        ("I2C_GPS", "0x10", "I2C_GPS", read_i2c_gps),
+    ]
 
-    readings = []
+    last_run = {key: 0 for key, *_ in sensors}
+    interval_sec = {key: get_interval(f"{key}_INTERVAL_SEC", 60) for key, *_ in sensors}
 
-    # BME280
-    bme280_addr = config.get("BME280_ADDR", "0")
-    if bme280_addr == "1":
-        addrs = ["0x76"]
-    elif bme280_addr == "2":
-        addrs = ["0x77"]
-    elif bme280_addr == "3":
-        addrs = ["0x76", "0x77"]
-    else:
-        addrs = []
+    print("🔁 Entering sensor loop")
+    while True:
+        now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        current_time = time.time()
+        readings = []
 
-    for addr in addrs:
-        bme280_data = read_bme280(addr)
-        print(f"🌡️  BME280 ({addr}) data: {bme280_data}")
-        if bme280_data:
-            readings += flatten_sensor_data(bme280_data, addr, "BME280", now)
+        for key, addr, sensor_type, read_func in sensors:
+            enabled = config.get(key, "").lower() == "true"
+            if not enabled:
+                continue
+            if current_time - last_run[key] >= interval_sec[key]:
+                print(f"⏱️ Polling {sensor_type} at {addr}")
+                try:
+                    data = read_func(addr)
+                except Exception as e:
+                    print(f"⚠️ Error polling {sensor_type}: {e}", file=sys.stderr)
+                    data = None
+                print(f"📟 {sensor_type} ({addr}) data: {data}")
+                readings += flatten_sensor_data(data, addr, sensor_type, now) if data else []
+                last_run[key] = current_time
 
-    # ADS1015
-    ads1015_data = (
-        read_ads1015() if config.get("ADS1015", "").lower() == "true" else None
-    )
-    print(f"📈 ADS1015 data: {ads1015_data}")
-    readings += (
-        flatten_sensor_data(ads1015_data, "0x48", "ADS1015", now)
-        if ads1015_data
-        else []
-    )
+        if readings:
+            print(f"📝 Inserting {len(readings)} readings at {now}")
+            conn = sqlite3.connect(DB_PATH)
+            ensure_schema(conn)
+            conn.executemany(
+                """
+                INSERT INTO i2c_readings (timestamp, device_address, sensor_type, key, value)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                readings,
+            )
+            conn.commit()
+            conn.close()
 
-    # SCD30
-    scd30_data = read_scd30() if config.get("SCD30", "").lower() == "true" else None
-    print(f"🫁 SCD30 data: {scd30_data}")
-    readings += (
-        flatten_sensor_data(scd30_data, "0x61", "SCD30", now) if scd30_data else []
-    )
-
-    # SCD4X
-    scd4x_data = read_scd4x() if config.get("SCD4X", "").lower() == "true" else None
-    print(f"🫁 SCD4X data: {scd4x_data}")
-    readings += (
-        flatten_sensor_data(scd4x_data, "0x62", "SCD4X", now) if scd4x_data else []
-    )
-
-    # GPS
-    gps_data = read_i2c_gps() if config.get("I2C_GPS", "").lower() == "true" else None
-    print(f"📡 GPS data: {gps_data}")
-    readings += (
-        flatten_sensor_data(gps_data, "0x10", "I2C_GPS", now) if gps_data else []
-    )
-
-    print(f"📝 Prepared {len(readings)} readings to insert")
-
-    conn = sqlite3.connect(DB_PATH)
-    ensure_schema(conn)
-
-    conn.executemany(
-        """
-        INSERT INTO i2c_readings (timestamp, device_address, sensor_type, key, value)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        readings,
-    )
-
-    conn.commit()
-    conn.close()
-    print(f"✅ Inserted {len(readings)} rows for {now} into {DB_PATH}")
-
+        # Compute time until next sensor is due
+        next_due_in = min(
+            max(0.5, interval_sec[key] - (current_time - last_run[key]))
+            for key in last_run
+            if config.get(key, "").lower() == "true"
+        )
+        time.sleep(min(5, math.ceil(next_due_in)))
 
 if __name__ == "__main__":
     main()

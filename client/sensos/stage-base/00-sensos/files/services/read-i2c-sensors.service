@@ -4,13 +4,15 @@ After=multi-user.target create-python-venv.service
 Requires=create-python-venv.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=sensos-admin
 Group=sensos-data
 ExecStart=/sensos/python/venv/bin/python /usr/local/bin/read-i2c-sensors.py
 WorkingDirectory=/sensos/data
 StandardOutput=journal
 StandardError=journal
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
