@@ -46,7 +46,7 @@ def table_exists(conn, table_name):
             """,
             (table_name,),
         )
-        return cur.fetchone()["exists"]
+        return cur.fetchone()[0]
 
 
 def overwrite_segment_with_zeros(
