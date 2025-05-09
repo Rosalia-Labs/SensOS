@@ -66,10 +66,15 @@ GIT_DIRTY=$(test -n "$(git -C "$SENSOS_DIR" status --porcelain 2>/dev/null)" && 
 
 VERSION_FILE="$SENSOS_DIR/../VERSION"
 if [ -f "$VERSION_FILE" ]; then
-    VERSION_MAJOR=$(awk -F' = ' '/^major/ {print $2}' "$VERSION_FILE")
-    VERSION_MINOR=$(awk -F' = ' '/^minor/ {print $2}' "$VERSION_FILE")
-    VERSION_PATCH=$(awk -F' = ' '/^patch/ {print $2}' "$VERSION_FILE")
-    VERSION_SUFFIX=$(awk -F' = ' '/^suffix/ {print $2}' "$VERSION_FILE")
+    VERSION_MAJOR=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^major$/ {print $2}' "$VERSION_FILE")
+    VERSION_MINOR=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^minor$/ {print $2}' "$VERSION_FILE")
+    VERSION_PATCH=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^patch$/ {print $2}' "$VERSION_FILE")
+    VERSION_SUFFIX=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^suffix$/ {print $2}' "$VERSION_FILE")
+
+    VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}"
+    if [ -n "${VERSION_SUFFIX:-}" ]; then
+        VERSION="${VERSION}-${VERSION_SUFFIX}"
+    fi
 else
     VERSION_MAJOR="unknown"
     VERSION_MINOR="unknown"
@@ -80,7 +85,7 @@ fi
 VERSION_FILE_PATH="${STAGE_SRC}/files/etc/sensos-version"
 mkdir -p "$(dirname "$VERSION_FILE_PATH")"
 cat >"$VERSION_FILE_PATH" <<EOF
-VERSION=${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}
+VERSION=$VERSION
 GIT_COMMIT=$GIT_COMMIT
 GIT_BRANCH=$GIT_BRANCH
 GIT_TAG=$GIT_TAG
