@@ -1,5 +1,5 @@
 [version]
 major = 0
 minor = 2
-patch = 0
-suffix = beta
+patch = 1
+suffix = deploy
