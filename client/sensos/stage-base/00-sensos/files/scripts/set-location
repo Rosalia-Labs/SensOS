@@ -58,7 +58,7 @@ def main():
     write_local_location_conf(args.latitude, args.longitude)
 
     conf = read_network_conf()
-    server_ip = args.config_server or conf.get("SERVER_IP")
+    server_ip = args.config_server or conf.get("SERVER_WG_IP")
     port = args.port or conf.get("SERVER_PORT")
     wg_ip = conf.get("WG_IP") or server_ip
 

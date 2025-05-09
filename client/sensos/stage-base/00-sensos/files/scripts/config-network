@@ -731,22 +731,17 @@ def configure_ssh(args, api_password):
         print("Keeping existing SSH key configuration.")
 
 
-def write_client_settings(args, server_wg_ip):
-    """Write client settings to /sensos/etc/network.conf after validating the data."""
-    if not all([server_wg_ip, args.port, args.network]):
-        print("❌ Error: Incomplete client settings. Not writing settings file.")
-        return
-
-    proxy_ip = compute_api_server_wg_ip(server_wg_ip)
+def write_client_settings(args, server_wg_ip, client_wg_ip):
+    """Write final mesh config for future services to use."""
     settings_dir = "/sensos/etc"
     settings_file = os.path.join(settings_dir, "network.conf")
     os.makedirs(settings_dir, exist_ok=True)
 
     content = (
-        f"SERVER_IP={server_wg_ip}\n"
-        f"SERVER_PORT=8000\n"
+        f"SERVER_WG_IP={server_wg_ip}\n"
+        f"CLIENT_WG_IP={client_wg_ip}\n"
+        f"SERVER_PORT={args.port}\n"
         f"NETWORK_NAME={args.network}\n"
-        f"API_PROXY_IP={proxy_ip}\n"
     )
     if args.connectivity_profile:
         content += f"CONNECTIVITY_PROFILE={args.connectivity_profile}\n"
@@ -755,7 +750,7 @@ def write_client_settings(args, server_wg_ip):
         f.write(content)
 
     os.chmod(settings_file, 0o644)
-    print(f"✅ Client settings written to {settings_file}")
+    print(f"✅ Client network settings written to {settings_file}")
 
 
 def main():
@@ -789,7 +784,7 @@ def main():
         print("✅ Services started successfully.")
     except Exception as e:
         print(f"❌ Error starting services: {e}")
-    write_client_settings(args, server_wg_ip)
+    write_client_settings(args, server_wg_ip, client_wg_ip)
     if not args.no_connectivity_checks:
         enable_service("monitor-connectivity.service")
     else:

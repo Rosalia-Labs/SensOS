@@ -55,28 +55,15 @@ def detect_wireguard_api():
                 config[k] = v
 
     port = config.get("SERVER_PORT", DEFAULT_PORT)
-    proxy_ip = config.get("API_PROXY_IP")
-    server_ip = config.get("SERVER_IP")
+    server_ip = config.get("SERVER_WG_IP")
 
-    # Try proxy IP first — internal WireGuard address
-    if proxy_ip:
-        url = f"http://{proxy_ip}:{port}/"
-        try:
-            resp = requests.get(url, timeout=2)
-            if resp.ok:
-                return proxy_ip, port
-        except Exception:
-            pass
-
-    # Fallback to public endpoint
-    if server_ip:
-        url = f"http://{server_ip}:{port}/"
-        try:
-            resp = requests.get(url, timeout=2)
-            if resp.ok:
-                return server_ip, port
-        except Exception:
-            pass
+    url = f"http://{server_ip}:{port}/"
+    try:
+        resp = requests.get(url, timeout=2)
+        if resp.ok:
+            return server_ip, port
+    except Exception:
+        pass
 
     return None, None
 
@@ -399,19 +386,6 @@ def is_wireguard_active_from_conf(max_handshake_age=90):
                 except (IndexError, ValueError):
                     continue
     return False
-
-
-def get_api_base_url():
-    config = read_network_conf()
-    port = config.get("SERVER_PORT", DEFAULT_PORT)
-
-    if is_wireguard_active_from_conf() and "API_PROXY_IP" in config:
-        return f"http://{config['API_PROXY_IP']}:{port}"
-    elif "SERVER_IP" in config:
-        return f"http://{config['SERVER_IP']}:{port}"
-    else:
-        print("❌ Error: No API endpoint found in network.conf", file=sys.stderr)
-        return None
 
 
 def read_kv_config(path):

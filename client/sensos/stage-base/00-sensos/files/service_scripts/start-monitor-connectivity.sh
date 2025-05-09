@@ -20,8 +20,8 @@ if [[ -f "$SETTINGS_FILE" ]]; then
 fi
 
 # Ensure WireGuard server IP is set
-if [[ -z "$SERVER_IP" ]]; then
-    echo "ERROR: SERVER_IP is not set in $SETTINGS_FILE." | tee -a "$LOGFILE"
+if [[ -z "$SERVER_WG_IP" ]]; then
+    echo "ERROR: SERVER_WG_IP is not set in $SETTINGS_FILE." | tee -a "$LOGFILE"
     exit 1
 fi
 
@@ -38,17 +38,17 @@ log() {
 # Initialize last successful ping time
 last_success=$(date +%s)
 
-log "Starting connectivity check to WireGuard server IP ($SERVER_IP). Pings every $(($INTERVAL / 3600)) hour(s)."
+log "Starting connectivity check to WireGuard server IP ($SERVER_WG_IP). Pings every $(($INTERVAL / 3600)) hour(s)."
 
 while true; do
     current_time=$(date +%s)
     downtime=$((current_time - last_success))
 
-    if ping -c 1 -W 2 "$SERVER_IP" >/dev/null 2>&1; then
+    if ping -c 1 -W 2 "$SERVER_WG_IP" >/dev/null 2>&1; then
         last_success=$(date +%s)
-        log "✅ WireGuard internal IP ($SERVER_IP) is reachable."
+        log "✅ WireGuard internal IP ($SERVER_WG_IP) is reachable."
     else
-        log "❌ WireGuard internal IP ($SERVER_IP) is unreachable."
+        log "❌ WireGuard internal IP ($SERVER_WG_IP) is unreachable."
 
         if [[ "$downtime" -ge "$REBOOT_THRESHOLD" ]]; then
             log "🚨 No successful ping for $downtime seconds (>= $REBOOT_THRESHOLD). Rebooting system..."

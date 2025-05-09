@@ -10,8 +10,7 @@ sys.path.append("/sensos/lib")
 from utils import read_kv_config, setup_logging
 
 config = read_kv_config("/sensos/etc/i2c-sensors.conf")
-
-DB_PATH = Path("/sensos/data/sensor_readings.db")
+DB_PATH = Path("/sensos/data/microenv/sensor_readings.db")
 
 
 def ensure_schema(conn):
@@ -29,6 +28,30 @@ def ensure_schema(conn):
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_i2c_time ON i2c_readings (timestamp)")
     conn.commit()
+
+
+def get_interval(key: str) -> int | None:
+    val_str = config.get(key, "").strip()
+
+    # Per-sensor value takes priority
+    if val_str:
+        try:
+            val = int(val_str)
+            return val if val > 0 else None
+        except ValueError:
+            return None
+
+    # No per-sensor setting; check INTERVAL_SEC fallback
+    fallback_str = config.get("INTERVAL_SEC", "").strip()
+    if fallback_str:
+        try:
+            val = int(fallback_str)
+            return val if val > 0 else None
+        except ValueError:
+            return None
+
+    # Neither per-sensor nor global fallback present
+    return None
 
 
 def read_bme280(addr_str: str = None):
@@ -99,12 +122,11 @@ def read_scd4x(addr_str: str = None):
         import board
         import busio
         import adafruit_scd4x
-        import time
 
         i2c = busio.I2C(board.SCL, board.SDA)
         scd = adafruit_scd4x.SCD4X(i2c)
         scd.start_periodic_measurement()
-        time.sleep(5)  # give time for first reading
+        time.sleep(5)
 
         if not scd.data_ready:
             return None
@@ -120,9 +142,49 @@ def read_scd4x(addr_str: str = None):
 
 
 def read_i2c_gps(addr_str: str = None):
-    # Placeholder — update based on actual hardware
     try:
-        raise NotImplementedError("GPS reader not implemented")
+        import smbus2
+        import pynmea2
+
+        I2C_ADDR = int(addr_str, 16)
+        bus = smbus2.SMBus(1)
+
+        available = bus.read_byte_data(I2C_ADDR, 0xFD)
+        if available == 0:
+            return {"fix": 0}
+
+        raw = []
+        for _ in range(available):
+            raw.append(chr(bus.read_byte_data(I2C_ADDR, 0xFF)))
+        nmea = "".join(raw)
+
+        for line in nmea.splitlines():
+            if line.startswith("$GPGGA") or line.startswith("$GPRMC"):
+                try:
+                    msg = pynmea2.parse(line)
+
+                    fix_quality = getattr(msg, "gps_qual", None)
+                    fix = (
+                        int(fix_quality) if fix_quality and fix_quality.isdigit() else 0
+                    )
+
+                    if fix == 0:
+                        return {"fix": 0}
+
+                    return {
+                        "latitude": getattr(msg, "latitude", None),
+                        "longitude": getattr(msg, "longitude", None),
+                        "altitude": getattr(msg, "altitude", None),
+                        "timestamp": (
+                            msg.timestamp.isoformat()
+                            if hasattr(msg, "timestamp")
+                            else None
+                        ),
+                        "fix": fix,
+                    }
+                except pynmea2.ParseError:
+                    continue
+        return {"fix": 0}
     except Exception as e:
         print(f"⚠️ Error reading I2C GPS: {e}", file=sys.stderr)
         return None
@@ -137,12 +199,22 @@ def flatten_sensor_data(sensor_data, device_address, sensor_type, timestamp):
     ]
 
 
-def get_interval(key: str, default: int = 60) -> int:
+def store_readings(readings):
     try:
-        return int(config.get(key, default))
-    except ValueError:
-        return default
-
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(DB_PATH) as conn:
+            ensure_schema(conn)
+            conn.executemany(
+                """
+                INSERT INTO i2c_readings (timestamp, device_address, sensor_type, key, value)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                readings,
+            )
+            conn.commit()
+        print(f"✅ Stored {len(readings)} readings.")
+    except Exception as e:
+        print(f"❌ Failed to store readings: {e}", file=sys.stderr)
 
 
 def main():
@@ -157,8 +229,18 @@ def main():
         ("I2C_GPS", "0x10", "I2C_GPS", read_i2c_gps),
     ]
 
-    last_run = {key: 0 for key, *_ in sensors}
-    interval_sec = {key: get_interval(f"{key}_INTERVAL_SEC", 60) for key, *_ in sensors}
+    last_run = {}
+    interval_sec = {}
+
+    for key, *_ in sensors:
+        interval = get_interval(f"{key}_INTERVAL_SEC")
+        if interval is not None:
+            interval_sec[key] = interval
+            last_run[key] = 0
+
+    if not interval_sec:
+        print("❌ No sensors enabled. Exiting.")
+        sys.exit(1)
 
     print("🔁 Entering sensor loop")
     while True:
@@ -167,10 +249,10 @@ def main():
         readings = []
 
         for key, addr, sensor_type, read_func in sensors:
-            enabled = config.get(key, "").lower() == "true"
-            if not enabled:
+            interval = interval_sec.get(key)
+            if interval is None:
                 continue
-            if current_time - last_run[key] >= interval_sec[key]:
+            if current_time - last_run[key] >= interval:
                 print(f"⏱️ Polling {sensor_type} at {addr}")
                 try:
                     data = read_func(addr)
@@ -178,30 +260,21 @@ def main():
                     print(f"⚠️ Error polling {sensor_type}: {e}", file=sys.stderr)
                     data = None
                 print(f"📟 {sensor_type} ({addr}) data: {data}")
-                readings += flatten_sensor_data(data, addr, sensor_type, now) if data else []
+                readings += (
+                    flatten_sensor_data(data, addr, sensor_type, now) if data else []
+                )
                 last_run[key] = current_time
 
         if readings:
             print(f"📝 Inserting {len(readings)} readings at {now}")
-            conn = sqlite3.connect(DB_PATH)
-            ensure_schema(conn)
-            conn.executemany(
-                """
-                INSERT INTO i2c_readings (timestamp, device_address, sensor_type, key, value)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                readings,
-            )
-            conn.commit()
-            conn.close()
+            store_readings(readings)
 
-        # Compute time until next sensor is due
         next_due_in = min(
-            max(0.5, interval_sec[key] - (current_time - last_run[key]))
-            for key in last_run
-            if config.get(key, "").lower() == "true"
+            max(0.5, interval - (current_time - last_run[key]))
+            for key, interval in interval_sec.items()
         )
         time.sleep(min(5, math.ceil(next_due_in)))
+
 
 if __name__ == "__main__":
     main()

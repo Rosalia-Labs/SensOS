@@ -61,11 +61,11 @@ class TestUtils(unittest.TestCase):
                 self.assertEqual(utils.read_network_conf(), {})
 
     def test_read_network_conf_valid(self):
-        mock_data = "SERVER_IP=1.2.3.4\nNETWORK_NAME=testnet\n"
+        mock_data = "SERVER_WG_IP=1.2.3.4\nNETWORK_NAME=testnet\n"
         with patch("builtins.open", mock_open(read_data=mock_data)):
             with patch("os.path.exists", return_value=True):
                 result = utils.read_network_conf()
-                self.assertEqual(result["SERVER_IP"], "1.2.3.4")
+                self.assertEqual(result["SERVER_WG_IP"], "1.2.3.4")
                 self.assertEqual(result["NETWORK_NAME"], "testnet")
 
     def test_safe_cmd_output_success(self):

@@ -5,4 +5,5 @@ adafruit-circuitpython-ads1x15
 adafruit-circuitpython-scd30
 adafruit-circuitpython-scd4x
 requests
+pynmea2
 lgpio
