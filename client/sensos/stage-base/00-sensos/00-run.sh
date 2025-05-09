@@ -38,6 +38,10 @@ for subdir in "${FILES_DIR}/"*/; do
         if [ ${#files[@]} -gt 0 ]; then
             cp -a "${files[@]}" "$SENSOS_DIR/$name/"
         fi
+        if [ "$name" = "init.d" ]; then
+            echo "Ensuring scripts in /sensos/init.d are executable"
+            find "$SENSOS_DIR/$name" -type f -exec chmod +x {} +
+        fi
         ;;
     esac
 done

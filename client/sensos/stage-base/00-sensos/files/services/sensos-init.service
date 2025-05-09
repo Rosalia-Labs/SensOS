@@ -1,0 +1,13 @@
+[Unit]
+Description=Run SensOS boot initialization scripts
+After=default.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/run-sensos-init.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

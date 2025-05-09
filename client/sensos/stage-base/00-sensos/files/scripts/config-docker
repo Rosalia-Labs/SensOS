@@ -54,12 +54,6 @@ register_option --start-service start_service "Start systemd service" "$(get_def
 
 parse_switches "$script_name" "$@"
 
-# Load sensor configs if available
-source /sensos/etc/i2c-sensors.conf 2>/dev/null || true
-if [[ -f /sensos/etc/vegetronix-sensors.conf ]]; then
-    VEGETRONIX_CHANNELS=$(grep -E '^[A-Z0-9]+=.*' /sensos/etc/vegetronix-sensors.conf | paste -sd';' -)
-fi
-
 # Ensure output directory exists
 docker_compose_dir=/sensos/docker
 mkdir -p "$docker_compose_dir"
@@ -71,11 +65,6 @@ fi
 # Always write all keys, with fallback to empty string if not set
 env_file="$docker_compose_dir/.env"
 cat >"$env_file" <<EOF
-BME280_ADDR=${BME280_ADDR:-}
-SCD30=${SCD30:-}
-SCD4X=${SCD4X:-}
-ADS1015=${ADS1015:-}
-VEGETRONIX_CHANNELS=${VEGETRONIX_CHANNELS:-}
 POSTGRES_DB=${postgres_db}
 POSTGRES_USER=${postgres_user}
 POSTGRES_PASSWORD=${postgres_password}
