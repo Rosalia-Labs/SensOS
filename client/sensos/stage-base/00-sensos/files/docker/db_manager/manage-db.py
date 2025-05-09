@@ -22,6 +22,8 @@ DB_PARAMS = {
 
 AUDIO_BASE = Path("/mnt/audio_recordings")
 
+HUMAN_VOCAL_SCORE_THRESHOLD = float(os.environ.get("HUMAN_VOCAL_SCORE_THRESHOLD", 0.1))
+
 
 def connect_with_retry():
     while True:
@@ -87,12 +89,15 @@ def zero_human_vocal_segments(conn) -> tuple[bool, bool]:
             JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE bs.label ILIKE '%Human vocal%'
-              AND af.file_path IS NOT NULL
-              AND NOT ag.vocal_check
+            AND bs.score >= %s
+            AND af.file_path IS NOT NULL
+            AND NOT ag.vocal_check
             ORDER BY ag.start_frame
             LIMIT 1
-            """
+            """,
+            (HUMAN_VOCAL_SCORE_THRESHOLD,),
         )
+
         seg = cur.fetchone()
 
     if not seg:
