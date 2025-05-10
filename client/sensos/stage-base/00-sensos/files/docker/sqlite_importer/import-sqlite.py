@@ -35,11 +35,14 @@ def create_schema_if_missing(conn):
             """
             CREATE SCHEMA IF NOT EXISTS sensos;
             CREATE TABLE IF NOT EXISTS sensos.i2c_readings (
+                id SERIAL PRIMARY KEY,
                 timestamp TIMESTAMPTZ NOT NULL,
-                sensor TEXT NOT NULL,
-                value DOUBLE PRECISION NOT NULL,
-                PRIMARY KEY (timestamp, sensor)
+                device_address TEXT NOT NULL,
+                sensor_type TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value DOUBLE PRECISION
             );
+            CREATE INDEX IF NOT EXISTS idx_i2c_time ON sensos.i2c_readings (timestamp);
             """
         )
         conn.commit()
@@ -57,42 +60,47 @@ def main():
                 sqlite_conn.row_factory = sqlite3.Row
                 sqlite_cur = sqlite_conn.cursor()
 
-                row = sqlite_cur.execute(
-                    "SELECT * FROM i2c_readings LIMIT 10"
-                ).fetchone()
-                if not row:
+                rows = sqlite_cur.execute(
+                    "SELECT * FROM i2c_readings ORDER BY id LIMIT 10"
+                ).fetchall()
+
+                if not rows:
                     logger.info("No rows to import.")
                     time.sleep(60)
                     continue
 
-                try:
-                    with pg_conn.cursor() as pg_cur:
-                        pg_cur.execute(
-                            """
-                            INSERT INTO sensos.i2c_readings (timestamp, sensor, value)
-                            VALUES (%s, %s, %s)
-                            ON CONFLICT DO NOTHING
-                            """,
-                            (row["timestamp"], row["sensor"], row["value"]),
+                for row in rows:
+                    try:
+                        with pg_conn.cursor() as pg_cur:
+                            pg_cur.execute(
+                                """
+                                INSERT INTO sensos.i2c_readings
+                                (timestamp, device_address, sensor_type, key, value)
+                                VALUES (%s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    row["timestamp"],
+                                    row["device_address"],
+                                    row["sensor_type"],
+                                    row["key"],
+                                    row["value"],
+                                ),
+                            )
+
+                        sqlite_cur.execute(
+                            "DELETE FROM i2c_readings WHERE id = ?", (row["id"],)
                         )
 
-                    sqlite_cur.execute(
-                        "DELETE FROM i2c_readings WHERE timestamp = ? AND sensor = ?",
-                        (row["timestamp"], row["sensor"]),
-                    )
+                        logger.info(f"Imported and deleted row {row['id']}")
 
-                    # Commit only after both operations succeed
-                    pg_conn.commit()
-                    sqlite_conn.commit()
+                    except Exception as e:
+                        logger.error(f"Error syncing row {row['id']}: {e}")
+                        pg_conn.rollback()
+                        sqlite_conn.rollback()
+                        break  # Stop batch on error
 
-                    logger.info(
-                        f"Imported and deleted: {row['timestamp']} {row['sensor']}"
-                    )
-
-                except Exception as e:
-                    logger.error(f"Error syncing row: {e}")
-                    pg_conn.rollback()
-                    sqlite_conn.rollback()
+                pg_conn.commit()
+                sqlite_conn.commit()
 
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
