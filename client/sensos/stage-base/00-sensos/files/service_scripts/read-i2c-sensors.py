@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 import sys
 import time
-import math
+import heapq
 import sqlite3
 import datetime
 from pathlib import Path
+
 
 sys.path.append("/sensos/lib")
 from utils import read_kv_config, setup_logging
 
 config = read_kv_config("/sensos/etc/i2c-sensors.conf")
 DB_PATH = Path("/sensos/data/microenv/sensor_readings.db")
+
+MAX_ATTEMPTS = 3
+BACKOFF_MULTIPLIER = 2
 
 
 def ensure_schema(conn):
@@ -229,51 +233,65 @@ def main():
         ("I2C_GPS", "0x10", "I2C_GPS", read_i2c_gps),
     ]
 
-    last_run = {}
-    interval_sec = {}
+    polling_queue = []
 
-    for key, *_ in sensors:
+    for key, addr, sensor_type, read_func in sensors:
         interval = get_interval(f"{key}_INTERVAL_SEC")
         if interval is not None:
-            interval_sec[key] = interval
-            last_run[key] = 0
+            heapq.heappush(
+                polling_queue,
+                (time.time(), key, addr, sensor_type, read_func, interval),
+            )
 
-    if not interval_sec:
+    if not polling_queue:
         print("❌ No sensors enabled. Exiting.")
         sys.exit(1)
 
-    print("🔁 Entering sensor loop")
-    while True:
-        now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-        current_time = time.time()
-        readings = []
-
-        for key, addr, sensor_type, read_func in sensors:
-            interval = interval_sec.get(key)
-            if interval is None:
-                continue
-            if current_time - last_run[key] >= interval:
-                print(f"⏱️ Polling {sensor_type} at {addr}")
-                try:
-                    data = read_func(addr)
-                except Exception as e:
-                    print(f"⚠️ Error polling {sensor_type}: {e}", file=sys.stderr)
-                    data = None
-                print(f"📟 {sensor_type} ({addr}) data: {data}")
-                readings += (
-                    flatten_sensor_data(data, addr, sensor_type, now) if data else []
-                )
-                last_run[key] = current_time
-
-        if readings:
-            print(f"📝 Inserting {len(readings)} readings at {now}")
-            store_readings(readings)
-
-        next_due_in = min(
-            max(0.5, interval - (current_time - last_run[key]))
-            for key, interval in interval_sec.items()
+    print("🔁 Entering sensor loop (priority queue with retries + backoff)")
+    while polling_queue:
+        now = time.time()
+        next_time, key, addr, sensor_type, read_func, interval = heapq.heappop(
+            polling_queue
         )
-        time.sleep(min(5, math.ceil(next_due_in)))
+
+        wait = max(0, next_time - now)
+        time.sleep(wait)
+
+        timestamp = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        print(f"⏱️ Polling {sensor_type} at {addr}...")
+
+        data = None
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                data = read_func(addr)
+                if data:
+                    break
+                else:
+                    print(
+                        f"⚠️ {sensor_type} returned no data (attempt {attempt}/{MAX_ATTEMPTS})"
+                    )
+            except Exception as e:
+                print(
+                    f"⚠️ Error on attempt {attempt} reading {sensor_type}: {e}",
+                    file=sys.stderr,
+                )
+            time.sleep(0.2)
+
+        if data:
+            print(f"📟 {sensor_type} ({addr}) data: {data}")
+            readings = flatten_sensor_data(data, addr, sensor_type, timestamp)
+            store_readings(readings)
+            next_interval = interval
+        else:
+            print(
+                f"❌ All {MAX_ATTEMPTS} attempts failed for {sensor_type} at {addr}, backing off."
+            )
+            next_interval = interval * BACKOFF_MULTIPLIER
+
+        heapq.heappush(
+            polling_queue,
+            (time.time() + next_interval, key, addr, sensor_type, read_func, interval),
+        )
 
 
 if __name__ == "__main__":
