@@ -113,7 +113,7 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - /sensos/data/microenv:/microenv:ro
+      - /sensos/data/microenv:/microenv
     deploy:
       restart_policy:
         condition: on-failure

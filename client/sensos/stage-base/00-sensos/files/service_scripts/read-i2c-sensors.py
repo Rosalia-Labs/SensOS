@@ -11,7 +11,7 @@ sys.path.append("/sensos/lib")
 from utils import read_kv_config, setup_logging
 
 config = read_kv_config("/sensos/etc/i2c-sensors.conf")
-DB_PATH = Path("/sensos/data/microenv/sensor_readings.db")
+DB_PATH = Path("/sensos/data/microenv/i2c_readings.db")
 
 MAX_ATTEMPTS = 3
 BACKOFF_MULTIPLIER = 2
