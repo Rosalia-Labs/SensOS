@@ -3,22 +3,29 @@
 import os
 import time
 import json
+import logging
 import numpy as np
 import psycopg
-import tflite_runtime.interpreter as tflite
-import librosa
-import logging
-import sys
 import soundfile as sf
+import tflite_runtime.interpreter as tflite
 
 from pathlib import Path
+from typing import Optional, Tuple, Dict, Any
+from sound_utils import (
+    load_birdnet_model,
+    BirdNETModel,
+    compute_audio_features,
+    compute_binned_spectrum,
+    scale_by_max_value,
+    invoke_birdnet,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("audio-analyzer")
 
 # DB connection
-DB_PARAMS = (
+DB_PARAMS: str = (
     f"dbname={os.environ.get('POSTGRES_DB', 'postgres')} "
     f"user={os.environ.get('POSTGRES_USER', 'postgres')} "
     f"password={os.environ.get('POSTGRES_PASSWORD', 'sensos')} "
@@ -27,40 +34,30 @@ DB_PARAMS = (
 )
 
 # Paths
-ROOT = Path("/mnt/audio_recordings")
-CATALOGED = ROOT / "cataloged"
+ROOT: Path = Path("/mnt/audio_recordings")
+CATALOGED: Path = ROOT / "cataloged"
 
-# Audio
-SAMPLE_RATE = 48000
-SEGMENT_DURATION = 3
-SEGMENT_SIZE = SAMPLE_RATE * SEGMENT_DURATION
-STEP_SIZE = SAMPLE_RATE  # 1s step
+# Audio constants
+SAMPLE_RATE: int = 48000
+SEGMENT_DURATION: int = 3
+SEGMENT_SIZE: int = SAMPLE_RATE * SEGMENT_DURATION
+STEP_SIZE: int = SAMPLE_RATE  # 1s step
 
-# STFT
-N_FFT = 2048
-HOP_LENGTH = 512
-FULL_SPECTRUM_BINS = 20
-BIOACOUSTIC_BINS = 20
+# Spectrogram constants
+N_FFT: int = 2048
+HOP_LENGTH: int = 512
+FULL_SPECTRUM_BINS: int = 20
+BIOACOUSTIC_BINS: int = 20
 
-# BirdNET
-MODEL_PATH = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
-LABELS_PATH = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
-
-interpreter = tflite.Interpreter(model_path=MODEL_PATH)
-interpreter.allocate_tensors()
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
+# BirdNET model and labels
+MODEL_PATH: str = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
+LABELS_PATH: str = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 
 
-with open(LABELS_PATH, "r") as f:
-    LABELS = [
-        f"{common} ({sci})" if "_" in line else line.strip()
-        for line in f.readlines()
-        for sci, common in [line.strip().split("_", 1)]
-    ]
+birdnet_model: BirdNETModel = load_birdnet_model(MODEL_PATH, LABELS_PATH)
 
 
-def table_exists(conn, table_name):
+def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -74,116 +71,86 @@ def table_exists(conn, table_name):
         return cur.fetchone()[0]
 
 
-def initialize_schema():
+def initialize_schema() -> None:
     with psycopg.connect(DB_PARAMS) as conn:
-        while True:
-            if not table_exists(conn, "audio_files"):
-                logger.info("Waiting for sensos.audio_files table to be created.")
-                time.sleep(60)
-            else:
-                break
+        while not table_exists(conn, "audio_files"):
+            logger.info("Waiting for sensos.audio_files table to be created.")
+            time.sleep(60)
 
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.audio_segments (
-                    id SERIAL PRIMARY KEY,
-                    file_id INTEGER NOT NULL REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
-                    channel INT NOT NULL,
-                    start_frame BIGINT NOT NULL,
-                    end_frame BIGINT NOT NULL CHECK (end_frame > start_frame),
-                    vocal_check BOOLEAN NOT NULL DEFAULT FALSE,
-                    UNIQUE (file_id, channel, start_frame)
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.audio_segments (
+                id SERIAL PRIMARY KEY,
+                file_id INTEGER NOT NULL REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
+                channel INT NOT NULL,
+                start_frame BIGINT NOT NULL,
+                end_frame BIGINT NOT NULL CHECK (end_frame > start_frame),
+                vocal_check BOOLEAN NOT NULL DEFAULT FALSE,
+                UNIQUE (file_id, channel, start_frame)
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
+                """CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
                 ON sensos.audio_segments(file_id);
                 CREATE INDEX IF NOT EXISTS audio_segments_file_start_index
                 ON sensos.audio_segments(file_id, start_frame);
-                """
+            """
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.sound_statistics (
-                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                    peak_amplitude FLOAT,
-                    rms FLOAT,
-                    snr FLOAT
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.sound_statistics (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                peak_amplitude FLOAT,
+                rms FLOAT,
+                snr FLOAT
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.full_spectrum (
-                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                    spectrum JSONB
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.full_spectrum (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                spectrum JSONB
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.bioacoustic_spectrum (
-                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                    spectrum JSONB
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.bioacoustic_spectrum (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                spectrum JSONB
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
-                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                    vector vector(1024)
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                vector vector(1024)
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
-                    segment_id INTEGER REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                    label TEXT,
-                    score FLOAT,
-                    PRIMARY KEY (segment_id, label)
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
+                segment_id INTEGER REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                label TEXT,
+                score FLOAT,
+                PRIMARY KEY (segment_id, label)
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.score_statistics (
-                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                    hill_number FLOAT,
-                    simpson_index FLOAT
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.score_statistics (
+                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                hill_number FLOAT,
+                simpson_index FLOAT
+            );"""
             )
-
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sensos.birdnet_processed_files (
-                    file_id INTEGER PRIMARY KEY REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
-                    segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
-                    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                """
+                """CREATE TABLE IF NOT EXISTS sensos.birdnet_processed_files (
+                file_id INTEGER PRIMARY KEY REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
+                segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
+                processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );"""
             )
-
             conn.commit()
             logger.info("✅ Schema initialized.")
 
 
-def get_next_file(cur):
+def get_next_file(cur: psycopg.Cursor) -> Optional[Tuple[int, str]]:
     cur.execute(
         """
         SELECT af.id, af.file_path
@@ -194,114 +161,21 @@ def get_next_file(cur):
         )
         ORDER BY af.cataloged_at
         LIMIT 1;
-        """
+    """
     )
     return cur.fetchone()
 
 
-def flat_sigmoid(x, sensitivity=-1, bias=1.0):
-    return 1 / (1.0 + np.exp(sensitivity * np.clip((x + (bias - 1.0) * 10.0), -20, 20)))
-
-
-def compute_audio_features(audio: np.ndarray) -> tuple[float, float, float]:
-    # Convert to float32 to avoid overflow
-    audio = audio.astype(np.float64)
-
-    # Flatten in case audio is multichannel
-    flat_audio = audio.flatten()
-
-    # Compute peak and RMS
-    peak = float(np.max(np.abs(flat_audio)))
-    rms = float(np.sqrt(np.mean(flat_audio**2)))
-
-    # Compute SNR
-    snr = float(20 * np.log10(peak / rms)) if rms > 1e-12 else 0.0
-    return peak, rms, snr
-
-
-def get_freq_bins(min_f, max_f, bins):
-    return np.logspace(np.log10(min_f), np.log10(max_f), bins + 1)
-
-
-def compute_binned_spectrum(audio, min_freq, max_freq, bins):
-    S = np.abs(librosa.stft(audio, n_fft=N_FFT, hop_length=HOP_LENGTH)) ** 2
-    freqs = librosa.fft_frequencies(sr=SAMPLE_RATE, n_fft=N_FFT)
-    bin_edges = get_freq_bins(min_freq, max_freq, bins)
-    return librosa.power_to_db(
-        [
-            np.sum(S[(freqs >= bin_edges[i]) & (freqs < bin_edges[i + 1])])
-            for i in range(bins)
-        ],
-        ref=1.0,
-    ).tolist()
-
-
-# This mirrors libsoundfile c code
-def scale_by_max_value(audio: np.ndarray) -> np.ndarray:
-    max_val = np.max(np.abs(audio))
-    if max_val == 0:
-        return np.zeros_like(audio, dtype=np.float32)
-
-    scale = max_val * (32768.0 / 32767.0)
-    return (audio / scale).astype(np.float32)
-
-
-def invoke_birdnet(audio):
-    input_data = np.expand_dims(audio, axis=0).astype(np.float32)
-    interpreter.set_tensor(input_details[0]["index"], input_data)
-    interpreter.invoke()
-    scores = interpreter.get_tensor(output_details[0]["index"])
-    embedding = interpreter.get_tensor(output_details[0]["index"] - 1)
-    scores_flat = flat_sigmoid(scores.flatten())
-    embedding_flat = embedding.flatten()
-
-    total = np.sum(scores_flat)
-    probs = scores_flat / total if total > 0 else np.zeros_like(scores_flat)
-    entropy = -np.sum(probs[probs > 0] * np.log2(probs[probs > 0]))
-    return (
-        embedding_flat,
-        {LABELS[i]: scores_flat[i] for i in np.argsort(scores_flat)[-5:][::-1]},
-        float(2**entropy),
-        float(np.sum(probs**2)),
-    )
-
-
-def fetch_and_verify_metadata(cur, file_id):
-    """
-    Fetch metadata from the database for the given file_id,
-    verify it against actual file contents, and return:
-      - full absolute Path to the file
-      - metadata dict with fields: channels, sample_rate, frames, format, subtype
-
-    Raises ValueError if verification fails or file is missing.
-    """
-    cur.execute(
-        """
-        SELECT file_path, channels, sample_rate, frames, format, subtype
-        FROM sensos.audio_files
-        WHERE id = %s;
-        """,
-        (file_id,),
-    )
+def fetch_metadata(cur: psycopg.Cursor, file_id: int) -> Tuple[Path, Dict[str, Any]]:
+    cur.execute("SELECT file_path FROM sensos.audio_files WHERE id = %s;", (file_id,))
     row = cur.fetchone()
     if row is None:
         raise ValueError(f"No file entry found for id {file_id}")
-
-    file_path, channels, sample_rate, frames, fmt, subtype = row
+    (file_path,) = row
     path = CATALOGED / Path(file_path).relative_to("cataloged")
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
-
     info = sf.info(path)
-    if (
-        info.channels != channels
-        or info.samplerate != sample_rate
-        or info.frames != frames
-        or info.format != fmt
-        or info.subtype != subtype
-    ):
-        raise ValueError(f"Metadata mismatch for file {file_path}")
-
     return path, {
         "channels": info.channels,
         "sample_rate": info.samplerate,
@@ -311,78 +185,80 @@ def fetch_and_verify_metadata(cur, file_id):
     }
 
 
-def get_file_and_metadata(cur):
+def get_file_and_metadata(
+    cur: psycopg.Cursor,
+) -> Optional[Tuple[int, str, Path, Dict[str, Any]]]:
     file_entry = get_next_file(cur)
     if not file_entry:
         return None
     file_id, file_path = file_entry
-    abs_path, meta = fetch_and_verify_metadata(cur, file_id)
+    abs_path, meta = fetch_metadata(cur, file_id)
     return file_id, file_path, abs_path, meta
 
 
-def process_file(file_id, file_path, abs_path, meta):
+def process_file(
+    cur: psycopg.Cursor, file_info: Tuple[int, str, Path, Dict[str, Any]]
+) -> None:
+    file_id, file_path, abs_path, meta = file_info
     logger.info(
         f"Processing {file_path} ({meta['channels']} ch, {meta['frames']/meta['sample_rate']:.1f} s)"
     )
-
     with sf.SoundFile(abs_path.as_posix(), "r") as f:
-        if f.channels != meta["channels"] or f.samplerate != SAMPLE_RATE:
-            logger.warning("Unexpected file format")
-
-        with psycopg.connect(DB_PARAMS) as conn:
-            with conn.transaction():
-                with conn.cursor() as cur:
-                    count = analyze_segments(f, cur, file_id, meta["channels"])
-                    cur.execute(
-                        """
-                        INSERT INTO sensos.birdnet_processed_files (file_id, segment_count)
-                        VALUES (%s, %s);
-                        """,
-                        (file_id, count),
-                    )
+        count = analyze_segments(f, cur, file_id, meta["channels"])
+        cur.execute(
+            "INSERT INTO sensos.birdnet_processed_files (file_id, segment_count) VALUES (%s, %s);",
+            (file_id, count),
+        )
 
 
-def analyze_segments(f, cur, file_id, channels) -> int:
+def analyze_segments(
+    f: sf.SoundFile, cur: psycopg.Cursor, file_id: int, channels: int
+) -> int:
     segment_count = 0
-
     for start in range(0, int(f.frames) - SEGMENT_SIZE + 1, STEP_SIZE):
         f.seek(start)
         raw_audio_all = f.read(SEGMENT_SIZE, dtype="int32", always_2d=True)
-
         for ch in range(channels):
             raw_audio = raw_audio_all[:, ch]
             if len(raw_audio) != SEGMENT_SIZE:
                 continue
-
             segment_id = insert_segment(cur, file_id, ch, start, start + SEGMENT_SIZE)
             analyze_and_store_features(cur, segment_id, raw_audio)
             segment_count += 1
-
     return segment_count
 
 
-def insert_segment(cur, file_id, ch, start, end):
+def insert_segment(
+    cur: psycopg.Cursor, file_id: int, ch: int, start: int, end: int
+) -> int:
     cur.execute(
-        """
-        INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame)
-        VALUES (%s, %s, %s, %s)
-        RETURNING id;
-        """,
+        "INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame) VALUES (%s, %s, %s, %s) RETURNING id;",
         (file_id, ch, start, end),
     )
     return cur.fetchone()[0]
 
 
-def analyze_and_store_features(cur, segment_id, raw_audio):
+def analyze_and_store_features(
+    cur: psycopg.Cursor, segment_id: int, raw_audio: np.ndarray
+) -> None:
     peak, rms, snr = compute_audio_features(raw_audio)
     float_audio = raw_audio.astype(np.float32)
     full_spec = compute_binned_spectrum(
-        float_audio, 50, SAMPLE_RATE // 2, FULL_SPECTRUM_BINS
+        float_audio,
+        SAMPLE_RATE,
+        N_FFT,
+        HOP_LENGTH,
+        50,
+        SAMPLE_RATE // 2,
+        FULL_SPECTRUM_BINS,
     )
-    bio_spec = compute_binned_spectrum(float_audio, 1000, 8000, BIOACOUSTIC_BINS)
+    bio_spec = compute_binned_spectrum(
+        float_audio, SAMPLE_RATE, N_FFT, HOP_LENGTH, 1000, 8000, BIOACOUSTIC_BINS
+    )
     normalized_audio = scale_by_max_value(float_audio)
-    embedding, top_scores, hill, simpson = invoke_birdnet(normalized_audio)
-
+    embedding, top_scores, hill, simpson = invoke_birdnet(
+        normalized_audio, birdnet_model
+    )
     cur.execute(
         "INSERT INTO sensos.sound_statistics (segment_id, peak_amplitude, rms, snr) VALUES (%s, %s, %s, %s);",
         (segment_id, peak, rms, snr),
@@ -410,22 +286,51 @@ def analyze_and_store_features(cur, segment_id, raw_audio):
     )
 
 
-def main():
-    initialize_schema()
+def is_valid_metadata(file_info: Tuple[int, str, Path, Dict[str, Any]]) -> bool:
+    try:
+        _, file_path, abs_path, meta = file_info
+        info = sf.info(abs_path)
+        return (
+            info.channels == meta["channels"]
+            and info.samplerate == meta["sample_rate"]
+            and info.frames == meta["frames"]
+            and info.format == meta["format"]
+            and info.subtype == meta["subtype"]
+        )
+    except Exception as e:
+        logger.warning(f"Metadata check failed for {file_path}: {e}")
+        return False
 
+
+def main() -> None:
+    initialize_schema()
     while True:
         try:
             with psycopg.connect(DB_PARAMS) as conn:
                 with conn.cursor() as cur:
-                    result = get_file_and_metadata(cur)
-                    if result is None:
+                    file_info = get_file_and_metadata(cur)
+                    if file_info is None:
                         logger.info("No unprocessed files found. Sleeping 60s...")
                         time.sleep(60)
                         continue
-                    file_id, file_path, abs_path, meta = result
-
-            process_file(file_id, file_path, abs_path, meta)
-
+                    if is_valid_metadata(file_info):
+                        process_file(cur, file_info)
+                    else:
+                        _, file_path, *_ = file_info
+                        try:
+                            path = CATALOGED / Path(file_path).relative_to("cataloged")
+                            os.unlink(path)
+                            cur.execute(
+                                "DELETE FROM sensos.audio_files WHERE file_path = %s",
+                                (file_path,),
+                            )
+                            conn.commit()
+                            logger.warning(
+                                f"Deleted invalid file and DB row for {file_path}"
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to clean up {file_path}: {e}")
+                            conn.rollback()
         except Exception as e:
             logger.exception("❌ Failed to process file. Rolled back.")
             time.sleep(10)
