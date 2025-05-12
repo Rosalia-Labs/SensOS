@@ -111,6 +111,22 @@ class TestUtils(unittest.TestCase):
         path = "/tmp/does-not-exist.conf"
         self.assertEqual(utils.read_kv_config(path), {})
 
+    def test_get_client_wg_ip_present(self):
+        mock_data = "CLIENT_WG_IP=10.88.1.1\nSERVER_WG_IP=10.88.0.1\n"
+        with patch("builtins.open", mock_open(read_data=mock_data)):
+            with patch("os.path.exists", return_value=True):
+                self.assertEqual(utils.get_client_wg_ip(), "10.88.1.1")
+
+    def test_get_client_wg_ip_missing(self):
+        mock_data = "SERVER_WG_IP=10.88.0.1\n"
+        with patch("builtins.open", mock_open(read_data=mock_data)):
+            with patch("os.path.exists", return_value=True):
+                self.assertIsNone(utils.get_client_wg_ip())
+
+    def test_get_client_wg_ip_file_not_found(self):
+        with patch("os.path.exists", return_value=False):
+            self.assertIsNone(utils.get_client_wg_ip())
+
 
 if __name__ == "__main__":
     unittest.main()

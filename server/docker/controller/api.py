@@ -618,7 +618,9 @@ def upload_hardware_profile(
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
     profile_data = profile.model_dump()
-    wg_ip = profile_data.pop("wg_ip")
+    wg_ip = profile_data.pop("wg_ip", None)
+    if not wg_ip:
+        raise HTTPException(status_code=400, detail="wg_ip must be provided.")
     with get_db() as conn:
         with conn.cursor() as cur:
             # Internally fetch peer_id; do not expose it

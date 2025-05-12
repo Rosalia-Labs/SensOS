@@ -24,32 +24,42 @@ ARG_DEFS = [
 
 
 def generate_hardware_profile():
+    def safe(cmd):
+        try:
+            return run_command(cmd)
+        except Exception as e:
+            print(f"⚠️ Warning: failed to run '{cmd}': {e}", file=sys.stderr)
+            return None
+
+    try:
+        lsblk_output = safe("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")
+        disks = json.loads(lsblk_output) if lsblk_output else None
+    except Exception as e:
+        print(f"⚠️ Warning: failed to parse lsblk output as JSON: {e}", file=sys.stderr)
+        disks = None
+
     return remove_nulls(
         {
             "hostname": socket.gethostname(),
-            "model": run_command("cat /proc/device-tree/model"),
-            "kernel_version": run_command("uname -a"),
+            "model": safe("cat /proc/device-tree/model"),
+            "kernel_version": safe("uname -a"),
             "cpu": {
-                "model": run_command(
-                    "grep 'Model' /proc/cpuinfo | awk -F': ' '{print $2}'"
-                ),
-                "revision": run_command(
+                "model": safe("grep 'Model' /proc/cpuinfo | awk -F': ' '{print $2}'"),
+                "revision": safe(
                     "grep 'Revision' /proc/cpuinfo | awk -F': ' '{print $2}'"
                 ),
-                "serial": run_command(
-                    "grep 'Serial' /proc/cpuinfo | awk -F': ' '{print $2}'"
-                ),
+                "serial": safe("grep 'Serial' /proc/cpuinfo | awk -F': ' '{print $2}'"),
             },
             "firmware": {
-                "bootloader": run_command("vcgencmd bootloader_version"),
-                "firmware": run_command("vcgencmd version"),
+                "bootloader": safe("vcgencmd bootloader_version"),
+                "firmware": safe("vcgencmd version"),
             },
             "memory": {
                 "total": psutil.virtual_memory().total,
                 "available": psutil.virtual_memory().available,
             },
-            "disks": json.loads(run_command("lsblk -o NAME,SIZE,TYPE,MOUNTPOINT -J")),
-            "usb_devices": run_command("lsusb"),
+            "disks": disks,
+            "usb_devices": safe("lsusb"),
             "network_interfaces": {
                 iface: [addr.address for addr in addrs if addr.family == socket.AF_INET]
                 for iface, addrs in psutil.net_if_addrs().items()
@@ -60,7 +70,11 @@ def generate_hardware_profile():
 
 def upload_hardware_profile(server_ip, port, api_password):
     profile = generate_hardware_profile()
-    profile["wg_ip"] = None  # we don't try to infer this now
+    wg_ip = get_client_wg_ip()
+    if not wg_ip:
+        print("❌ CLIENT_WG_IP not found in network.conf. Aborting.", file=sys.stderr)
+        return
+    profile["wg_ip"] = wg_ip
 
     headers = {
         "Authorization": f"Basic {get_basic_auth(api_password)}",

@@ -400,3 +400,9 @@ def read_kv_config(path):
             key, val = line.split("=", 1)
             config[key.strip()] = val.strip()
     return config
+
+
+def get_client_wg_ip():
+    """Return CLIENT_WG_IP from /sensos/etc/network.conf, or None if not found."""
+    config = read_kv_config(NETWORK_CONF)
+    return config.get("CLIENT_WG_IP")
