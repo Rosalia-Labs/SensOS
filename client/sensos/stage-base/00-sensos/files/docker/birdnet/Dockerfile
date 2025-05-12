@@ -17,5 +17,6 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY birdnet-analyze.py .
+COPY sound_utils.py .
 
 CMD ["python", "birdnet-analyze.py"]
