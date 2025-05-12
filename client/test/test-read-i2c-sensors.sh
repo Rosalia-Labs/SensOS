@@ -41,14 +41,14 @@ PID=$!
 sleep 6
 kill $PID || true
 
-echo "✅ Dumping /sensos/data/microenv/sensor_readings.db contents:"
-sqlite3 /sensos/data/microenv/sensor_readings.db <<SQL
+echo "✅ Dumping /sensos/data/microenv/i2c_readings.db contents:"
+sqlite3 /sensos/data/microenv/i2c_readings.db <<SQL
 .headers on
 .mode column
 SELECT timestamp, device_address, sensor_type, key, value FROM i2c_readings;
 SQL
 
-row_count=$(sqlite3 /sensos/data/microenv/sensor_readings.db "SELECT COUNT(*) FROM i2c_readings;")
+row_count=$(sqlite3 /sensos/data/microenv/i2c_readings.db "SELECT COUNT(*) FROM i2c_readings;")
 if [ "$row_count" -lt 10 ]; then
   echo "❌ Test failed: expected at least 10 rows, got $row_count"
   exit 1
