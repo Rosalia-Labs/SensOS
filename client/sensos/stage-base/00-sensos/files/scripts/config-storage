@@ -205,6 +205,10 @@ sudo mkdir -p "$DATA_MOUNT"
 # Set mount point ownership in advance for ext4 mounts.
 sudo chown sensos-admin:sensos-data "$DATA_MOUNT"
 sudo chmod g+rws "$DATA_MOUNT"
+# Ensure microenv subdir exists and is writable by sensos-runner
+sudo mkdir -p "$DATA_MOUNT/microenv"
+sudo chown -R sensos-runner:sensos-data "$DATA_MOUNT/microenv"
+sudo chmod -R g+rwsX "$DATA_MOUNT/microenv"
 
 # If mount point is not empty, prompt to clean it up (warn user)
 if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
