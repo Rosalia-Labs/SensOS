@@ -22,6 +22,7 @@ default_ssid=$(hostname | sed 's/-/_/g')
 register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid "$default_ssid")"
 register_option --password password "WiFi password (8–63 chars, required)" "$(get_default password)"
 register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
+register_option --interface interface "Wireless interface to use" "$(get_default interface wlan0)"
 register_option --enable-service enable_service "Enable sensos-hotspot.service" "$(get_default enable_service true)"
 register_option --start-service start_service "Start sensos-hotspot.service" "$(get_default start_service false)"
 
@@ -47,6 +48,7 @@ mkdir -p "$config_dir" "$log_dir"
     echo "ssid = $ssid"
     echo "password = $password"
     echo "power_save = $power_save"
+    echo "interface = $interface"
 } >"$config_file"
 
 echo "✅ WiFi access point config written to $config_file."
