@@ -64,8 +64,8 @@ while true; do
             sleep 2
             sudo wg-quick up "$WG_INTERFACE"
 
-            new_ip=$(curl -s --max-time 5 ifconfig.me || echo "N/A")
-            log "🌐 External IP after restart: $new_ip"
+            external_ip=$(ip -4 addr show "$WG_INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+            log "🌐 Local WireGuard IP after restart: $external_ip"
 
             handshake=$(sudo wg show "$WG_INTERFACE" | grep latest | awk -F': ' '{print $2}')
             log "🤝 Latest handshake time (if any): $handshake"
