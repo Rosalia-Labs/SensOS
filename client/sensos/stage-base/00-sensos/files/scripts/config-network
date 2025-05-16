@@ -529,118 +529,127 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
 
-def configure_wireguard(args, api_password):
+def check_existing_wireguard_config(config_file, network_name, args, api_password):
     """
-    Check whether the local WireGuard configuration is valid...
-    If missing or mismatched, perform full WireGuard reconfiguration.
-    Returns the client’s WireGuard IP.
+    Checks whether an existing WireGuard config matches the API records.
+    Returns a tuple:
+        (should_reconfigure: bool, local_wg_ip: Optional[str])
     """
-    config_file = os.path.join(WG_DIR, f"{args.network}.conf")
-    reconfigure_wg = True
+    if not os.path.exists(config_file):
+        print("❌ No local WireGuard configuration file found.", file=sys.stderr)
+        return True, None
 
-    if os.path.exists(config_file):
-        print(f"Found WireGuard config at {config_file}.")
-        local_config = parse_local_config(config_file)
-        if "wg_ip" in local_config:
-            local_wg_ip = local_config["wg_ip"]
-            print(f"Local WireGuard IP: {local_wg_ip}. Querying /get-peer-info...")
-            url = f"http://{args.config_server}:{args.port}/get-peer-info?ip_address={local_wg_ip}"
-            headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
-            try:
-                resp = requests.get(url, headers=headers, timeout=5)
-                if resp.status_code == 200:
-                    peer_info = resp.json()
-                    if peer_info.get("exists"):
-                        local_server_pubkey = local_config.get("server_pubkey")
-                        local_peer_pubkey = read_file(
-                            os.path.join(WG_DIR, f"{args.network}-public.key")
-                        )
-                        if local_server_pubkey == peer_info.get(
-                            "network_wg_public_key"
-                        ) and local_peer_pubkey == peer_info.get("peer_wg_public_key"):
-                            print("Local WireGuard configuration matches API records.")
-                            if not args.force:
-                                choice = (
-                                    input("Reconfigure WireGuard? (y/N): ")
-                                    .strip()
-                                    .lower()
-                                )
-                                reconfigure_wg = choice == "y"
-                            else:
-                                reconfigure_wg = True
-                        else:
-                            print(
-                                "❌ Mismatch in WireGuard keys detected. Reconfiguration required.",
-                                file=sys.stderr,
-                            )
-                    else:
-                        print(
-                            "❌ Peer not registered in API. Full WireGuard configuration needed.",
-                            file=sys.stderr,
-                        )
-                else:
-                    print(
-                        f"❌ /get-peer-info returned {resp.status_code}; proceeding with reconfiguration.",
-                        file=sys.stderr,
-                    )
-            except Exception as e:
-                print("❌ Error accessing /get-peer-info:", e, file=sys.stderr)
+    print(f"Found WireGuard config at {config_file}.")
+    local_config = parse_local_config(config_file)
+
+    if "wg_ip" not in local_config:
+        print("❌ Local config does not contain a valid WireGuard IP.", file=sys.stderr)
+        return True, None
+
+    local_wg_ip = local_config["wg_ip"]
+    print(f"Local WireGuard IP: {local_wg_ip}. Querying /get-peer-info...")
+
+    url = f"http://{args.config_server}:{args.port}/get-peer-info?ip_address={local_wg_ip}"
+    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=5)
+        if resp.status_code != 200:
+            print(
+                f"❌ /get-peer-info returned {resp.status_code}; reconfiguring.",
+                file=sys.stderr,
+            )
+            return True, local_wg_ip
+
+        peer_info = resp.json()
+        if not peer_info.get("exists"):
+            print(
+                "❌ Peer not registered in API. Reconfiguration needed.",
+                file=sys.stderr,
+            )
+            return True, local_wg_ip
+
+        local_server_pubkey = local_config.get("server_pubkey")
+        local_peer_pubkey = read_file(
+            os.path.join(WG_DIR, f"{network_name}-public.key")
+        )
+
+        if local_server_pubkey == peer_info.get(
+            "network_wg_public_key"
+        ) and local_peer_pubkey == peer_info.get("peer_wg_public_key"):
+            print("✅ Local WireGuard configuration matches API records.")
+            if not args.force:
+                choice = input("Reconfigure WireGuard? (y/N): ").strip().lower()
+                return choice == "y", local_wg_ip
+            return True, local_wg_ip
         else:
             print(
-                "❌ Local config does not contain a valid WireGuard IP.",
+                "❌ Mismatch in WireGuard keys detected. Reconfiguration required.",
                 file=sys.stderr,
             )
-    else:
-        print("❌ No local WireGuard configuration file found.", file=sys.stderr)
+            return True, local_wg_ip
 
-    if reconfigure_wg:
-        print("Reconfiguring WireGuard...")
-        wg_public_key = generate_wireguard_keys(args.network, args.force)
-        if wg_public_key is None:
-            print(
-                "❌ WireGuard key generation/retrieval failed. Skipping WireGuard configuration.",
-                file=sys.stderr,
-            )
-            return None
+    except Exception as e:
+        print(f"❌ Error accessing /get-peer-info: {e}", file=sys.stderr)
+        return True, local_wg_ip
 
-        wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
-            args.config_server,
-            args.port,
-            args.network,
-            wg_public_key,
-            api_password,
-            args.subnet,
-            note=args.note,
-        )
 
-        if not wg_ip:
-            print(
-                "❌ Peer registration failed. Skipping WireGuard configuration.",
-                file=sys.stderr,
-            )
-            return None
+def configure_wireguard(args, api_password):
+    config_file = os.path.join(WG_DIR, f"{args.network}.conf")
 
-        if args.wg_endpoint:
-            print(
-                f"⚠️ Overriding WireGuard endpoint IP: {wg_public_ip} → {args.wg_endpoint}"
-            )
-            wg_public_ip = args.wg_endpoint
+    reconfigure_wg, local_wg_ip = check_existing_wireguard_config(
+        config_file, args.network, args, api_password
+    )
 
-        write_wireguard_config(
-            wg_ip,
-            server_pubkey,
-            wg_public_ip,
-            wg_port,
-            args.network,
-            args.force,
-            args.wg_keepalive,
-        )
-        change_hostname(hostname)
-        return wg_ip
-    else:
+    if not reconfigure_wg:
         print("Keeping existing WireGuard configuration.")
-        local_config = parse_local_config(config_file)
-        return local_config.get("wg_ip", args.config_server)
+        return local_wg_ip or args.config_server
+
+    print("Reconfiguring WireGuard...")
+
+    wg_public_key = generate_wireguard_keys(args.network, args.force)
+    if wg_public_key is None:
+        print(
+            "❌ WireGuard key generation/retrieval failed. Skipping WireGuard configuration.",
+            file=sys.stderr,
+        )
+        return None
+
+    wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
+        args.config_server,
+        args.port,
+        args.network,
+        wg_public_key,
+        api_password,
+        args.subnet,
+        note=args.note,
+    )
+
+    if not wg_ip:
+        print(
+            "❌ Peer registration failed. Skipping WireGuard configuration.",
+            file=sys.stderr,
+        )
+        return None
+
+    if args.wg_endpoint:
+        print(
+            f"⚠️ Overriding WireGuard endpoint IP: {wg_public_ip} → {args.wg_endpoint}"
+        )
+        wg_public_ip = args.wg_endpoint
+
+    write_wireguard_config(
+        wg_ip,
+        server_pubkey,
+        wg_public_ip,
+        wg_port,
+        args.network,
+        args.force,
+        args.wg_keepalive,
+    )
+
+    change_hostname(hostname)
+    return wg_ip, wg_public_ip
 
 
 def configure_ssh(args, api_password):
@@ -731,8 +740,7 @@ def configure_ssh(args, api_password):
         print("Keeping existing SSH key configuration.")
 
 
-def write_client_settings(args, server_wg_ip, client_wg_ip):
-    """Write final mesh config for future services to use."""
+def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
     settings_dir = "/sensos/etc"
     settings_file = os.path.join(settings_dir, "network.conf")
     os.makedirs(settings_dir, exist_ok=True)
@@ -742,6 +750,7 @@ def write_client_settings(args, server_wg_ip, client_wg_ip):
         f"CLIENT_WG_IP={client_wg_ip}\n"
         f"SERVER_PORT={args.port}\n"
         f"NETWORK_NAME={args.network}\n"
+        f"WG_ENDPOINT_IP={endpoint_ip}\n"
     )
     if args.connectivity_profile:
         content += f"CONNECTIVITY_PROFILE={args.connectivity_profile}\n"
@@ -768,7 +777,7 @@ def main():
     if not api_password:
         print("❌ Critical error: API password not obtained. Aborting configuration.")
         return
-    client_wg_ip = configure_wireguard(args, api_password)
+    client_wg_ip, wg_public_ip = configure_wireguard(args, api_password)
     if not client_wg_ip:
         print("❌ WireGuard configuration failed. Aborting.")
         return
@@ -784,7 +793,11 @@ def main():
         print("✅ Services started successfully.")
     except Exception as e:
         print(f"❌ Error starting services: {e}")
-    write_client_settings(args, server_wg_ip, client_wg_ip)
+
+    endpoint_ip = args.wg_endpoint or wg_public_ip
+    endpoint_ip = endpoint_ip.split(":")[0] if ":" in endpoint_ip else endpoint_ip
+    write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip)
+
     if not args.no_connectivity_checks:
         enable_service("monitor-connectivity.service")
     else:
