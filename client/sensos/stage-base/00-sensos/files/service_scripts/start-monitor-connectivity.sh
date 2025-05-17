@@ -2,19 +2,33 @@
 #
 # monitor-connectivity.sh
 #
-# This script pings the WireGuard server internal IP from the network config.
-# If unreachable for 24 hours, it restarts the WireGuard interface.
-# If still unreachable for 7 days, the system reboots.
-# It also pings WG_ENDPOINT_IP to distinguish between WG and broader connectivity issues.
+# This script monitors WireGuard connectivity:
+# - Restarts WG if down for 6 hours.
+# - Restarts networking if down for 24 hours.
+# - Reboots if down for 7 days.
 #
 
 LOG_DIR="/sensos/log"
 LOGFILE="$LOG_DIR/connectivity_check.log"
 SETTINGS_FILE="/sensos/etc/network.conf"
 
-INTERVAL=3600                            # Ping interval in seconds (1 hour)
-RESTART_NETWORK_THRESHOLD=$((24 * 3600)) # Restart networking after 24 hours
-REBOOT_THRESHOLD=$((7 * 24 * 3600))      # Reboot after 7 days
+INTERVAL=3600 # Check every hour
+
+RESTART_WG_INTERVALS=6
+RESTART_NETWORK_INTERVALS=24
+REBOOT_INTERVALS=$((7 * 24))
+
+RESTART_WG_THRESHOLD=$((RESTART_WG_INTERVALS * INTERVAL))
+RESTART_NETWORK_THRESHOLD=$((RESTART_NETWORK_INTERVALS * INTERVAL))
+REBOOT_THRESHOLD=$((REBOOT_INTERVALS * INTERVAL))
+
+if ((RESTART_WG_THRESHOLD >= RESTART_NETWORK_THRESHOLD)) || ((RESTART_NETWORK_THRESHOLD >= REBOOT_THRESHOLD)); then
+    echo "ERROR: Thresholds must satisfy WG < Network < Reboot. Current values:" | tee -a "$LOGFILE"
+    echo "  RESTART_WG_THRESHOLD=$RESTART_WG_THRESHOLD" | tee -a "$LOGFILE"
+    echo "  RESTART_NETWORK_THRESHOLD=$RESTART_NETWORK_THRESHOLD" | tee -a "$LOGFILE"
+    echo "  REBOOT_THRESHOLD=$REBOOT_THRESHOLD" | tee -a "$LOGFILE"
+    exit 1
+fi
 
 mkdir -p "$LOG_DIR"
 
@@ -26,12 +40,12 @@ else
 fi
 
 if [[ "$CONNECTIVITY_PROFILE" == "offline" ]]; then
-    log "📴 Connectivity profile is 'offline'; skipping connectivity monitoring."
+    echo "📴 Connectivity profile is 'offline'; skipping connectivity monitoring." | tee -a "$LOGFILE"
     while true; do sleep 86400; done
 fi
 
-if [[ -z "$SERVER_WG_IP" || -z "$NETWORK_NAME" ]]; then
-    echo "ERROR: SERVER_WG_IP or NETWORK_NAME is not set in $SETTINGS_FILE." | tee -a "$LOGFILE"
+if [[ -z "$SERVER_WG_IP" || -z "$WG_ENDPOINT_IP" || -z "$NETWORK_NAME" ]]; then
+    echo "ERROR: SERVER_WG_IP, WG_ENDPOINT_IP, or NETWORK_NAME is not set in $SETTINGS_FILE." | tee -a "$LOGFILE"
     exit 1
 fi
 
@@ -46,51 +60,46 @@ last_success=$(date +%s)
 log "🔍 Starting connectivity monitoring to $SERVER_WG_IP via $WG_INTERFACE. Ping every $(($INTERVAL / 3600)) hour(s)."
 
 while true; do
+    sleep "$INTERVAL"
+
     current_time=$(date +%s)
     downtime=$((current_time - last_success))
+    wg_ok=false
 
-    if ping -c 1 -W 2 "$SERVER_WG_IP" >/dev/null 2>&1; then
-        last_success=$current_time
-        log "✅ Server IP ($SERVER_WG_IP) is reachable."
+    if ping -c 1 -W 2 "$WG_ENDPOINT_IP" >/dev/null 2>&1; then
+        log "🌍 Endpoint IP ($WG_ENDPOINT_IP) is reachable."
+
+        if ping -c 1 -W 2 "$SERVER_WG_IP" >/dev/null 2>&1; then
+            log "✅ Server WireGuard IP ($SERVER_WG_IP) is reachable."
+            last_success=$current_time
+            wg_ok=true
+        else
+            log "❌ Server WireGuard IP ($SERVER_WG_IP) is unreachable → WG tunnel failure suspected."
+        fi
     else
-        log "❌ Server IP ($SERVER_WG_IP) is unreachable."
-
-        if [[ -n "$WG_ENDPOINT_IP" ]]; then
-            if ping -c 1 -W 2 "$WG_ENDPOINT_IP" >/dev/null 2>&1; then
-                log "🌍 Endpoint IP ($WG_ENDPOINT_IP) is reachable → WireGuard tunnel is down, but external network is up."
-            else
-                log "🚫 Endpoint IP ($WG_ENDPOINT_IP) is also unreachable → Possible broader connectivity or NAT failure."
-            fi
-        fi
-
-        if [[ "$downtime" -ge "$REBOOT_THRESHOLD" ]]; then
-            log "🚨 No ping for $downtime seconds (>= $REBOOT_THRESHOLD). Rebooting system..."
-            sudo /sbin/reboot
-            exit 0
-        elif [[ "$downtime" -ge "$RESTART_NETWORK_THRESHOLD" ]]; then
-            log "⚠️ No ping for $downtime seconds (>= $RESTART_NETWORK_THRESHOLD). Restarting WireGuard..."
-
-            log "🧪 Restarting wg-quick@$WG_INTERFACE..."
-            sudo wg-quick down "$WG_INTERFACE"
-            sleep 2
-            sudo wg-quick up "$WG_INTERFACE"
-
-            external_ip=$(ip -4 addr show "$WG_INTERFACE" | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-            log "🌐 Local WireGuard IP after restart: $external_ip"
-
-            handshake=$(sudo wg show "$WG_INTERFACE" | grep latest | awk -F': ' '{print $2}')
-            log "🤝 Latest handshake time (if any): $handshake"
-
-            sleep 10
-
-            if ping -c 1 -W 2 "$SERVER_WG_IP" >/dev/null 2>&1; then
-                last_success=$(date +%s)
-                log "✅ WireGuard recovered after restart."
-            else
-                log "❌ Still unreachable after WireGuard restart."
-            fi
-        fi
+        log "🚫 Endpoint IP ($WG_ENDPOINT_IP) is unreachable → Broader network failure suspected."
     fi
 
-    sleep "$INTERVAL"
+    if [[ "$downtime" -ge "$REBOOT_THRESHOLD" ]]; then
+        log "🚨 No connectivity for $downtime seconds (>= $REBOOT_THRESHOLD). Rebooting..."
+        sudo /sbin/reboot
+        exit 0
+    elif [[ "$downtime" -ge "$RESTART_NETWORK_THRESHOLD" ]]; then
+        log "🔌 Restarting networking stack..."
+        sudo systemctl restart networking
+        sleep 10
+    elif [[ "$downtime" -ge "$RESTART_WG_THRESHOLD" ]]; then
+        log "🔄 Restarting WireGuard interface ($WG_INTERFACE)..."
+        sudo wg-quick down "$WG_INTERFACE"
+        sleep 2
+        sudo wg-quick up "$WG_INTERFACE"
+        sleep 10
+
+        if ping -c 1 -W 2 "$SERVER_WG_IP" >/dev/null 2>&1; then
+            last_success=$(date +%s)
+            log "✅ WireGuard recovered after restart."
+        else
+            log "❌ Still unreachable after WireGuard restart."
+        fi
+    fi
 done
