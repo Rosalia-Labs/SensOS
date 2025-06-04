@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import pwd
 import stat
 import argparse
 import requests
@@ -75,7 +76,7 @@ def parse_args():
                 "help": "WireGuard persistent keepalive interval (default: 25 seconds)",
                 "dest": "wg_keepalive",
                 "type": int,
-                "default": 25,
+                "default": 0,
             },
         ),
         (
@@ -84,6 +85,22 @@ def parse_args():
                 "action": "store_true",
                 "help": "Enable SSH password authentication (default: disabled)",
                 "dest": "enable_ssh_passwords",
+            },
+        ),
+        (
+            ["--ssh-tunnel-port"],
+            {
+                "help": "SSH port for clients to use when connecting to the server (default: 2345)",
+                "dest": "ssh_tunnel_port",
+                "type": int,
+                "default": 2345,
+            },
+        ),
+        (
+            ["--ssh-tunnel-ip"],
+            {
+                "help": "Server hostname or IP for SSH access (default: same as WireGuard endpoint/server)",
+                "dest": "ssh_tunnel_ip",
             },
         ),
         (
@@ -164,34 +181,18 @@ def generate_wireguard_keys(network_name, force):
             f"❌ Error: Configuration directory '{WG_DIR}' does not exist.",
             file=sys.stderr,
         )
-        return None
+        sys.exit(1)
 
     private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     public_key_file = os.path.join(WG_DIR, f"{network_name}-public.key")
-
-    if os.path.exists(private_key_file) and os.path.exists(public_key_file):
-        print(
-            f"ℹ️ Existing WireGuard keys found for network '{network_name}'. Using existing keys."
-        )
-        public_key = sudo_read_file(public_key_file)
-        return public_key
-
-    if (
-        os.path.exists(private_key_file) or os.path.exists(public_key_file)
-    ) and not force:
-        print(
-            "❌ Incomplete key files exist. Use --force to regenerate keys.",
-            file=sys.stderr,
-        )
-        return None
 
     print("🔑 Generating new WireGuard key pair...")
     private_key = run_command("wg genkey")
     public_key = run_command(f"echo {private_key} | wg pubkey")
 
     if not private_key or not public_key:
-        print("❌ Error: Failed to generate valid WireGuard keys.", file=sys.stderr)
-        return None
+        print("❌ Error: Failed to generate WireGuard keys.", file=sys.stderr)
+        sys.exit(1)
 
     run_command(f"echo '{private_key}' | sudo tee {private_key_file} > /dev/null")
     run_command(f"sudo chmod 600 {private_key_file}")
@@ -212,7 +213,7 @@ def register_peer(
             "❌ Error: Invalid WireGuard public key. Skipping peer registration.",
             file=sys.stderr,
         )
-        return None, None, None, None, None
+        sys.exit(1)
 
     server_url = f"http://{config_server}:{port}/register-peer"
     print(f"📡 Registering device on network '{network_name}' with {server_url}...")
@@ -235,7 +236,7 @@ def register_peer(
         print(
             f"❌ Failed to register. Server response: {response.text}", file=sys.stderr
         )
-        return None, None, None, None, None
+        sys.exit(1)
 
     data = response.json()
     wg_ip = data.get("wg_ip")
@@ -248,14 +249,14 @@ def register_peer(
             "❌ Error: Incomplete data received from peer registration.",
             file=sys.stderr,
         )
-        return None, None, None, None, None
+        sys.exit(1)
 
     hostname = compute_hostname(network_name, wg_ip)
     if hostname is None:
         print(
             "❌ Error: Could not compute hostname due to invalid IP.", file=sys.stderr
         )
-        return None, None, None, None, None
+        sys.exit(1)
 
     register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_password)
     return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
@@ -268,7 +269,7 @@ def register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_passwo
             "❌ Error: Missing WireGuard IP or public key for registration.",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
 
     server_url = f"http://{config_server}:{port}/register-wireguard-key"
     print(f"🔑 Registering WireGuard public key with {server_url}...")
@@ -285,6 +286,7 @@ def register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_passwo
             f"❌ Failed to register WireGuard key. Server response: {response.text}",
             file=sys.stderr,
         )
+        sys.exit(1)
     else:
         print(f"✅ WireGuard key registered for {wg_ip}.")
 
@@ -293,10 +295,10 @@ def change_hostname(new_hostname):
     """Change the system hostname to the computed value."""
     if new_hostname is None:
         print(
-            "❌ Error: New hostname is invalid. Skipping hostname change.",
+            "❌ Error: New hostname is invalid. Aborting.",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
 
     current_hostname = run_command("hostname")
     if current_hostname != new_hostname:
@@ -321,7 +323,7 @@ def change_hostname(new_hostname):
 
 
 def write_wireguard_config(
-    wg_ip, server_pubkey, wg_public_ip, wg_port, network_name, force, wg_keepalive
+    wg_ip, server_pubkey, wg_public_ip, wg_port, network_name, wg_keepalive
 ):
     """Write the WireGuard configuration file with secure permissions."""
     if not all([wg_ip, server_pubkey, wg_public_ip, wg_port]):
@@ -329,33 +331,22 @@ def write_wireguard_config(
             "❌ Error: Incomplete WireGuard data. Configuration not written.",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
 
     private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
-    if os.path.exists(wg_config_file):
-        print(
-            f"⚠️ WireGuard config file {wg_config_file} already exists.", file=sys.stderr
-        )
-        if not force:
-            print(
-                "🚫 Aborting to prevent overwriting existing configuration. Use --force to override.",
-                file=sys.stderr,
-            )
-            return
-
     private_key = sudo_read_file(private_key_file)
     if not private_key:
         print(
             "❌ Error: Private key is missing. Cannot write configuration.",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
 
     ip_parts = wg_ip.split(".")
     if len(ip_parts) != 4:
         print(f"❌ Error: Invalid IP format received: {wg_ip}", file=sys.stderr)
-        return
+        sys.exit(1)
 
     base_ip = f"{ip_parts[0]}.{ip_parts[1]}"
     allowed_ips = f"{base_ip}.0.0/16"
@@ -379,6 +370,7 @@ PersistentKeepalive = {wg_keepalive}
             f"❌ Expected WireGuard config not found at {wg_config_file}",
             file=sys.stderr,
         )
+        sys.exit(1)
     else:
         print(
             f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
@@ -392,14 +384,6 @@ def generate_ssh_keys(force):
     os.makedirs(ssh_dir, exist_ok=True)
     private_key_file = os.path.join(ssh_dir, "id_ed25519")
     public_key_file = f"{private_key_file}.pub"
-    if os.path.exists(private_key_file) and os.path.exists(public_key_file):
-        print("⚠️ SSH keys already exist.", file=sys.stderr)
-        if not force:
-            print(
-                "🚫 Aborting to prevent overwriting existing keys. Use --force to override.",
-                file=sys.stderr,
-            )
-            return
     print("🔑 Generating new SSH key pair...")
     run_command(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N ''")
     if not os.path.exists(public_key_file):
@@ -407,7 +391,7 @@ def generate_ssh_keys(force):
             f"❌ Error: Failed to generate SSH public key at {public_key_file}",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
     os.chmod(private_key_file, 0o600)
     print(f"✅ SSH key generated at {private_key_file} and {public_key_file}.")
 
@@ -482,8 +466,8 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
             f"❌ Error: SSH public key file '{public_key_file}' not found.",
             file=sys.stderr,
         )
-        return
-    username = os.getenv("USER") or run_command("whoami")
+        sys.exit(1)
+    username = "sensos-admin"
     uid = os.getuid()
     key_type, key_size, key_comment, fingerprint, expires_at = extract_ssh_key_params(
         public_key_file
@@ -507,7 +491,7 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     }
     if not all([wg_ip, payload["ssh_public_key"], key_type, fingerprint]):
         print("❌ Error: Incomplete SSH key data. Aborting exchange.", file=sys.stderr)
-        return
+        sys.exit(1)
     server_url = f"http://{config_server}:{port}/exchange-ssh-keys"
     print(f"🔑 Registering SSH public key with {server_url}...")
     headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
@@ -517,93 +501,20 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
             f"❌ Failed to register SSH key. Server response: {response.text}",
             file=sys.stderr,
         )
-        return
+        sys.exit(1)
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
     server_public_key = response.json().get("ssh_public_key")
     if not server_public_key:
         print("❌ No SSH public key returned from server.", file=sys.stderr)
-        return
+        sys.exit(1)
     with open(authorized_keys_file, "a") as auth_keys:
         auth_keys.write(server_public_key + "\n")
     print(f"✅ Server public key added to {authorized_keys_file}.")
     print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
 
-def check_existing_wireguard_config(config_file, network_name, args, api_password):
-    """
-    Checks whether an existing WireGuard config matches the API records.
-    Returns a tuple:
-        (should_reconfigure: bool, local_wg_ip: Optional[str])
-    """
-    if not os.path.exists(config_file):
-        print("❌ No local WireGuard configuration file found.", file=sys.stderr)
-        return True, None
-
-    print(f"Found WireGuard config at {config_file}.")
-    local_config = parse_local_config(config_file)
-
-    if "wg_ip" not in local_config:
-        print("❌ Local config does not contain a valid WireGuard IP.", file=sys.stderr)
-        return True, None
-
-    local_wg_ip = local_config["wg_ip"]
-    print(f"Local WireGuard IP: {local_wg_ip}. Querying /get-peer-info...")
-
-    url = f"http://{args.config_server}:{args.port}/get-peer-info?ip_address={local_wg_ip}"
-    headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=5)
-        if resp.status_code != 200:
-            print(
-                f"❌ /get-peer-info returned {resp.status_code}; reconfiguring.",
-                file=sys.stderr,
-            )
-            return True, local_wg_ip
-
-        peer_info = resp.json()
-        if not peer_info.get("exists"):
-            print(
-                "❌ Peer not registered in API. Reconfiguration needed.",
-                file=sys.stderr,
-            )
-            return True, local_wg_ip
-
-        local_server_pubkey = local_config.get("server_pubkey")
-        local_peer_pubkey = read_file(
-            os.path.join(WG_DIR, f"{network_name}-public.key")
-        )
-
-        if local_server_pubkey == peer_info.get(
-            "network_wg_public_key"
-        ) and local_peer_pubkey == peer_info.get("peer_wg_public_key"):
-            print("✅ Local WireGuard configuration matches API records.")
-            if not args.force:
-                choice = input("Reconfigure WireGuard? (y/N): ").strip().lower()
-                return choice == "y", local_wg_ip
-            return True, local_wg_ip
-        else:
-            print(
-                "❌ Mismatch in WireGuard keys detected. Reconfiguration required.",
-                file=sys.stderr,
-            )
-            return True, local_wg_ip
-
-    except Exception as e:
-        print(f"❌ Error accessing /get-peer-info: {e}", file=sys.stderr)
-        return True, local_wg_ip
-
-
 def configure_wireguard(args, api_password):
     config_file = os.path.join(WG_DIR, f"{args.network}.conf")
-
-    reconfigure_wg, local_wg_ip = check_existing_wireguard_config(
-        config_file, args.network, args, api_password
-    )
-
-    if not reconfigure_wg:
-        print("Keeping existing WireGuard configuration.")
-        return local_wg_ip or args.config_server
 
     print("Reconfiguring WireGuard...")
 
@@ -613,7 +524,7 @@ def configure_wireguard(args, api_password):
             "❌ WireGuard key generation/retrieval failed. Skipping WireGuard configuration.",
             file=sys.stderr,
         )
-        return None
+        sys.exit(1)
 
     wg_ip, hostname, server_pubkey, wg_public_ip, wg_port = register_peer(
         args.config_server,
@@ -630,7 +541,7 @@ def configure_wireguard(args, api_password):
             "❌ Peer registration failed. Skipping WireGuard configuration.",
             file=sys.stderr,
         )
-        return None
+        sys.exit(1)
 
     if args.wg_endpoint:
         print(
@@ -644,7 +555,6 @@ def configure_wireguard(args, api_password):
         wg_public_ip,
         wg_port,
         args.network,
-        args.force,
         args.wg_keepalive,
     )
 
@@ -652,92 +562,33 @@ def configure_wireguard(args, api_password):
     return wg_ip, wg_public_ip
 
 
-def configure_ssh(args, api_password):
+def configure_ssh(args, api_password, wg_ip):
     """
-    Check if SSH keys exist and whether the registered SSH public key (via /get-peer-info)
-    matches the local SSH public key. If missing or mismatched, or if the user chooses to
-    reconfigure (unless --force), generate new SSH keys and exchange them with the server.
+    Generates a new SSH key pair and registers the public key with the server.
+    Assumes a clean slate (keys do not exist yet). Requires wg_ip from previous step.
     """
     ssh_private = os.path.expanduser("~/.ssh/id_ed25519")
     ssh_public = os.path.expanduser("~/.ssh/id_ed25519.pub")
-    reconfigure_ssh = True
-    if os.path.exists(ssh_private) and os.path.exists(ssh_public):
-        local_ssh_pubkey = read_file(ssh_public)
-        config_file = os.path.join(WG_DIR, f"{args.network}.conf")
-        wg_config_content = sudo_read_file(config_file)
-        if wg_config_content:
-            local_config = parse_local_config(config_file)
-            if "wg_ip" in local_config:
-                local_wg_ip = local_config["wg_ip"]
-                print(
-                    f"Querying /get-peer-info for SSH keys using WG IP {local_wg_ip}..."
-                )
-                url = f"http://{args.config_server}:{args.port}/get-peer-info?ip_address={local_wg_ip}"
-                headers = {"Authorization": f"Basic {get_basic_auth(api_password)}"}
-                try:
-                    resp = requests.get(url, headers=headers, timeout=5)
-                    if resp.status_code == 200:
-                        peer_info = resp.json()
-                        if peer_info.get("ssh_public_key") == local_ssh_pubkey:
-                            print("SSH key configuration matches API records.")
-                            if not args.force:
-                                choice = (
-                                    input("Reconfigure SSH keys? (y/N): ")
-                                    .strip()
-                                    .lower()
-                                )
-                                reconfigure_ssh = choice == "y"
-                            else:
-                                reconfigure_ssh = True
-                        else:
-                            print(
-                                "❌ Local SSH key does not match API. Reconfiguration required.",
-                                file=sys.stderr,
-                            )
-                    else:
-                        print(
-                            f"❌ /get-peer-info returned {resp.status_code} for SSH; reconfiguring SSH.",
-                            file=sys.stderr,
-                        )
-                except Exception as e:
-                    print(
-                        "❌ Error accessing /get-peer-info for SSH:", e, file=sys.stderr
-                    )
-            else:
-                print(
-                    "❌ No WG IP found in local config; cannot verify SSH keys.",
-                    file=sys.stderr,
-                )
-        else:
-            print(
-                "❌ No local WireGuard config available (cannot read with sudo); skipping SSH key exchange.",
-                file=sys.stderr,
-            )
-    else:
-        print("SSH keys not found; new keys will be generated.")
 
-    if reconfigure_ssh:
-        print("Reconfiguring SSH keys...")
-        generate_ssh_keys(args.force)
-        config_file = os.path.join(WG_DIR, f"{args.network}.conf")
-        wg_config_content = sudo_read_file(config_file)
-        if wg_config_content:
-            local_config = parse_local_config(config_file)
-            if "wg_ip" in local_config:
-                wg_ip = local_config["wg_ip"]
-                exchange_ssh_keys(args.config_server, args.port, wg_ip, api_password)
-            else:
-                print(
-                    "❌ No WG IP available in config; cannot exchange SSH keys.",
-                    file=sys.stderr,
-                )
-        else:
-            print(
-                "❌ No local WG config available; skipping SSH key exchange.",
-                file=sys.stderr,
-            )
+    print("🔑 Generating new SSH key pair...")
+    run_command(f"ssh-keygen -t ed25519 -f {ssh_private} -q -N ''")
+    if not os.path.exists(ssh_public):
+        print(
+            f"❌ Error: Failed to generate SSH public key at {ssh_public}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    os.chmod(ssh_private, 0o600)
+    print(f"✅ SSH key generated at {ssh_private} and {ssh_public}.")
+
+    if wg_ip:
+        exchange_ssh_keys(args.config_server, args.port, wg_ip, api_password)
     else:
-        print("Keeping existing SSH key configuration.")
+        print(
+            "❌ No WG IP available; cannot exchange SSH keys.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
@@ -745,12 +596,16 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
     settings_file = os.path.join(settings_dir, "network.conf")
     os.makedirs(settings_dir, exist_ok=True)
 
+    ssh_tunnel_ip = args.ssh_tunnel_ip or endpoint_ip
+
     content = (
         f"SERVER_WG_IP={server_wg_ip}\n"
         f"CLIENT_WG_IP={client_wg_ip}\n"
         f"SERVER_PORT={args.port}\n"
         f"NETWORK_NAME={args.network}\n"
         f"WG_ENDPOINT_IP={endpoint_ip}\n"
+        f"SERVER_SSH_IP={ssh_tunnel_ip}\n"
+        f"SSH_TUNNEL_PORT={args.ssh_tunnel_port}\n"
     )
     if args.connectivity_profile:
         content += f"CONNECTIVITY_PROFILE={args.connectivity_profile}\n"
@@ -765,7 +620,51 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
 def main():
     setup_logging()
 
+    expected_user = "sensos-admin"
+    actual_user = pwd.getpwuid(os.getuid()).pw_name
+    if actual_user != expected_user:
+        print(
+            f"\n❌ This script must be run as '{expected_user}'. Current user: '{actual_user}'.\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     args = parse_args()
+
+    wg_config_file = os.path.join(WG_DIR, f"{args.network}.conf")
+    wg_private_key = os.path.join(WG_DIR, f"{args.network}-private.key")
+    wg_public_key = os.path.join(WG_DIR, f"{args.network}-public.key")
+    ssh_private = os.path.expanduser("~/.ssh/id_ed25519")
+    ssh_public = os.path.expanduser("~/.ssh/id_ed25519.pub")
+    sensos_net_conf = "/sensos/etc/network.conf"
+
+    preexisting = []
+    for f in [
+        wg_config_file,
+        wg_private_key,
+        wg_public_key,
+        ssh_private,
+        ssh_public,
+        sensos_net_conf,
+    ]:
+        if os.path.exists(f):
+            preexisting.append(f)
+
+    if preexisting and not args.force:
+        print("\n❌ Existing configuration detected:")
+        for f in preexisting:
+            print(f"    {f}")
+        print("\nAborting. Use --force to completely regenerate all keys/configs.\n")
+        sys.exit(1)
+
+    if args.force and preexisting:
+        print("⚠️  --force specified, removing old configuration...")
+        for f in preexisting:
+            try:
+                os.remove(f)
+                print(f"  Removed: {f}")
+            except Exception as e:
+                print(f"  Could not remove {f}: {e}")
 
     if args.connectivity_profile == "offline":
         args.no_connectivity_checks = True
@@ -776,16 +675,16 @@ def main():
     api_password = get_api_password(args.config_server, args.port)
     if not api_password:
         print("❌ Critical error: API password not obtained. Aborting configuration.")
-        return
+        sys.exit(1)
     client_wg_ip, wg_public_ip = configure_wireguard(args, api_password)
     if not client_wg_ip:
         print("❌ WireGuard configuration failed. Aborting.")
-        return
+        sys.exit(1)
     server_wg_ip = compute_api_server_wg_ip(client_wg_ip)
     if not server_wg_ip:
         print("❌ Failed to compute API server WireGuard IP. Aborting.")
-        return
-    configure_ssh(args, api_password)
+        sys.exit(1)
+    configure_ssh(args, api_password, client_wg_ip)
     print("Starting WireGuard and SSH services...")
     try:
         enable_wireguard(args.network)
