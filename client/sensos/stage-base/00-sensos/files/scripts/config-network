@@ -604,7 +604,7 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
         f"SERVER_PORT={args.port}\n"
         f"NETWORK_NAME={args.network}\n"
         f"WG_ENDPOINT_IP={endpoint_ip}\n"
-        f"SERVER_SSH_IP={ssh_tunnel_ip}\n"
+        f"SSH_TUNNEL_IP={ssh_tunnel_ip}\n"
         f"SSH_TUNNEL_PORT={args.ssh_tunnel_port}\n"
     )
     if args.connectivity_profile:

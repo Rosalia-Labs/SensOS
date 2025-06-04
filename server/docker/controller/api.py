@@ -58,7 +58,6 @@ def dashboard(credentials: HTTPBasicCredentials = Depends(authenticate)):
             )
             networks = cur.fetchall()
 
-    # Build the network table (if present) and footer with version info.
     if networks:
         network_table = (
             "<h3>🌐 Registered Networks</h3><table>"
