@@ -173,6 +173,16 @@ def get_db(retries: int = 10, delay: int = 3):
 # Core Utility Functions
 # ------------------------------------------------------------
 
+def lookup_client_id(conn, wireguard_ip):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM sensos.wireguard_peers WHERE wg_ip = %s", (wireguard_ip,)
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(400, detail=f"Unknown wireguard_ip: {wireguard_ip}")
+        return row[0]
+
 
 def get_network_details(network_name: str):
     """
@@ -827,20 +837,19 @@ def create_client_status_table(cur):
     """
     cur.execute(
         """
-        CREATE TABLE IF NOT EXISTS sensos.client_status (
+        CREATE TABLE sensos.client_status (
             id SERIAL PRIMARY KEY,
-            peer_id INTEGER REFERENCES sensos.wireguard_peers(id),
-            last_check_in TIMESTAMP DEFAULT NOW(),
-            uptime INTERVAL,
-            cpu_usage FLOAT,
-            memory_usage FLOAT,
-            disk_usage FLOAT,
+            client_id INTEGER NOT NULL,
+            last_check_in TIMESTAMPTZ NOT NULL,
+            hostname TEXT,
+            uptime_seconds INTEGER,
+            disk_available_gb REAL,
+            memory_used_mb INTEGER,
+            memory_total_mb INTEGER,
+            load_1m REAL,
+            load_5m REAL,
+            load_15m REAL,
             version TEXT,
-            error_count INTEGER,
-            latency FLOAT,
-            ip_address INET,
-            temperature FLOAT,
-            battery_level FLOAT,
             status_message TEXT
         );
         """

@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import ipaddress
-from typing import Optional
 
 from fastapi import (
     APIRouter,
@@ -19,7 +18,6 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasicCredentials
-from pydantic import BaseModel, IPvAnyAddress
 
 
 from core import (
@@ -31,6 +29,16 @@ from core import (
     register_wireguard_key_in_db,
     update_wireguard_configs,
     create_network_entry,
+    lookup_client_id,
+)
+
+from models import (
+    RegisterPeerRequest,
+    RegisterWireguardKeyRequest,
+    RegisterSSHKeyRequest,
+    LocationUpdateRequest,
+    ClientStatusRequest,
+    HardwareProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,12 +205,6 @@ def list_peers(credentials: HTTPBasicCredentials = Depends(authenticate)):
     return HTMLResponse(content=peer_table)
 
 
-class RegisterPeerRequest(BaseModel):
-    network_name: str
-    subnet_offset: int = 0
-    note: Optional[str] = None
-
-
 @router.post("/register-peer")
 def register_peer(
     request: RegisterPeerRequest,
@@ -252,11 +254,6 @@ def register_peer(
     }
 
 
-class RegisterWireguardKeyRequest(BaseModel):
-    wg_ip: str
-    wg_public_key: str
-
-
 @router.post("/register-wireguard-key")
 def register_wireguard_key(
     request: RegisterWireguardKeyRequest,
@@ -277,18 +274,6 @@ def register_wireguard_key(
     return result
 
 
-class RegisterSSHKeyRequest(BaseModel):
-    wg_ip: str
-    username: str
-    uid: int
-    ssh_public_key: str
-    key_type: str
-    key_size: int
-    key_comment: Optional[str] = None
-    fingerprint: str
-    expires_at: Optional[datetime] = None
-
-
 @router.post("/exchange-ssh-keys")
 def exchange_ssh_keys(
     request: RegisterSSHKeyRequest,
@@ -297,7 +282,6 @@ def exchange_ssh_keys(
     """Registers an SSH public key for a peer."""
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Lookup network_id and peer_id using wg_ip
             cur.execute(
                 """
                 SELECT network_id, id FROM sensos.wireguard_peers WHERE wg_ip = %s;
@@ -314,7 +298,6 @@ def exchange_ssh_keys(
 
             network_id, peer_id = result
 
-            # Insert the SSH public key with all relevant fields
             cur.execute(
                 """
                 INSERT INTO sensos.ssh_keys 
@@ -374,7 +357,6 @@ def inspect_database(
     """Inspect all database tables in a single formatted HTML output."""
     with get_db() as conn:
         with conn.cursor() as cur:
-            # Get all table names
             cur.execute(
                 """
                 SELECT table_name FROM information_schema.tables 
@@ -504,52 +486,35 @@ def get_peer_info(
     }
 
 
-class ClientStatusRequest(BaseModel):
-    client_id: int
-    uptime: Optional[timedelta] = None
-    cpu_usage: Optional[float] = None
-    memory_usage: Optional[float] = None
-    disk_usage: Optional[float] = None
-    version: Optional[str] = None
-    error_count: Optional[int] = None
-    latency: Optional[float] = None
-    ip_address: Optional[IPvAnyAddress] = None
-    temperature: Optional[float] = None
-    battery_level: Optional[float] = None
-    status_message: Optional[str] = None
-
-
 @router.post("/client-status")
 def client_status(
     status: ClientStatusRequest,
     credentials: HTTPBasicCredentials = Depends(authenticate),
 ):
-    """
-    Endpoint for clients to send periodic check-in information.
-    """
     with get_db() as conn:
+        client_id = lookup_client_id(conn, status.wireguard_ip)
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO sensos.client_status (
-                    client_id, last_check_in, uptime, cpu_usage, memory_usage, disk_usage,
-                    version, error_count, latency, ip_address, temperature, battery_level, status_message
+                    client_id, last_check_in, hostname, uptime_seconds,
+                    disk_available_gb, memory_used_mb, memory_total_mb,
+                    load_1m, load_5m, load_15m, version, status_message
                 ) VALUES (
-                    %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                );
+                    %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
                 """,
                 (
-                    status.client_id,
-                    status.uptime,
-                    status.cpu_usage,
-                    status.memory_usage,
-                    status.disk_usage,
+                    client_id,
+                    status.hostname,
+                    status.uptime_seconds,
+                    status.disk_available_gb,
+                    status.memory_used_mb,
+                    status.memory_total_mb,
+                    status.load_1m,
+                    status.load_5m,
+                    status.load_15m,
                     status.version,
-                    status.error_count,
-                    status.latency,
-                    str(status.ip_address) if status.ip_address else None,
-                    status.temperature,
-                    status.battery_level,
                     status.status_message,
                 ),
             )
@@ -596,19 +561,6 @@ def get_network_info(
         "wg_port": result[3],
         "wg_public_key": result[4],
     }
-
-
-class HardwareProfile(BaseModel):
-    wg_ip: str
-    hostname: str
-    model: str
-    kernel_version: str
-    cpu: dict
-    firmware: dict
-    memory: dict
-    disks: dict
-    usb_devices: str
-    network_interfaces: dict
 
 
 @router.post("/upload-hardware-profile")
@@ -769,12 +721,6 @@ def wireguard_status_dashboard(
 
     html += "</body></html>"
     return HTMLResponse(content=html)
-
-
-class LocationUpdateRequest(BaseModel):
-    wg_ip: str
-    latitude: float
-    longitude: float
 
 
 @router.post("/set-peer-location")
