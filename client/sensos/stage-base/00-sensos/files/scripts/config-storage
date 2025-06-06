@@ -250,7 +250,6 @@ else
 fi
 echo "✅ Mount complete: $PARTITION → $DATA_MOUNT"
 
-# OPTIONAL: After mounting, warn the user if there are files present and offer targeted cleanup
 if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
     echo "⚠️  Files exist on $DATA_MOUNT after mounting."
     echo "❓ Choose what to remove:"
@@ -258,6 +257,14 @@ if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
     echo "   [d] Only $DATA_MOUNT/database"
     echo "   [s] Skip (do not delete anything)"
     read -p "Your choice [a/d/s]? " cleanup_choice
+
+    # Mountpoint check for all delete options:
+    if [[ "$cleanup_choice" =~ [aAdD] ]]; then
+        if ! mountpoint -q "$DATA_MOUNT"; then
+            echo "❌ $DATA_MOUNT is not a mountpoint! Aborting cleanup to avoid deleting files from the root filesystem."
+            exit 1
+        fi
+    fi
 
     case "$cleanup_choice" in
     a | A)
@@ -310,12 +317,12 @@ else
     fi
 fi
 
-if grep -Eq "^\s*($device_ref|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab; then
+if grep -Eq "^\s*(${device_ref}|${PARTITION})\s+${DATA_MOUNT}\s" /etc/fstab; then
     echo "✅ Found existing fstab entry:"
-    grep -E "^\s*($device_ref|$PARTITION)\s+$DATA_MOUNT\s" /etc/fstab
+    grep -n -E "^\s*(${device_ref}|${PARTITION})\s+${DATA_MOUNT}\s" /etc/fstab
     read -p "❓ Keep this fstab entry? [Y/n] " keep
     if [[ "$keep" == [nN] ]]; then
-        echo "❌ Please edit /etc/fstab manually to remove or update the entry."
+        echo "❌ Please edit /etc/fstab manually to remove or update the entry (see above for line number)."
         exit 1
     else
         echo "✅ Keeping existing fstab entry."
@@ -324,13 +331,15 @@ else
     echo "ℹ️  No valid fstab entry found for $PARTITION at $DATA_MOUNT."
     read -p "❓ Add new fstab entry to make mount persistent? [Y/n] " add
     if [[ "$add" != [nN] ]]; then
+        echo "🧹 Removing any existing /etc/fstab entry for $DATA_MOUNT..."
+        sudo sed -i.bak -r "\|^[^#].+\s+$DATA_MOUNT\s+|d" /etc/fstab
         echo "🔧 Adding fstab entry:"
         if [[ "$FS_TYPE_ARG" == "exfat" ]]; then
             uid_val=$(id -u sensos-admin)
             gid_val=$(getent group sensos-data | cut -d: -f3)
-            fstab_line="$device_ref $DATA_MOUNT exfat defaults,uid=$uid_val,gid=$gid_val,umask=0002,noauto,x-systemd.automount,x-systemd.device-timeout=10 0 0"
+            fstab_line="$device_ref $DATA_MOUNT exfat defaults,nofail,uid=$uid_val,gid=$gid_val,umask=0002,noauto,x-systemd.automount,x-systemd.device-timeout=10 0 0"
         else
-            fstab_line="$device_ref $DATA_MOUNT ext4 defaults,noatime 0 2"
+            fstab_line="$device_ref $DATA_MOUNT ext4 defaults,nofail,noatime 0 2"
         fi
         echo "$fstab_line"
         echo "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
