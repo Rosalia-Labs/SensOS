@@ -125,7 +125,16 @@ def test_client_status_success(monkeypatch, client):
         ),
     )
 
-    payload = {"client_id": 1}
+    payload = {
+        "hostname": "test-client",
+        "uptime_seconds": 12345,
+        "disk_available_gb": 10.5,
+        "memory_used_mb": 512,
+        "memory_total_mb": 1024,
+        "load_1m": 0.25,
+        "version": "1.0.0",
+        "wireguard_ip": "10.0.0.2",
+    }
     resp = client.post("/client-status", json=payload)
     assert resp.status_code == 200
 

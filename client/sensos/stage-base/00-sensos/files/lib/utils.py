@@ -1,12 +1,17 @@
 import os
 import sys
+import pwd
+import grp
 import stat
+import shlex
 import shutil
 import base64
-import subprocess
 import requests
+import tempfile
+import subprocess
 import configparser
 import argparse
+
 
 API_PASSWORD_FILE = "/sensos/.sensos_api_password"
 DEFAULTS_CONF = "/sensos/etc/defaults.conf"
@@ -14,11 +19,32 @@ NETWORK_CONF = "/sensos/etc/network.conf"
 DEFAULT_PORT = "8765"
 
 
+def is_root():
+    return os.geteuid() == 0
+
+
 def run_command(cmd):
     try:
         return subprocess.check_output(cmd, shell=True, text=True).strip()
     except Exception as e:
         return f"ERROR: {e}"
+
+
+def run_sudo_command(cmd):
+    if is_root():
+        return run_command(cmd)
+    try:
+        return run_command(f"sudo {cmd}")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Sudo command failed: {cmd}\n{e}", file=sys.stderr)
+        return None
+
+
+def run_sudo_shell(cmd):
+    if is_root():
+        subprocess.run(cmd, shell=True, check=True)
+    else:
+        subprocess.run(f"sudo {cmd}", shell=True, check=True)
 
 
 def get_basic_auth(api_password):
@@ -183,7 +209,7 @@ def read_file(filepath):
 
 def sudo_read_file(filepath):
     try:
-        content = run_command(f"sudo cat {filepath}")
+        content = run_sudo_command(f"cat {filepath}")
         return content.strip()
     except Exception as e:
         print(f"❌ Error reading {filepath} with sudo: {e}", file=sys.stderr)
@@ -406,3 +432,61 @@ def get_client_wg_ip():
     """Return CLIENT_WG_IP from /sensos/etc/network.conf, or None if not found."""
     config = read_kv_config(NETWORK_CONF)
     return config.get("CLIENT_WG_IP")
+
+
+def set_permissions_and_owner(
+    path: str, mode: int, user: str = None, group: str = None
+):
+    """Set file permissions and ownership. Uses sudo if not root."""
+    # Set permissions first (can be done as user if owned)
+    try:
+        os.chmod(path, mode)
+    except PermissionError:
+        subprocess.run(["sudo", "chmod", oct(mode)[2:], path], check=True)
+
+    if user:
+        group = group or user
+        try:
+            import pwd, grp
+
+            uid = pwd.getpwnam(user).pw_uid
+            gid = grp.getgrnam(group).gr_gid
+        except KeyError:
+            raise ValueError(f"User or group '{user}:{group}' not found.")
+
+        # Try normal chown first
+        try:
+            os.chown(path, uid, gid)
+        except PermissionError:
+            subprocess.run(["sudo", "chown", f"{user}:{group}", path], check=True)
+
+
+def sudo_write_file(
+    content: str,
+    dest_path: str,
+    mode: int = 0o644,
+    user: str = "root",
+    group: str = None,
+):
+    """
+    Safely write `content` to `dest_path` using a temporary file and move it with sudo.
+    Sets permissions and ownership afterward.
+
+    Args:
+        content (str): The full content to write.
+        dest_path (str): The destination path to write the file to.
+        mode (int): File permission bits (e.g., 0o600).
+        user (str): Owner username (default: root).
+        group (str): Group name (default: same as user).
+    """
+    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        tmp_path = tmp.name
+
+    try:
+        run_sudo_shell(f"mv {shlex.quote(tmp_path)} {shlex.quote(dest_path)}")
+        set_permissions_and_owner(dest_path, mode, user=user, group=group)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

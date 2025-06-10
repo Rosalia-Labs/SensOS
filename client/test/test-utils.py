@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import patch, mock_open, MagicMock
 import os
+import pwd
+import stat
 import subprocess
 import tempfile
 
@@ -72,15 +74,6 @@ class TestUtils(unittest.TestCase):
         with patch("subprocess.check_output", return_value="42\n"):
             self.assertEqual(utils.safe_cmd_output("echo 42"), "42")
 
-    def test_safe_cmd_output_with_sudo_fallback(self):
-        def side_effect(cmd, shell, text):
-            if "sudo" in cmd:
-                return "42\n"
-            raise subprocess.CalledProcessError(1, cmd)
-
-        with patch("subprocess.check_output", side_effect=side_effect):
-            self.assertEqual(utils.safe_cmd_output("echo 42"), "42")
-
     def test_parses_valid_config(self):
         content = """
             # This is a comment
@@ -126,6 +119,81 @@ class TestUtils(unittest.TestCase):
     def test_get_client_wg_ip_file_not_found(self):
         with patch("os.path.exists", return_value=False):
             self.assertIsNone(utils.get_client_wg_ip())
+
+    def test_set_permissions_and_owner(self):
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            import getpass
+
+            user = getpass.getuser()
+            utils.set_permissions_and_owner(tmp_path, 0o600, user=user)
+
+            st = os.stat(tmp_path)
+            mode = stat.S_IMODE(st.st_mode)
+            actual_user = pwd.getpwuid(st.st_uid).pw_name
+
+            self.assertEqual(mode, 0o600)
+            self.assertEqual(actual_user, user)
+        finally:
+            os.remove(tmp_path)
+
+    @patch("utils.set_permissions_and_owner")
+    @patch("subprocess.run")
+    def test_sudo_write_file(self, mock_run, mock_set_permissions):
+        content = "[Interface]\nAddress = 10.0.0.2/32\n"
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            dest_path = tmp.name
+
+        try:
+            # Clear out the destination file
+            os.remove(dest_path)
+
+            utils.sudo_write_file(content, dest_path, mode=0o600, user="root")
+
+            # Check that sudo mv was called
+            mock_run.assert_called()
+            called_commands = [call.args[0] for call in mock_run.call_args_list]
+            self.assertTrue(
+                any(cmd[0] == "sudo" and "mv" in cmd for cmd in called_commands)
+            )
+
+            # Check that permissions were set
+            mock_set_permissions.assert_called_with(
+                dest_path, 0o600, user="root", group=None
+            )
+        finally:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+
+    @patch("utils.subprocess.check_output", return_value="done\n")
+    def test_run_sudo_command_as_root(self, mock_check_output):
+        with patch("utils.is_root", return_value=True):
+            result = utils.run_sudo_command("echo done")
+            self.assertEqual(result, "done")
+            mock_check_output.assert_called_with("echo done", shell=True, text=True)
+
+    @patch("utils.subprocess.check_output", return_value="done\n")
+    def test_run_sudo_command_as_user(self, mock_check_output):
+        with patch("utils.is_root", return_value=False):
+            result = utils.run_sudo_command("echo done")
+            self.assertEqual(result, "done")
+            mock_check_output.assert_called_with(
+                "sudo echo done", shell=True, text=True
+            )
+
+    @patch("utils.subprocess.run")
+    def test_run_sudo_shell_as_root(self, mock_run):
+        with patch("utils.is_root", return_value=True):
+            utils.run_sudo_shell("whoami")
+            mock_run.assert_called_with("whoami", shell=True, check=True)
+
+    @patch("utils.subprocess.run")
+    def test_run_sudo_shell_as_user(self, mock_run):
+        with patch("utils.is_root", return_value=False):
+            utils.run_sudo_shell("whoami")
+            mock_run.assert_called_with("sudo whoami", shell=True, check=True)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ sys.path.insert(0, "/sensos/lib")
 from utils import *
 
 WG_DIR = "/etc/wireguard"
+SENSOS_ADMIN_HOME = "/home/sensos-admin"
 
 
 def parse_args():
@@ -140,8 +141,8 @@ def parse_args():
 
 def enable_wireguard(netname: str):
     service_name = f"wg-quick@{netname}.service"
-    run_command(f"sudo systemctl enable {service_name}")
-    run_command(f"sudo systemctl start {service_name}")
+    run_sudo_shell(f"systemctl enable {service_name}")
+    run_sudo_shell(f"systemctl start {service_name}")
     print(f"✅ WireGuard service {service_name} enabled and started.")
 
 
@@ -152,7 +153,7 @@ def enable_ssh(passwords: bool = False):
     password_setting = "yes" if passwords else "no"
 
     # Make sure directory exists
-    run_command(f"sudo mkdir -p {sshd_dir}")
+    run_sudo_shell(f"mkdir -p {sshd_dir}")
 
     # Write settings to our override file
     config = f"""\
@@ -160,15 +161,15 @@ def enable_ssh(passwords: bool = False):
 PasswordAuthentication {password_setting}
 PubkeyAuthentication yes
 """
-    run_command(f"echo '{config}' | sudo tee {custom_conf} > /dev/null")
+    sudo_write_file(config, custom_conf, mode=0o644, user="root")
 
     print(
         f"✅ SSH passwords are {'enabled' if passwords else 'disabled'} in {custom_conf}."
     )
 
     # Enable and start SSH service
-    run_command("sudo systemctl enable ssh")
-    run_command("sudo systemctl restart ssh")
+    run_sudo_shell("systemctl enable ssh")
+    run_sudo_shell("systemctl restart ssh")
 
     print("✅ SSH service enabled and restarted.")
     print("🔄 A reboot is still recommended to ensure all changes take full effect.")
@@ -194,9 +195,8 @@ def generate_wireguard_keys(network_name, force):
         print("❌ Error: Failed to generate WireGuard keys.", file=sys.stderr)
         sys.exit(1)
 
-    run_command(f"echo '{private_key}' | sudo tee {private_key_file} > /dev/null")
-    run_command(f"sudo chmod 600 {private_key_file}")
-    run_command(f"echo '{public_key}' | sudo tee {public_key_file} > /dev/null")
+    sudo_write_file(private_key, private_key_file, mode=0o600, user="root")
+    sudo_write_file(public_key, public_key_file, mode=0o644, user="root")
 
     print(f"✅ WireGuard keys generated:")
     print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
@@ -294,27 +294,26 @@ def register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_passwo
 def change_hostname(new_hostname):
     """Change the system hostname to the computed value."""
     if new_hostname is None:
-        print(
-            "❌ Error: New hostname is invalid. Aborting.",
-            file=sys.stderr,
-        )
+        print("❌ Error: New hostname is invalid. Aborting.", file=sys.stderr)
         sys.exit(1)
 
     current_hostname = run_command("hostname")
     if current_hostname != new_hostname:
         print(f"🔄 Changing hostname from {current_hostname} to {new_hostname}...")
-        run_command(f"echo '{new_hostname}' | sudo tee /etc/hostname > /dev/null")
-        run_command("sudo cp /etc/hosts /etc/hosts.bak")
+
+        # Safely write new hostname
+        sudo_write_file(new_hostname + "\n", "/etc/hostname", mode=0o644, user="root")
+
+        # Backup and update /etc/hosts
+        run_sudo_shell("cp /etc/hosts /etc/hosts.bak")
         hosts = run_command("cat /etc/hosts").splitlines()
-        updated_hosts = []
-        for line in hosts:
-            if "127.0.1.1" in line:
-                updated_hosts.append(f"127.0.1.1 {new_hostname}")
-            else:
-                updated_hosts.append(line)
-        run_command(
-            f"echo '{chr(10).join(updated_hosts)}' | sudo tee /etc/hosts > /dev/null"
-        )
+        updated_hosts = [
+            f"127.0.1.1 {new_hostname}" if "127.0.1.1" in line else line
+            for line in hosts
+        ]
+        new_hosts_content = "\n".join(updated_hosts) + "\n"
+        sudo_write_file(new_hosts_content, "/etc/hosts", mode=0o644, user="root")
+
         print(
             f"✅ Hostname changed manually to {new_hostname} (will apply after restart)"
         )
@@ -335,7 +334,7 @@ def write_wireguard_config(
 
     private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
-    private_key = sudo_read_file(private_key_file)
+    private_key = sudo_read_file(private_key_file).strip()
     if not private_key:
         print(
             "❌ Error: Private key is missing. Cannot write configuration.",
@@ -363,36 +362,34 @@ AllowedIPs = {allowed_ips}
 PersistentKeepalive = {wg_keepalive}
 """
 
-    run_command(f"echo '{config}' | sudo tee {wg_config_file} > /dev/null")
-    run_command(f"sudo chmod 600 {wg_config_file}")
-    if not os.path.exists(wg_config_file):
-        print(
-            f"❌ Expected WireGuard config not found at {wg_config_file}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    else:
-        print(
-            f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
-        )
+    sudo_write_file(config, wg_config_file, 0o600, "root", "root")
+    print(
+        f"✅ WireGuard configuration written to {wg_config_file} (permissions set to 600)"
+    )
     print(f"🔧 Allowed IPs set to {allowed_ips}")
 
 
 def generate_ssh_keys(force):
     """Generate an SSH key pair if not already present."""
-    ssh_dir = os.path.expanduser("~/.ssh")
+    ssh_dir = os.path.join(SENSOS_ADMIN_HOME, ".ssh")
     os.makedirs(ssh_dir, exist_ok=True)
+    set_permissions_and_owner(ssh_dir, 0o700, user="sensos-admin")
     private_key_file = os.path.join(ssh_dir, "id_ed25519")
     public_key_file = f"{private_key_file}.pub"
+
     print("🔑 Generating new SSH key pair...")
     run_command(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N ''")
+
     if not os.path.exists(public_key_file):
         print(
             f"❌ Error: Failed to generate SSH public key at {public_key_file}",
             file=sys.stderr,
         )
         sys.exit(1)
-    os.chmod(private_key_file, 0o600)
+
+    set_permissions_and_owner(private_key_file, 0o600, user="sensos-admin")
+    set_permissions_and_owner(public_key_file, 0o644, user="sensos-admin")
+
     print(f"✅ SSH key generated at {private_key_file} and {public_key_file}.")
 
 
@@ -458,7 +455,7 @@ def extract_ssh_key_params(public_key_file):
 
 def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     """Registers an SSH public key for this device using its WireGuard IP."""
-    ssh_dir = os.path.expanduser("~/.ssh")
+    ssh_dir = os.path.join(SENSOS_ADMIN_HOME, ".ssh")
     public_key_file = os.path.join(ssh_dir, "id_ed25519.pub")
     authorized_keys_file = os.path.join(ssh_dir, "authorized_keys")
     if not os.path.exists(public_key_file):
@@ -468,7 +465,7 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
         )
         sys.exit(1)
     username = "sensos-admin"
-    uid = os.getuid()
+    uid = pwd.getpwnam(username).pw_uid
     key_type, key_size, key_comment, fingerprint, expires_at = extract_ssh_key_params(
         public_key_file
     )
@@ -510,7 +507,6 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     with open(authorized_keys_file, "a") as auth_keys:
         auth_keys.write(server_public_key + "\n")
     print(f"✅ Server public key added to {authorized_keys_file}.")
-    print(f"✅ SSH key registered successfully for peer with WireGuard IP {wg_ip}.")
 
 
 def configure_wireguard(args, api_password):
@@ -567,20 +563,7 @@ def configure_ssh(args, api_password, wg_ip):
     Generates a new SSH key pair and registers the public key with the server.
     Assumes a clean slate (keys do not exist yet). Requires wg_ip from previous step.
     """
-    ssh_private = os.path.expanduser("~/.ssh/id_ed25519")
-    ssh_public = os.path.expanduser("~/.ssh/id_ed25519.pub")
-
-    print("🔑 Generating new SSH key pair...")
-    run_command(f"ssh-keygen -t ed25519 -f {ssh_private} -q -N ''")
-    if not os.path.exists(ssh_public):
-        print(
-            f"❌ Error: Failed to generate SSH public key at {ssh_public}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    os.chmod(ssh_private, 0o600)
-    print(f"✅ SSH key generated at {ssh_private} and {ssh_public}.")
-
+    generate_ssh_keys(args.force)
     if wg_ip:
         exchange_ssh_keys(args.config_server, args.port, wg_ip, api_password)
     else:
@@ -620,22 +603,13 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
 def main():
     setup_logging()
 
-    expected_user = "sensos-admin"
-    actual_user = pwd.getpwuid(os.getuid()).pw_name
-    if actual_user != expected_user:
-        print(
-            f"\n❌ This script must be run as '{expected_user}'. Current user: '{actual_user}'.\n",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     args = parse_args()
 
     wg_config_file = os.path.join(WG_DIR, f"{args.network}.conf")
     wg_private_key = os.path.join(WG_DIR, f"{args.network}-private.key")
     wg_public_key = os.path.join(WG_DIR, f"{args.network}-public.key")
-    ssh_private = os.path.expanduser("~/.ssh/id_ed25519")
-    ssh_public = os.path.expanduser("~/.ssh/id_ed25519.pub")
+    ssh_private = os.path.join(SENSOS_ADMIN_HOME, ".ssh/id_ed25519")
+    ssh_public = os.path.join(SENSOS_ADMIN_HOME, ".ssh/id_ed25519.pub")
     sensos_net_conf = "/sensos/etc/network.conf"
 
     preexisting = []
