@@ -1,7 +1,6 @@
 [Unit]
 Description=Read I2C sensors and store readings
-After=multi-user.target create-python-venv.service
-Requires=create-python-venv.service
+After=multi-user.target
 
 [Service]
 Type=simple

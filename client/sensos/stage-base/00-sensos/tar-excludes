@@ -1,0 +1,9 @@
+.git
+*/.git
+.gitignore
+*/.gitignore
+__pycache__
+*/__pycache__
+*.pyc
+*/*.pyc
+

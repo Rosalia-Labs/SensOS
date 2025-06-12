@@ -8,8 +8,10 @@ import configparser
 import subprocess
 from pathlib import Path
 
+sys.path.insert(0, "/sensos/lib")
+from utils import *
+
 CONFIG_PATH = "/sensos/etc/location.conf"
-API_PASSWORD_FILE = "/sensos/.sensos_api_password"
 SET_PEER_URL = "/set-peer-location"
 DEFAULT_SERVER = "localhost"
 DEFAULT_PORT = 8000
@@ -51,16 +53,9 @@ def write_location(lat, lon):
         config.write(f)
 
 
-def get_api_password():
-    if os.path.exists(API_PASSWORD_FILE):
-        with open(API_PASSWORD_FILE) as f:
-            return f.read().strip()
-    return None
-
-
 def post_location(lat, lon, config_server, port):
     url = f"http://{config_server}:{port}{SET_PEER_URL}"
-    password = get_api_password()
+    password = read_api_password()
     if not password:
         print("No API password; skipping POST")
         return

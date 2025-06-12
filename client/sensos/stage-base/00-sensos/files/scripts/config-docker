@@ -62,6 +62,14 @@ if [[ ! -w "$docker_compose_dir" ]]; then
     exit 1
 fi
 
+# Ensure the DB data directory exists with the correct permissions
+if [[ ! -d "$db_data_path" ]]; then
+    echo "Creating database data directory at $db_data_path"
+    sudo mkdir -p "$db_data_path"
+    sudo chown sensos-admin:sensos-data "$db_data_path"
+    sudo chmod 2775 "$db_data_path"
+fi
+
 # Always write all keys, with fallback to empty string if not set
 env_file="$docker_compose_dir/.env"
 cat >"$env_file" <<EOF

@@ -27,7 +27,10 @@ parse_switches "$script_name" "$@"
 
 # Validate
 if [[ -z "$device" ]]; then
-    echo "❌ --device must be specified."
+    echo "❌ --device must be specified (e.g., /dev/sda, /dev/nvme0n1, etc.)."
+    echo
+    echo "Hint: Run 'lsblk -o NAME,SIZE,TYPE,MOUNTPOINT' to list available devices."
+    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT
     exit 1
 fi
 
@@ -202,13 +205,6 @@ fi
 # Ensure mount point exists with correct ownership before mounting
 echo "📁 Ensuring mount point exists at $DATA_MOUNT..."
 sudo mkdir -p "$DATA_MOUNT"
-# Set mount point ownership in advance for ext4 mounts.
-sudo chown sensos-admin:sensos-data "$DATA_MOUNT"
-sudo chmod g+rws "$DATA_MOUNT"
-# Ensure microenv subdir exists and is writable by sensos-runner
-sudo mkdir -p "$DATA_MOUNT/microenv"
-sudo chown -R sensos-runner:sensos-data "$DATA_MOUNT/microenv"
-sudo chmod -R g+rwsX "$DATA_MOUNT/microenv"
 
 # If mount point is not empty, prompt to clean it up (warn user)
 if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
@@ -237,16 +233,13 @@ if [[ "$confirm_mount" == [nN] ]]; then
     exit 1
 fi
 
-echo "🔧 Mounting $PARTITION as $FS_TYPE_ARG at $DATA_MOUNT..."
+# Mount the partition (as before)
 if [[ "$FS_TYPE_ARG" == "exfat" ]]; then
     uid_val=$(id -u sensos-admin)
     gid_val=$(getent group sensos-data | cut -d: -f3)
     sudo mount -t exfat -o uid="$uid_val",gid="$gid_val",umask=0002 "$PARTITION" "$DATA_MOUNT"
 else
     sudo mount "$PARTITION" "$DATA_MOUNT"
-    sudo chown -R sensos-admin:sensos-data "$DATA_MOUNT"
-    sudo chmod -R g+rwsX "$DATA_MOUNT"
-    echo "✅ Permissions set"
 fi
 echo "✅ Mount complete: $PARTITION → $DATA_MOUNT"
 
@@ -296,6 +289,31 @@ if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
         ;;
     esac
 fi
+
+for subdir in microenv database acoustic_recordings; do
+    sudo mkdir -p "$DATA_MOUNT/$subdir"
+    sudo chown sensos-admin:sensos-data "$DATA_MOUNT/$subdir"
+    sudo chmod 2775 "$DATA_MOUNT/$subdir"
+done
+echo "✅ Subdirectories created and permissions set"
+
+INFO_FILE="$DATA_MOUNT/device-info.txt"
+echo "Creating device info at $INFO_FILE..."
+{
+    echo "Device Hostname: $(hostname)"
+    echo "Device Machine ID: $(cat /etc/machine-id)"
+    [ -f /proc/cpuinfo ] && echo "CPU Serial: $(awk '/Serial/ {print $3}' /proc/cpuinfo)"
+    echo "Created At: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    if [ -d /sensos/etc ]; then
+        for cfg in /sensos/etc/*; do
+            [ -f "$cfg" ] && echo "--- $cfg ---" && cat "$cfg"
+        done
+    fi
+} | sudo tee "$INFO_FILE" >/dev/null
+sudo chown sensos-admin:sensos-data "$INFO_FILE"
+sudo chmod 664 "$INFO_FILE"
+
+# Setup fstab
 
 if [[ "$no_fstab" == "true" ]]; then
     echo "⏭️  Skipping fstab update (flag --no-fstab was set)."

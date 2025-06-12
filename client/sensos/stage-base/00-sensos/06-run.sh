@@ -1,6 +1,8 @@
+#!/bin/bash
+# Setup chrony as the NTP client and disable systemd-timesyncd
+
 on_chroot <<EOF
-systemctl enable create-python-venv
-install -m 644 /sensos/etc/chrony.conf /etc/chrony/chrony.conf
+ln -sf /sensos/etc/chrony.conf /etc/chrony/chrony.conf
 systemctl enable chrony
 systemctl disable systemd-timesyncd
 EOF

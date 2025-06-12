@@ -1,23 +1,26 @@
 #!/bin/bash -e
 
-on_chroot <<EOF
-# Install latest docker
+on_chroot <<'EOF'
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+echo "Installing prerequisites for Docker..."
 apt-get update &&
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl
 
-# Create directory for Docker's GPG key and add it
+echo "Setting up Docker GPG key..."
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
 
-# Add Docker repository
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-    >/etc/apt/sources.list.d/docker.list
+echo "Adding Docker repository..."
+echo "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/debian \$(. /etc/os-release && echo \"\$VERSION_CODENAME\") stable" \
+    > /etc/apt/sources.list.d/docker.list
 
-# Update package lists
+echo "Installing Docker components..."
 apt-get update &&
     apt-get install -y --no-install-recommends \
         docker-ce \
@@ -26,4 +29,10 @@ apt-get update &&
         docker-buildx-plugin \
         docker-compose-plugin \
         qemu-user-static
+
+# (Optional) Clean up apt caches to keep image small
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+echo "Docker installation complete."
 EOF
