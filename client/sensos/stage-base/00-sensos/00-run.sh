@@ -26,7 +26,7 @@ for f in "${FILES_DIR}/services/"*; do
     [[ -f "$f" ]] && install -m 644 "$f" "$SYSD_SYS_DIR"
 done
 
-# Copy everything else to /sensos/<name>
+# Copy everything else (except scripts/service dirs) to /sensos/<name>
 for subdir in "${FILES_DIR}/"*/; do
     name=$(basename "$subdir")
     case "$name" in
@@ -38,12 +38,13 @@ for subdir in "${FILES_DIR}/"*/; do
         if [ ${#files[@]} -gt 0 ]; then
             cp -a "${files[@]}" "$SENSOS_DIR/$name/"
         fi
-        if [ "$name" = "init.d" ]; then
-            echo "Ensuring scripts in /sensos/init.d are executable"
-            find "$SENSOS_DIR/$name" -type f -exec chmod +x {} +
-        fi
         ;;
     esac
 done
+
+if [ -d "$SENSOS_DIR/init.d" ]; then
+    echo "Ensuring scripts in /sensos/init.d are executable"
+    find "$SENSOS_DIR/init.d" -type f -exec chmod +x {} +
+fi
 
 shopt -u nullglob
