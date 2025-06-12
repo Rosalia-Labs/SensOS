@@ -11,8 +11,7 @@ import requests
 sys.path.insert(0, "/sensos/lib")
 from utils import *
 
-API_PASSWORD_FILE = "/sensos/.sensos_api_password"
-DEFAULT_PORT = "8000"
+DEFAULT_PORT = "8765"
 
 ARG_DEFS = [
     (

@@ -13,7 +13,7 @@ import configparser
 import argparse
 
 
-API_PASSWORD_FILE = "/sensos/.sensos_api_password"
+API_PASSWORD_FILE = "/sensos/etc/api_password"
 DEFAULTS_CONF = "/sensos/etc/defaults.conf"
 NETWORK_CONF = "/sensos/etc/network.conf"
 DEFAULT_PORT = "8765"
