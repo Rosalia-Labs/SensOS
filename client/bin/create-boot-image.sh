@@ -64,22 +64,22 @@ GIT_BRANCH=$(git -C "$SENSOS_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || ech
 GIT_TAG=$(git -C "$SENSOS_DIR" describe --tags --always 2>/dev/null || echo "unknown")
 GIT_DIRTY=$(test -n "$(git -C "$SENSOS_DIR" status --porcelain 2>/dev/null)" && echo "true" || echo "false")
 
-VERSION_FILE="$SENSOS_DIR/../VERSION"
+VERSION_FILE="$SENSOS_DIR/../../VERSION"
 if [ -f "$VERSION_FILE" ]; then
     VERSION_MAJOR=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^major$/ {print $2}' "$VERSION_FILE")
     VERSION_MINOR=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^minor$/ {print $2}' "$VERSION_FILE")
     VERSION_PATCH=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^patch$/ {print $2}' "$VERSION_FILE")
     VERSION_SUFFIX=$(awk -F' = ' '/^\[version\]/ {in_section=1; next} in_section && $1 ~ /^suffix$/ {print $2}' "$VERSION_FILE")
-
-    VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}"
-    if [ -n "${VERSION_SUFFIX:-}" ]; then
-        VERSION="${VERSION}-${VERSION_SUFFIX}"
-    fi
 else
     VERSION_MAJOR="unknown"
     VERSION_MINOR="unknown"
     VERSION_PATCH="unknown"
     VERSION_SUFFIX=""
+fi
+
+VERSION="${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}"
+if [ -n "${VERSION_SUFFIX:-}" ]; then
+    VERSION="${VERSION}-${VERSION_SUFFIX}"
 fi
 
 VERSION_FILE_PATH="${STAGE_SRC}/files/etc/sensos-version"
