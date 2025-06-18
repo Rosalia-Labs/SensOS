@@ -251,14 +251,14 @@ sudo chmod -R g+w /sensos/data || true
 
 echo "Configuration written to $config_file"
 
-echo "Reloading systemd..."
-sudo systemctl daemon-reload
-
 if [[ "$enable_service" == "true" ]]; then
+    sudo systemctl daemon-reload
     echo "Enabling sensos-arecord.service..."
     sudo systemctl enable sensos-arecord.service
-    if [[ "$start_service" == "true" ]]; then
-        echo "Starting sensos-arecord.service..."
-        sudo systemctl start sensos-arecord.service
-    fi
+fi
+
+if [[ "$start_service" == "true" ]]; then
+    sudo systemctl daemon-reload
+    echo "Starting sensos-arecord.service..."
+    sudo systemctl start sensos-arecord.service
 fi

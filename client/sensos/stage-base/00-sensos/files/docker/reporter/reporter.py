@@ -5,9 +5,42 @@ from psycopg.rows import dict_row
 from datetime import datetime, timedelta
 import platform
 
-API_URL = os.environ.get("API_URL", "https://your.server/api/client-status")
-API_USER = os.environ.get("API_USER", "mydevice")
-API_PASS = os.environ.get("API_PASS", "secret")
+NETWORK_CONF = "/sensos/etc/network.conf"
+API_PASS_FILE = "/sensos/keys/api_password"
+
+
+def load_network_conf():
+    config = {}
+    if os.path.isfile(NETWORK_CONF):
+        with open(NETWORK_CONF) as f:
+            for line in f:
+                if "=" in line:
+                    k, v = line.strip().split("=", 1)
+                    config[k] = v
+    return config
+
+
+def load_api_password():
+    if os.path.isfile(API_PASS_FILE):
+        with open(API_PASS_FILE) as f:
+            return f.read().strip()
+    return None
+
+
+def get_api_vars():
+    config = load_network_conf()
+    server_ip = os.environ.get("SERVER_WG_IP", config.get("SERVER_WG_IP"))
+    server_port = os.environ.get("SERVER_PORT", config.get("SERVER_PORT", "8000"))
+    api_user = os.environ.get("API_USER", "mydevice")
+    api_pass = os.environ.get("API_PASS") or load_api_password() or "secret"
+    api_path = os.environ.get("API_PATH", "/api/client-status")
+    api_url = os.environ.get("API_URL") or (
+        f"http://{server_ip}:{server_port}{api_path}"
+        if server_ip and server_port
+        else None
+    )
+    return api_url, api_user, api_pass
+
 
 DB_PARAMS = {
     "dbname": os.environ.get("POSTGRES_DB", "sensos"),
@@ -43,6 +76,13 @@ def summarize_stats(cur):
 
 
 def main():
+    api_url, api_user, api_pass = get_api_vars()
+    if not api_url or not api_pass:
+        print(
+            "API URL or password missing. Check /sensos/etc/network.conf and /sensos/keys/api_password."
+        )
+        return
+
     with psycopg.connect(**DB_PARAMS, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             stats = summarize_stats(cur)
@@ -68,7 +108,7 @@ def main():
 
     print(f"Posting payload: {payload}")
     response = requests.post(
-        API_URL, auth=(API_USER, API_PASS), json=payload, timeout=10
+        api_url, auth=(api_user, api_pass), json=payload, timeout=10
     )
     print("Server responded:", response.status_code, response.text)
     response.raise_for_status()

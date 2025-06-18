@@ -76,6 +76,25 @@ services:
         condition: on-failure
         max_attempts: 3
 
+  sensos-client-sqlite-importer:
+    image: sensos-client-sqlite-importer
+    container_name: sensos-client-sqlite-importer
+    restart: always
+    depends_on:
+      - sensos-client-database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+    volumes:
+      - /sensos/data/microenv:/microenv
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
   sensos-system-recorder:
     image: sensos-client-system-recorder
     container_name: sensos-client-system-recorder
@@ -100,29 +119,10 @@ services:
         condition: on-failure
         max_attempts: 3
 
-  sensos-client-sqlite-importer:
-    image: sensos-client-sqlite-importer
-    container_name: sensos-client-sqlite-importer
-    restart: always
-    depends_on:
-      - sensos-client-database
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-    volumes:
-      - /sensos/data/microenv:/microenv
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
-
   sensos-client-reporter:
-    image: sensos-client-reporter 
+    image: sensos-client-reporter
     container_name: sensos-client-reporter
-    restart: "no"                 
+    restart: "no"
     depends_on:
       - sensos-client-database
     environment:
@@ -132,5 +132,5 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings:ro"
-    entrypoint: [ "python3", "reporter.py" ]
+      - /sensos:/sensos:ro"
+    entrypoint: ["python3", "reporter.py"]
