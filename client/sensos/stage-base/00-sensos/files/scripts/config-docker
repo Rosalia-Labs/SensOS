@@ -7,9 +7,6 @@ source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
 source /sensos/lib/docker-utils.sh
 
-arecord_conf=/sensos/etc/arecord.conf
-network_conf=/sensos/etc/network.conf
-
 declare -A default_vars
 load_defaults "$script_name" default_vars
 
@@ -19,58 +16,17 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-# Load values from arecord.conf if available
-if [[ -f "$arecord_conf" ]]; then
-    echo "Reading config from $arecord_conf..."
-    audio_directory=$(grep '^BASE_DIR=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
-    audio_format_code=$(grep '^FORMAT=' "$arecord_conf" | cut -d= -f2- | tr -d '"')
-else
-    echo "Warning: arecord is not yet configured. Using default values."
-fi
-
-# Load connectivity profile from network.conf if available
-if [[ -f "$network_conf" ]]; then
-    echo "Reading connectivity profile from $network_conf..."
-    connectivity_profile=$(grep '^CONNECTIVITY_PROFILE=' "$network_conf" | cut -d= -f2- | tr -d '"')
-else
-    echo "Warning: networking has not yet been configured. Using default values."
-fi
-
-# Final fallbacks
-audio_directory="${audio_directory:-/sensos/data/audio_recordings}"
-audio_format_code="${audio_format_code:-S32_LE}"
-connectivity_profile="${connectivity_profile:-unrestricted}"
-
 register_option --postgres-db postgres_db "Set database name" "$(get_default postgres_db postgres)"
 register_option --postgres-user postgres_user "Set database user" "$(get_default postgres_user postgres)"
 register_option --postgres-password postgres_password "Set database password" "$(get_default postgres_password sensos)"
 register_option --db-host db_host "Set database host" "$(get_default db_host sensos-client-database)"
 register_option --db-port db_port "Set database port" "$(get_default db_port 5432)"
 register_option --db-data-path db_data_path "Set Docker volume path" "$(get_default db_data_path /sensos/data/database)"
-register_option --audio-directory audio_directory "Path for audio files" "$(get_default audio_directory)"
-register_option --audio-format audio_format_code "ALSA audio format code" "$(get_default audio_format_code)"
 register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
 register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
 
 parse_switches "$script_name" "$@"
 
-# Ensure output directory exists
-docker_compose_dir=/sensos/docker
-mkdir -p "$docker_compose_dir"
-if [[ ! -w "$docker_compose_dir" ]]; then
-    echo "ERROR: Cannot write to $docker_compose_dir"
-    exit 1
-fi
-
-# Ensure the DB data directory exists with the correct permissions
-if [[ ! -d "$db_data_path" ]]; then
-    echo "Creating database data directory at $db_data_path"
-    sudo mkdir -p "$db_data_path"
-    sudo chown sensos-admin:sensos-data "$db_data_path"
-    sudo chmod 2775 "$db_data_path"
-fi
-
-# Always write all keys, with fallback to empty string if not set
 env_file="$docker_compose_dir/.env"
 cat >"$env_file" <<EOF
 POSTGRES_DB=${postgres_db}
@@ -79,9 +35,6 @@ POSTGRES_PASSWORD=${postgres_password}
 DB_HOST=${db_host}
 DB_PORT=${db_port}
 DB_DATA_PATH=${db_data_path}
-AUDIO_DIRECTORY=${audio_directory}
-AUDIO_FORMAT_CODE=${audio_format_code}
-CONNECTIVITY_PROFILE=${connectivity_profile}
 EOF
 
 echo ".env written to $env_file:"

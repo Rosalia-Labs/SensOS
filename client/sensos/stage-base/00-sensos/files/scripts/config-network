@@ -105,11 +105,21 @@ def parse_args():
             },
         ),
         (
-            ["--connectivity-profile"],
+            ["--connectivity-mode"],
             {
-                "help": "Connectivity profile: unrestricted, restricted, or offline (offline implies --no-connectivity-checks)",
-                "choices": ["unrestricted", "restricted", "offline"],
-                "dest": "connectivity_profile",
+                "help": "Network interface behavior: always, ondemand, offline",
+                "choices": ["always", "ondemand", "offline"],
+                "dest": "connectivity_mode",
+                "default": "always",
+            },
+        ),
+        (
+            ["--bandwidth-policy"],
+            {
+                "help": "Bandwidth policy: unrestricted, restricted",
+                "choices": ["unrestricted", "restricted"],
+                "dest": "bandwidth_policy",
+                "default": "unrestricted",
             },
         ),
         (
@@ -589,9 +599,9 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
         f"WG_ENDPOINT_IP={endpoint_ip}\n"
         f"SSH_TUNNEL_IP={ssh_tunnel_ip}\n"
         f"SSH_TUNNEL_PORT={args.ssh_tunnel_port}\n"
+        f"CONNECTIVITY_MODE={args.connectivity_mode}\n"
+        f"BANDWIDTH_POLICY={args.bandwidth_policy}\n"
     )
-    if args.connectivity_profile:
-        content += f"CONNECTIVITY_PROFILE={args.connectivity_profile}\n"
 
     with open(settings_file, "w") as f:
         f.write(content)
@@ -640,10 +650,8 @@ def main():
             except Exception as e:
                 print(f"  Could not remove {f}: {e}")
 
-    if args.connectivity_profile == "offline":
+    if args.connectivity_mode != "always":
         args.no_connectivity_checks = True
-    if args.connectivity_profile:
-        print(f"📡 Connectivity profile: {args.connectivity_profile}")
 
     print("🚀 Starting device configuration...")
     api_password = get_api_password(args.config_server, args.port)

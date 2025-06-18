@@ -16,43 +16,44 @@ parse_switches "$script_name" "$@"
 
 cd /sensos/docker
 
-# Verify .env exists
-if [[ ! -f .env ]]; then
-    echo "ERROR: Missing /sensos/docker/.env — run config-containers.sh first." >&2
+CFG_FILE="/sensos/etc/network.conf"
+CONNECTIVITY_MODE=""
+BANDWIDTH_POLICY=""
+
+if [[ ! -f "$CFG_FILE" ]]; then
+    echo "ERROR: Missing /sensos/etc/network.conf — run config-network first." >&2
     exit 1
 fi
 
-# Read connectivity profile from .env
-connectivity_profile="unrestricted"
+if [[ ! -f .env ]]; then
+    echo "ERROR: Missing /sensos/docker/.env — run config-docker first." >&2
+    exit 1
+fi
+
 while IFS='=' read -r key value; do
-    if [[ "$key" == "CONNECTIVITY_PROFILE" ]]; then
-        connectivity_profile="$value"
-    fi
-done <.env
+    key="${key// /}"
+    value="${value// /}"
+    case "$key" in
+    CONNECTIVITY_MODE) CONNECTIVITY_MODE="${value,,}" ;;
+    BANDWIDTH_POLICY) BANDWIDTH_POLICY="${value,,}" ;;
+    esac
+done <"$CFG_FILE"
 
-# Determine default behavior based on connectivity profile
-case "$connectivity_profile" in
-offline | restricted)
-    OFFLINE=true
-    ;;
-unrestricted)
-    OFFLINE=false
-    ;;
-*)
-    echo "Warning: Unknown connectivity profile in .env: $connectivity_profile"
-    OFFLINE=true
-    ;;
-esac
+if [[ -z "$CONNECTIVITY_MODE" || -z "$BANDWIDTH_POLICY" ]]; then
+    echo "[FATAL] CONNECTIVITY_MODE or BANDWIDTH_POLICY not set in $CFG_FILE." >&2
+    exit 1
+fi
 
-# CLI overrides connectivity profile if specified
+OFFLINE=false
+
+if [[ "$CONNECTIVITY_MODE" == "offline" || "$BANDWIDTH_POLICY" == "restricted" ]]; then
+    OFFLINE=true
+fi
+
 if [[ "$LOCAL_ONLY" == "true" ]]; then
-    echo "[INFO] Forcing local-only mode: builds will NOT pull from the network."
     OFFLINE=true
 elif [[ "$LOCAL_ONLY" == "false" ]]; then
-    echo "[INFO] Forcing network-allowed mode even if connectivity profile is restricted."
     OFFLINE=false
-else
-    echo "[INFO] No CLI override. Using default from connectivity profile: $connectivity_profile"
 fi
 
 echo "[INFO] Effective build mode: $([[ "$OFFLINE" == true ]] && echo "LOCAL ONLY" || echo "NETWORK ALLOWED")"

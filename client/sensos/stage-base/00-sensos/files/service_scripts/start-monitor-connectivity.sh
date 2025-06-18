@@ -39,8 +39,8 @@ else
     exit 1
 fi
 
-if [[ "$CONNECTIVITY_PROFILE" == "offline" ]]; then
-    echo "📴 Connectivity profile is 'offline'; skipping connectivity monitoring." | tee -a "$LOGFILE"
+if [[ "$CONNECTIVITY_MODE" != "always" ]]; then
+    echo "📴 Connectivity mode is not 'always'; skipping connectivity monitoring." | tee -a "$LOGFILE"
     while true; do sleep 86400; done
 fi
 
