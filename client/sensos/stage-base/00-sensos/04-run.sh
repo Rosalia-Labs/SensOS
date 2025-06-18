@@ -5,7 +5,6 @@
 if [ "${ENABLE_HOTSPOT}" = "1" ]; then
     on_chroot <<EOF
 systemctl enable auto-hotspot.service
-systemctl start auto-hotspot.service || true
 EOF
     echo "Enabled auto-hotspot service."
 else

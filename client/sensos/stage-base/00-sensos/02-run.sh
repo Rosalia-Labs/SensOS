@@ -8,6 +8,9 @@ export DEBIAN_FRONTEND=noninteractive
 addgroup sensos-data
 adduser --disabled-password --gecos "SensOS Admin" --shell /bin/bash sensos-admin
 
+# Make sure that the docker group exists
+getent group docker || groupadd --system docker
+
 # Add user to needed groups
 for grp in sudo sensos-data dialout plugdev netdev docker audio gpio i2c spi; do
     adduser sensos-admin "$grp"

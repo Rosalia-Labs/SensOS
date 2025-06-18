@@ -1,6 +1,4 @@
-#!/bin/bash -e
-
-on_chroot <<'EOF'
+on_chroot <<EOF
 set -e
 export DEBIAN_FRONTEND=noninteractive
 
@@ -29,10 +27,6 @@ apt-get update &&
         docker-buildx-plugin \
         docker-compose-plugin \
         qemu-user-static
-
-# (Optional) Clean up apt caches to keep image small
-apt-get clean
-rm -rf /var/lib/apt/lists/*
 
 echo "Docker installation complete."
 EOF

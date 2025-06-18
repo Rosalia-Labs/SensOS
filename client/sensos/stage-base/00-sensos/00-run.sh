@@ -13,13 +13,16 @@ fi
 mkdir -p "$SENSOS_DIR"
 (cd "$FILES_DIR" && tar --exclude-from=../tar-excludes -cf - .) | tar -xf - -C "$SENSOS_DIR"
 
-for script in "$SENSOS_DIR/scripts/"* "$SENSOS_DIR/service_scripts/"*; do
-    [ -f "$script" ] && ln -sf "$script" "$BIN_DIR/"
+on_chroot <<'EOF'
+for script in "/sensos/scripts/"* "/sensos/service_scripts/"*; do
+    chmod +x "$script"
+    ln -sf "$script" "/usr/local/bin/$(basename "$script")"
 done
 
-for svc in "$SENSOS_DIR/services/"*; do
-    [ -f "$svc" ] && ln -sf "$svc" "$SYSD_SYS_DIR/"
+for svc in /sensos/services/*.service; do
+    ln -sf "$svc" "/etc/systemd/system/$(basename "$svc")"
 done
+EOF
 
 if [ -d "$SENSOS_DIR/init.d" ]; then
     echo "Ensuring scripts in /sensos/init.d are executable"
