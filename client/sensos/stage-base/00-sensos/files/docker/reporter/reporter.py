@@ -2,6 +2,8 @@ import os
 import requests
 import psycopg
 from psycopg.rows import dict_row
+from datetime import datetime, timedelta
+import platform
 
 API_URL = os.environ.get("API_URL", "https://your.server/api/client-status")
 API_USER = os.environ.get("API_USER", "mydevice")
@@ -16,39 +18,52 @@ DB_PARAMS = {
 }
 
 
-def get_latest_stats():
-    with psycopg.connect(**DB_PARAMS, row_factory=dict_row) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM sensos.system_stats
-                ORDER BY recorded_at DESC
-                LIMIT 1;
-                """
-            )
-            return cur.fetchone()
+def summarize_stats(cur):
+    cutoff = datetime.utcnow() - timedelta(days=1)
+    cur.execute(
+        """
+        SELECT
+            COUNT(*) AS count,
+            MAX(uptime_seconds) AS max_uptime,
+            AVG(disk_available_gb) AS avg_disk,
+            MIN(disk_available_gb) AS min_disk,
+            AVG(memory_used_mb) AS avg_mem,
+            MAX(memory_used_mb) AS max_mem,
+            MIN(memory_used_mb) AS min_mem,
+            AVG(memory_total_mb) AS avg_mem_total,
+            AVG(load_1m) AS avg_load_1m,
+            MAX(load_1m) AS max_load_1m,
+            MIN(load_1m) AS min_load_1m
+        FROM sensos.system_stats
+        WHERE recorded_at >= %s
+    """,
+        (cutoff,),
+    )
+    return cur.fetchone()
 
 
 def main():
-    stats = get_latest_stats()
-    if not stats:
-        print("No system stats found to report.")
+    with psycopg.connect(**DB_PARAMS, row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            stats = summarize_stats(cur)
+
+    if not stats or stats["count"] == 0:
+        print("No system stats found to report for last 24 hours.")
         return
 
     payload = {
-        "client_id": os.environ.get("CLIENT_ID", stats["hostname"]),
-        "uptime": stats["uptime_seconds"],
-        "cpu_usage": stats.get("load_1m"),  # Or adjust to your schema
-        "memory_usage": stats.get("memory_used_mb"),
-        "disk_usage": stats.get("disk_available_gb"),
+        "client_id": os.environ.get("CLIENT_ID", platform.node()),
+        "uptime": stats["max_uptime"],
+        "cpu_usage": stats["avg_load_1m"],
+        "memory_usage": stats["avg_mem"],
+        "disk_usage": stats["min_disk"],
         "version": os.environ.get("SOFTWARE_VERSION", "v0.1"),
-        "error_count": 0,  # Adjust as needed
-        "latency": None,  # Not tracked? Omit or set to None
+        "error_count": 0,
+        "latency": None,
         "ip_address": os.environ.get("IP_ADDRESS", None),
-        "temperature": None,  # Or pull from sensors if available
-        "battery_level": None,  # Or pull from sensors if available
-        "status_message": "OK",
+        "temperature": None,
+        "battery_level": None,
+        "status_message": f"Reporting {stats['count']} system samples in past 24h",
     }
 
     print(f"Posting payload: {payload}")
