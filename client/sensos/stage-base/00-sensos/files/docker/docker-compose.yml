@@ -25,11 +25,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - /sensos/data/audio_recordings:/mnt/audio_recordings
     deploy:
       restart_policy:
         condition: on-failure
@@ -45,11 +44,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - /sensos/data/audio_recordings:/mnt/audio_recordings
       - ./birdnet/model:/model
     deploy:
       restart_policy:
@@ -70,7 +68,7 @@ services:
       DB_PORT: ${DB_PORT}
       AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
     volumes:
-      - "${AUDIO_DIRECTORY}:/mnt/audio_recordings"
+      - /sensos/data/audio_recordings:/mnt/audio_recordings
     deploy:
       restart_policy:
         condition: on-failure
@@ -105,7 +103,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      AUDIO_FORMAT_CODE: ${AUDIO_FORMAT_CODE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     pid: "host"

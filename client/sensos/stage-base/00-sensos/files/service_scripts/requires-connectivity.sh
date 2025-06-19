@@ -20,7 +20,7 @@ while IFS='=' read -r key value; do
     esac
 done <"$CFG_FILE"
 
-if [[ -z "$WIREGUARD_IFACE" ]]; then
+if [[ -z "$NETWORK_NAME" ]]; then
     echo "[FATAL] NETWORK_NAME (WireGuard interface) not set in $CFG_FILE." >&2
     exit 1
 fi

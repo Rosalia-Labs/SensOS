@@ -55,7 +55,7 @@ fi
 
 if [[ "$build_containers" == "true" ]]; then
     echo "Building docker images..."
-    build_containers
+    build-containers
 else
     echo "Now call build-containers to prepare docker."
 fi
