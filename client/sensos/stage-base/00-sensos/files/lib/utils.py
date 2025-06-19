@@ -13,7 +13,7 @@ import configparser
 import argparse
 
 
-API_PASSWORD_FILE = "/sensos/etc/api_password"
+API_PASSWORD_FILE = "/sensos/keys/api_password"
 DEFAULTS_CONF = "/sensos/etc/defaults.conf"
 NETWORK_CONF = "/sensos/etc/network.conf"
 DEFAULT_PORT = "8765"
@@ -490,3 +490,26 @@ def sudo_write_file(
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+def disable_service(service_name, stop=False):
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping disabling service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "disable", service_name], check=True)
+        if stop:
+            subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
+            print(f"✅ Service {service_name} disabled and stopped.")
+        else:
+            print(f"✅ Service {service_name} disabled (boot only, not stopped now).")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error disabling service {service_name}: {e}", file=sys.stderr)
+
+
+def disable_wireguard(netname, stop=False):
+    service_name = f"wg-quick@{netname}.service"
+    disable_service(service_name, stop=stop)

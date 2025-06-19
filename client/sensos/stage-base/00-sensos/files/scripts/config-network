@@ -74,7 +74,7 @@ def parse_args():
         (
             ["--wg-keepalive"],
             {
-                "help": "WireGuard persistent keepalive interval (default: 25 seconds)",
+                "help": "WireGuard persistent keepalive interval (default: disabled)",
                 "dest": "wg_keepalive",
                 "type": int,
                 "default": 0,
@@ -650,41 +650,40 @@ def main():
             except Exception as e:
                 print(f"  Could not remove {f}: {e}")
 
-    if args.connectivity_mode != "always":
-        args.no_connectivity_checks = True
-
     print("🚀 Starting device configuration...")
+
     api_password = get_api_password(args.config_server, args.port)
     if not api_password:
         print("❌ Critical error: API password not obtained. Aborting configuration.")
         sys.exit(1)
+
     client_wg_ip, wg_public_ip = configure_wireguard(args, api_password)
     if not client_wg_ip:
         print("❌ WireGuard configuration failed. Aborting.")
         sys.exit(1)
+
     server_wg_ip = compute_api_server_wg_ip(client_wg_ip)
     if not server_wg_ip:
         print("❌ Failed to compute API server WireGuard IP. Aborting.")
         sys.exit(1)
-    configure_ssh(args, api_password, client_wg_ip)
-    print("Starting WireGuard and SSH services...")
-    try:
-        enable_wireguard(args.network)
-        enable_ssh(passwords=args.enable_ssh_passwords)
-        print("✅ Services started successfully.")
-    except Exception as e:
-        print(f"❌ Error starting services: {e}")
 
     endpoint_ip = args.wg_endpoint or wg_public_ip
     endpoint_ip = endpoint_ip.split(":")[0] if ":" in endpoint_ip else endpoint_ip
     write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip)
 
-    if not args.no_connectivity_checks:
-        enable_service("monitor-connectivity.service")
+    # Setup ssh -- we always want this
+    configure_ssh(args, api_password, client_wg_ip)
+    enable_ssh(passwords=args.enable_ssh_passwords)
+
+    if args.connectivity_mode == "always":
+        enable_service("networking.service")
+        enable_wireguard(args.network)
+        if not args.no_connectivity_checks:
+            enable_service("monitor-connectivity.service")
     else:
-        print(
-            "ℹ️ No-connectivity-checks mode active. Skipping connectivity check service enablement."
-        )
+        disable_service("networking.service")
+        disable_wireguard(args.network)
+
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
 
