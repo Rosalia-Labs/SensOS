@@ -149,13 +149,6 @@ def parse_args():
     return parse_args_with_defaults(arg_defs, ["global", script_name])
 
 
-def enable_wireguard(netname: str):
-    service_name = f"wg-quick@{netname}.service"
-    run_sudo_shell(f"systemctl enable {service_name}")
-    run_sudo_shell(f"systemctl start {service_name}")
-    print(f"✅ WireGuard service {service_name} enabled and started.")
-
-
 def enable_ssh(passwords: bool = False):
     """Enable SSH and configure password authentication based on the `passwords` flag."""
     sshd_dir = "/etc/ssh/sshd_config.d"
@@ -670,18 +663,18 @@ def main():
     endpoint_ip = args.wg_endpoint or wg_public_ip
     endpoint_ip = endpoint_ip.split(":")[0] if ":" in endpoint_ip else endpoint_ip
     write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip)
-
-    # Setup ssh -- we always want this
     configure_ssh(args, api_password, client_wg_ip)
+
+    # We always want this
     enable_ssh(passwords=args.enable_ssh_passwords)
 
     if args.connectivity_mode == "always":
-        enable_service("networking.service")
         enable_wireguard(args.network)
+        start_wireguard(args.network)
         if not args.no_connectivity_checks:
             enable_service("monitor-connectivity.service")
     else:
-        disable_service("networking.service")
+        stop_wireguard(args.network)
         disable_wireguard(args.network)
 
     print("✅ Configuration complete. Reboot now and check connectivity.")

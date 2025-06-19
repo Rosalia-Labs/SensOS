@@ -20,6 +20,11 @@ while IFS='=' read -r key value; do
     esac
 done <"$CFG_FILE"
 
+if [[ -z "$WIREGUARD_IFACE" ]]; then
+    echo "[FATAL] NETWORK_NAME (WireGuard interface) not set in $CFG_FILE." >&2
+    exit 1
+fi
+
 if [[ -z "$CONNECTIVITY_MODE" ]]; then
     echo "[FATAL] CONNECTIVITY_MODE not set in $CFG_FILE." >&2
     exit 1
@@ -34,16 +39,17 @@ if [[ -z "$SERVER_WG_IP" ]]; then
     echo "[FATAL] SERVER_WG_IP not set in $CFG_FILE." >&2
     exit 1
 fi
+
+WIREGUARD_IFACE="$NETWORK_NAME"
 API_IP="$SERVER_WG_IP"
 
 NEEDS_TEARDOWN=0
 
-if [[ "$CONNECTIVITY_MODE" == "ondemand" ]]; then
-    echo "[INFO] Bringing up networking stack (systemctl start networking)..."
-    sudo systemctl start networking
+echo "[INFO] Bringing up WireGuard interface ($WIREGUARD_IFACE)..."
+sudo systemctl start "wg-quick@${WIREGUARD_IFACE}.service"
+
+if [[ "$CONNECTIVITY_MODE" != "always" ]]; then
     NEEDS_TEARDOWN=1
-else
-    echo "[INFO] Connectivity mode is '$CONNECTIVITY_MODE'; not modifying networking."
 fi
 
 API_PING_TIMEOUT=300
@@ -51,8 +57,6 @@ API_PING_INTERVAL=10
 start_time=$(date +%s)
 
 echo "[INFO] Trying to reach API proxy at $API_IP (timeout ${API_PING_TIMEOUT}s)..."
-
-WIREGUARD_IFACE="$NETWORK_NAME"
 
 WG_RECOVERY_ATTEMPTED=0
 
@@ -66,11 +70,11 @@ while true; do
     elapsed=$((now - start_time))
     if ((elapsed >= API_PING_TIMEOUT)); then
         echo "[ERROR] Could not reach $API_IP after ${API_PING_TIMEOUT}s." >&2
-        if [[ "$CONNECTIVITY_MODE" == "ondemand" && $NEEDS_TEARDOWN -eq 1 ]]; then
-            echo "[INFO] Tearing down networking stack (systemctl stop networking)..."
-            sudo systemctl stop networking
+        if [[ $NEEDS_TEARDOWN -eq 1 ]]; then
+            echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
+            sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
         fi
-        exit 1
+        exit 2
     fi
 
     if [[ $WG_RECOVERY_ATTEMPTED -eq 0 ]]; then
@@ -89,9 +93,9 @@ echo "[INFO] Running: $*"
 "$@"
 EXIT_CODE=$?
 
-if [[ "$CONNECTIVITY_MODE" == "ondemand" && $NEEDS_TEARDOWN -eq 1 ]]; then
-    echo "[INFO] Tearing down networking stack (systemctl stop networking)..."
-    sudo systemctl stop networking
+if [[ $NEEDS_TEARDOWN -eq 1 ]]; then
+    echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
+    sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
 fi
 
 exit $EXIT_CODE

@@ -291,25 +291,6 @@ def setup_logging(log_filename=None):
     sys.stderr = sys.stdout
 
 
-def enable_service(service_name, start=False):
-    """Enable and optionally start the specified systemd service using sudo."""
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
-        if start:
-            subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
-            print(f"✅ Service {service_name} enabled and started.")
-        else:
-            print(f"✅ Service {service_name} enabled.")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
-
-
 def safe_cmd_output(cmd, try_sudo=False):
     try:
         return subprocess.check_output(cmd, shell=True, text=True).strip()
@@ -492,6 +473,55 @@ def sudo_write_file(
             os.remove(tmp_path)
 
 
+def start_service(service_name):
+    """Start the specified systemd service using sudo."""
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping starting service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
+        print(f"✅ Service {service_name} started.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error starting service {service_name}: {e}", file=sys.stderr)
+
+
+def stop_service(service_name):
+    """Stop the specified systemd service using sudo."""
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping stopping service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
+        print(f"✅ Service {service_name} stopped.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error stopping service {service_name}: {e}", file=sys.stderr)
+
+
+def enable_service(service_name, start=False):
+    """Enable and optionally start the specified systemd service using sudo."""
+    if shutil.which("systemctl") is None:
+        print(
+            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
+            file=sys.stderr,
+        )
+        return
+    try:
+        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
+        if start:
+            start_service(service_name)
+            print(f"✅ Service {service_name} enabled and started.")
+        else:
+            print(f"✅ Service {service_name} enabled.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
+
+
 def disable_service(service_name, stop=False):
     if shutil.which("systemctl") is None:
         print(
@@ -502,7 +532,7 @@ def disable_service(service_name, stop=False):
     try:
         subprocess.run(["sudo", "systemctl", "disable", service_name], check=True)
         if stop:
-            subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
+            stop_service(service_name)
             print(f"✅ Service {service_name} disabled and stopped.")
         else:
             print(f"✅ Service {service_name} disabled (boot only, not stopped now).")
@@ -510,6 +540,21 @@ def disable_service(service_name, stop=False):
         print(f"❌ Error disabling service {service_name}: {e}", file=sys.stderr)
 
 
-def disable_wireguard(netname, stop=False):
+def enable_wireguard(netname: str, start=False):
+    service_name = f"wg-quick@{netname}.service"
+    enable_service(service_name, start=start)
+
+
+def disable_wireguard(netname: str, stop=False):
     service_name = f"wg-quick@{netname}.service"
     disable_service(service_name, stop=stop)
+
+
+def start_wireguard(netname: str):
+    service_name = f"wg-quick@{netname}.service"
+    start_service(service_name)
+
+
+def stop_wireguard(netname: str):
+    service_name = f"wg-quick@{netname}.service"
+    stop_service(service_name)

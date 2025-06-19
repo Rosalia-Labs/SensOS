@@ -55,16 +55,14 @@ EOF
 
 echo "Modem configuration saved to $config_file"
 
-# Manage systemd service
-echo "Reloading systemd..."
-sudo systemctl daemon-reload
-
 if [[ "$enable_service" == "true" ]]; then
     echo "Enabling sensos-modem.service..."
+    sudo systemctl daemon-reload
     sudo systemctl enable sensos-modem.service
 fi
 
 if [[ "$start_service" == "true" ]]; then
     echo "Starting sensos-modem.service..."
+    sudo systemctl daemon-reload
     sudo systemctl restart sensos-modem.service
 fi

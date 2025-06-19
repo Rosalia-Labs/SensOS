@@ -22,12 +22,13 @@ register_option --postgres-password postgres_password "Set database password" "$
 register_option --db-host db_host "Set database host" "$(get_default db_host sensos-client-database)"
 register_option --db-port db_port "Set database port" "$(get_default db_port 5432)"
 register_option --db-data-path db_data_path "Set Docker volume path" "$(get_default db_data_path /sensos/data/database)"
+register_option --build-containers build_containers "Call build containers to load docker images" "$(get_default build_containers true)"
 register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
 register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
 
 parse_switches "$script_name" "$@"
 
-env_file="$docker_compose_dir/.env"
+env_file="/sensos/docker/.env"
 cat >"$env_file" <<EOF
 POSTGRES_DB=${postgres_db}
 POSTGRES_USER=${postgres_user}
@@ -40,7 +41,11 @@ EOF
 echo ".env written to $env_file:"
 cat "$env_file"
 
-# Enable/start service
+if [[ "$build_containers" == "true" ]]; then
+    echo "Building docker images..."
+    build_containers
+fi
+
 if [[ "$enable_service" == "true" ]]; then
     echo "Enabling sensos-container.service..."
     sudo systemctl daemon-reload
