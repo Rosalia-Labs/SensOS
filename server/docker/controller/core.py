@@ -173,6 +173,7 @@ def get_db(retries: int = 10, delay: int = 3):
 # Core Utility Functions
 # ------------------------------------------------------------
 
+
 def lookup_client_id(conn, wireguard_ip):
     with conn.cursor() as cur:
         cur.execute(
@@ -837,7 +838,7 @@ def create_client_status_table(cur):
     """
     cur.execute(
         """
-        CREATE TABLE sensos.client_status (
+        CREATE TABLE IF NOT EXISTS sensos.client_status (
             id SERIAL PRIMARY KEY,
             client_id INTEGER NOT NULL,
             last_check_in TIMESTAMPTZ NOT NULL,
