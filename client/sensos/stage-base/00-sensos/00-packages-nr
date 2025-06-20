@@ -16,3 +16,5 @@ build-essential
 libffi-dev
 libssl-dev
 sqlite3
+jq
+

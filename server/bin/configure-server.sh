@@ -11,7 +11,7 @@ echo "Working directory: $(pwd)" # should print <base>/server/docker
 
 # Define default values
 DEFAULT_DB_PORT=5432
-DEFAULT_API_PORT=8000
+DEFAULT_API_PORT=8765
 DEFAULT_WG_PORT=51820
 DEFAULT_WG_SERVER_IP="127.0.0.1"
 DEFAULT_SENSOS_REGISTRY_PORT=5000

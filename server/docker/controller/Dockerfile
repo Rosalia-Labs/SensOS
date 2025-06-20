@@ -71,4 +71,4 @@ COPY . ./
 # Log versioning information on startup
 CMD echo "🚀 Running Sensos Controller - Version: ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}" && \
     echo "🔍 Git Commit: ${GIT_COMMIT}, Branch: ${GIT_BRANCH}, Tag: ${GIT_TAG}, Dirty: ${GIT_DIRTY}" && \
-    uvicorn main:app --host 0.0.0.0 --port 8000 --lifespan=on
+    uvicorn main:app --host 0.0.0.0 --port 8765 --lifespan=on
