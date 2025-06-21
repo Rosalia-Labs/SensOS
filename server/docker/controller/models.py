@@ -37,7 +37,6 @@ class ClientStatusRequest(BaseModel):
     load_15m: Optional[float] = None
     version: str
     status_message: Optional[str] = None
-    wireguard_ip: str
 
 
 class HardwareProfile(BaseModel):

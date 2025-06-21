@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+source /sensos/lib/parse-switches.sh
+
 CFG_FILE="/sensos/etc/network.conf"
 CONNECTIVITY_MODE=""
 
@@ -43,6 +45,17 @@ fi
 WIREGUARD_IFACE="$NETWORK_NAME"
 API_IP="$SERVER_WG_IP"
 
+register_option "--keep-after" "keep-after" "Keep connectivity after running command" "false"
+
+parse_switches "$(basename "$0")" "$@"
+
+set -- "${REMAINING_ARGS[@]}"
+
+if [[ $# -eq 0 ]]; then
+    echo "[FATAL] No subcommand provided to run after connectivity is up." >&2
+    exit 1
+fi
+
 NEEDS_TEARDOWN=0
 
 echo "[INFO] Bringing up WireGuard interface ($WIREGUARD_IFACE)..."
@@ -55,6 +68,17 @@ fi
 API_PING_TIMEOUT=300
 API_PING_INTERVAL=10
 start_time=$(date +%s)
+
+cleanup() {
+    if [[ $NEEDS_TEARDOWN -eq 1 && "$keep_after" != "true" ]]; then
+        echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
+        sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
+    else
+        echo "[INFO] Skipping teardown (keep-after is true or teardown not needed)."
+    fi
+}
+
+trap cleanup EXIT
 
 echo "[INFO] Trying to reach API proxy at $API_IP (timeout ${API_PING_TIMEOUT}s)..."
 
@@ -92,10 +116,5 @@ done
 echo "[INFO] Running: $*"
 "$@"
 EXIT_CODE=$?
-
-if [[ $NEEDS_TEARDOWN -eq 1 ]]; then
-    echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
-    sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
-fi
 
 exit $EXIT_CODE

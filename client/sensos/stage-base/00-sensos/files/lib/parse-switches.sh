@@ -26,8 +26,14 @@ parse_switches() {
     shift
 
     local opt val varname safe_varname
+    local -a remaining_args=()
 
     while [[ $# -gt 0 ]]; do
+        if [[ "$1" == "--" ]]; then
+            shift
+            remaining_args=("$@")
+            break
+        fi
         case "$1" in
         --help)
             show_usage "$script_name"
@@ -65,6 +71,8 @@ parse_switches() {
         fi
         shift
     done
+
+    REMAINING_ARGS=("${remaining_args[@]}")
 }
 
 show_usage() {

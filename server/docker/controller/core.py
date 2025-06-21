@@ -715,7 +715,7 @@ def create_version_history_table(cur):
             git_branch TEXT,
             git_tag TEXT,
             git_dirty TEXT,
-            timestamp TIMESTAMP DEFAULT NOW()
+            timestamp TIMESTAMPTZ DEFAULT NOW()
         );
         """
     )
@@ -765,7 +765,7 @@ def create_wireguard_peers_table(cur):
             network_id INTEGER REFERENCES sensos.networks(id) ON DELETE CASCADE,
             wg_ip INET UNIQUE NOT NULL,
             note TEXT DEFAULT NULL,
-            registered_at TIMESTAMP DEFAULT NOW(),
+            registered_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(uuid)
         );
         """
@@ -789,7 +789,7 @@ def create_wireguard_keys_table(cur):
             peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             wg_public_key TEXT UNIQUE NOT NULL,
             is_active BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT NOW()
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );
         """
     )
@@ -818,8 +818,8 @@ def create_ssh_keys_table(cur):
             key_size INTEGER NOT NULL,
             key_comment TEXT,
             fingerprint TEXT NOT NULL,
-            expires_at TIMESTAMP,
-            last_used TIMESTAMP DEFAULT NOW(),
+            expires_at TIMESTAMPTZ,
+            last_used TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE (peer_id, ssh_public_key)
         );
         """
@@ -841,9 +841,9 @@ def create_client_status_table(cur):
         CREATE TABLE IF NOT EXISTS sensos.client_status (
             id SERIAL PRIMARY KEY,
             client_id INTEGER NOT NULL,
-            last_check_in TIMESTAMPTZ NOT NULL,
-            hostname TEXT,
+            last_check_in TIMESTAMPTZ,
             uptime_seconds INTEGER,
+            hostname TEXT,
             disk_available_gb REAL,
             memory_used_mb INTEGER,
             memory_total_mb INTEGER,
@@ -902,7 +902,7 @@ def create_hardware_profile_table(cur):
             id SERIAL PRIMARY KEY,
             peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             profile_json JSONB NOT NULL,
-            uploaded_at TIMESTAMP DEFAULT NOW(),
+            uploaded_at TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE(peer_id)
         );
         """
@@ -926,7 +926,7 @@ def create_peer_location_table(cur):
             id SERIAL PRIMARY KEY,
             peer_id INTEGER REFERENCES sensos.wireguard_peers(id) ON DELETE CASCADE,
             location GEOGRAPHY(POINT, 4326) NOT NULL,
-            recorded_at TIMESTAMP DEFAULT NOW()
+            recorded_at TIMESTAMPTZ DEFAULT NOW()
         );
         """
     )
