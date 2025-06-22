@@ -19,3 +19,5 @@ EOF
 else
     echo "Skipped enabling of config-geekworm-eeprom service."
 fi
+
+echo "Completed SensOS 04-run.sh"

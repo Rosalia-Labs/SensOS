@@ -4,10 +4,12 @@
 on_chroot <<EOF
 ln -sf /sensos/etc/chrony.conf /etc/chrony/chrony.conf
 systemctl enable chrony
-systemctl disable systemd-timesyncd
+systemctl disable systemd-timesyncd || true
 EOF
 
 # Enable status updates
 on_chroot <<EOF
 systemctl enable send-status-update.timer
 EOF
+
+echo "Completed SensOS 06-run.sh"

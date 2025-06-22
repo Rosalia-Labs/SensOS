@@ -18,3 +18,5 @@ chmod 0440 /etc/sudoers.d/sensos-runner
 # Lock password (so only key/sudo/su can be used)
 passwd -l sensos-runner
 EOF
+
+echo "Completed SensOS 03-run.sh"

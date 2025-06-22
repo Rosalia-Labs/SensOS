@@ -30,3 +30,5 @@ apt-get update &&
 
 echo "Docker installation complete."
 EOF
+
+echo "Completed SensOS 01-run.sh"

@@ -1,5 +1,7 @@
 #!/bin/bash -e
 
+echo "Starting SensOS setup..."
+
 SYSD_SYS_DIR="${ROOTFS_DIR}/etc/systemd/system"
 SENSOS_DIR="${ROOTFS_DIR}/sensos"
 BIN_DIR="${ROOTFS_DIR}/usr/local/bin"
@@ -18,8 +20,7 @@ for script in "/sensos/scripts/"* "/sensos/service_scripts/"*; do
     chmod +x "$script"
     ln -sf "$script" "/usr/local/bin/$(basename "$script")"
 done
-
-for svc in /sensos/services/*.service; do
+for svc in "/sensos/services/"*; do
     ln -sf "$svc" "/etc/systemd/system/$(basename "$svc")"
 done
 EOF
@@ -29,4 +30,4 @@ if [ -d "$SENSOS_DIR/init.d" ]; then
     find "$SENSOS_DIR/init.d" -type f -exec chmod +x {} +
 fi
 
-echo "sensos overlay setup complete"
+echo "Completed SensOS 00-run.sh"

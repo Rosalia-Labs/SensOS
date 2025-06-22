@@ -36,3 +36,5 @@ fi
 chown -R sensos-admin:sensos-admin /home/sensos-admin/.ssh
 chmod 0700 /home/sensos-admin/.ssh
 EOF
+
+echo "Completed SensOS 02-run.sh"

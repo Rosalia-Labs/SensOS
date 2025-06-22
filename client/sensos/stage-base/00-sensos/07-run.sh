@@ -15,3 +15,5 @@ pip install --upgrade pip
 pip install -r "$REQ_FILE"
 echo "✅ Virtual environment ready: $VENV_DIR"
 EOF
+
+echo "Completed SensOS 07-run.sh"

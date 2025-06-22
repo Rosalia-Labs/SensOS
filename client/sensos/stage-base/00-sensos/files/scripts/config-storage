@@ -202,11 +202,6 @@ if [[ "$MAKE_FS" == true ]]; then
     echo "✅ Filesystem created on $PARTITION"
 fi
 
-# Ensure mount point exists with correct ownership before mounting
-echo "📁 Ensuring mount point exists at $DATA_MOUNT..."
-sudo mkdir -p "$DATA_MOUNT"
-
-# If mount point is not empty, prompt to clean it up (warn user)
 if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
     echo "⚠️  $DATA_MOUNT is not empty."
     read -p "❓ Remove all contents of $DATA_MOUNT before mounting? [y/N] " confirm
@@ -233,7 +228,6 @@ if [[ "$confirm_mount" == [nN] ]]; then
     exit 1
 fi
 
-# Mount the partition (as before)
 if [[ "$FS_TYPE_ARG" == "exfat" ]]; then
     uid_val=$(id -u sensos-admin)
     gid_val=$(getent group sensos-data | cut -d: -f3)
@@ -290,13 +284,6 @@ if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
     esac
 fi
 
-for subdir in microenv database acoustic_recordings; do
-    sudo mkdir -p "$DATA_MOUNT/$subdir"
-    sudo chown sensos-admin:sensos-data "$DATA_MOUNT/$subdir"
-    sudo chmod 2775 "$DATA_MOUNT/$subdir"
-done
-echo "✅ Subdirectories created and permissions set"
-
 INFO_FILE="$DATA_MOUNT/device-info.txt"
 echo "Creating device info at $INFO_FILE..."
 {
@@ -310,59 +297,58 @@ echo "Creating device info at $INFO_FILE..."
         done
     fi
 } | sudo tee "$INFO_FILE" >/dev/null
-sudo chown sensos-admin:sensos-data "$INFO_FILE"
-sudo chmod 664 "$INFO_FILE"
-
-# Setup fstab
 
 if [[ "$no_fstab" == "true" ]]; then
     echo "⏭️  Skipping fstab update (flag --no-fstab was set)."
-    exit 0
-fi
-
-echo "📄 Checking for existing /etc/fstab entry for $PARTITION or $DATA_MOUNT..."
-# Refresh UUID and LABEL info in case it changed after mkfs
-uuid=$(sudo blkid -s UUID -o value "$PARTITION")
-label=$(sudo blkid -s LABEL -o value "$PARTITION")
-if [[ -z "$uuid" && -z "$label" ]]; then
-    echo "⚠️  No UUID or LABEL found for $PARTITION — falling back to using device path in /etc/fstab."
-    device_ref="$PARTITION"
 else
-    if [[ -n "$uuid" ]]; then
-        device_ref="UUID=$uuid"
+    echo "📄 Checking for existing /etc/fstab entry for $PARTITION or $DATA_MOUNT..."
+    # Refresh UUID and LABEL info in case it changed after mkfs
+    uuid=$(sudo blkid -s UUID -o value "$PARTITION")
+    label=$(sudo blkid -s LABEL -o value "$PARTITION")
+    if [[ -z "$uuid" && -z "$label" ]]; then
+        echo "⚠️  No UUID or LABEL found for $PARTITION — falling back to using device path in /etc/fstab."
+        device_ref="$PARTITION"
     else
-        device_ref="LABEL=$label"
-    fi
-fi
-
-if grep -Eq "^\s*(${device_ref}|${PARTITION})\s+${DATA_MOUNT}\s" /etc/fstab; then
-    echo "✅ Found existing fstab entry:"
-    grep -n -E "^\s*(${device_ref}|${PARTITION})\s+${DATA_MOUNT}\s" /etc/fstab
-    read -p "❓ Keep this fstab entry? [Y/n] " keep
-    if [[ "$keep" == [nN] ]]; then
-        echo "❌ Please edit /etc/fstab manually to remove or update the entry (see above for line number)."
-        exit 1
-    else
-        echo "✅ Keeping existing fstab entry."
-    fi
-else
-    echo "ℹ️  No valid fstab entry found for $PARTITION at $DATA_MOUNT."
-    read -p "❓ Add new fstab entry to make mount persistent? [Y/n] " add
-    if [[ "$add" != [nN] ]]; then
-        echo "🧹 Removing any existing /etc/fstab entry for $DATA_MOUNT..."
-        sudo sed -i.bak -r "\|^[^#].+\s+$DATA_MOUNT\s+|d" /etc/fstab
-        echo "🔧 Adding fstab entry:"
-        if [[ "$FS_TYPE_ARG" == "exfat" ]]; then
-            uid_val=$(id -u sensos-admin)
-            gid_val=$(getent group sensos-data | cut -d: -f3)
-            fstab_line="$device_ref $DATA_MOUNT exfat defaults,nofail,uid=$uid_val,gid=$gid_val,umask=0002,noauto,x-systemd.automount,x-systemd.device-timeout=10 0 0"
+        if [[ -n "$uuid" ]]; then
+            device_ref="UUID=$uuid"
         else
-            fstab_line="$device_ref $DATA_MOUNT ext4 defaults,nofail,noatime 0 2"
+            device_ref="LABEL=$label"
         fi
-        echo "$fstab_line"
-        echo "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
-        echo "✅ fstab updated"
+    fi
+
+    if grep -Eq "^\s*(${device_ref}|${PARTITION})\s+${DATA_MOUNT}\s" /etc/fstab; then
+        echo "✅ Found existing fstab entry:"
+        grep -n -E "^\s*(${device_ref}|${PARTITION})\s+${DATA_MOUNT}\s" /etc/fstab
+        read -p "❓ Keep this fstab entry? [Y/n] " keep
+        if [[ "$keep" == [nN] ]]; then
+            echo "❌ Please edit /etc/fstab manually to remove or update the entry (see above for line number)."
+            exit 1
+        else
+            echo "✅ Keeping existing fstab entry."
+        fi
     else
-        echo "➡️  Skipping fstab update. Mount will not persist after reboot."
+        echo "ℹ️  No valid fstab entry found for $PARTITION at $DATA_MOUNT."
+        read -p "❓ Add new fstab entry to make mount persistent? [Y/n] " add
+        if [[ "$add" != [nN] ]]; then
+            echo "🧹 Removing any existing /etc/fstab entry for $DATA_MOUNT..."
+            sudo sed -i.bak -r "\|^[^#].+\s+$DATA_MOUNT\s+|d" /etc/fstab
+            echo "🔧 Adding fstab entry:"
+            if [[ "$FS_TYPE_ARG" == "exfat" ]]; then
+                uid_val=$(id -u sensos-admin)
+                gid_val=$(getent group sensos-data | cut -d: -f3)
+                fstab_line="$device_ref $DATA_MOUNT exfat defaults,nofail,uid=$uid_val,gid=$gid_val,umask=0002,noauto,x-systemd.automount,x-systemd.device-timeout=10 0 0"
+            else
+                fstab_line="$device_ref $DATA_MOUNT ext4 defaults,nofail,noatime 0 2"
+            fi
+            echo "$fstab_line"
+            echo "$fstab_line" | sudo tee -a /etc/fstab >/dev/null
+            echo "✅ fstab updated"
+        else
+            echo "➡️  Skipping fstab update. Mount will not persist after reboot."
+        fi
     fi
 fi
+
+# Make sure proper permissions
+sudo chown -R sensos-admin:sensos-data "$DATA_MOUNT"
+sudo chmod -R 2775 "$DATA_MOUNT"

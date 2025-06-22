@@ -16,3 +16,5 @@ grep -q 'w1-therm' /etc/modules || echo 'w1-therm' >> /etc/modules
 grep -q '^dtparam=spi=on' /boot/firmware/config.txt || echo 'dtparam=spi=on' >> /boot/firmware/config.txt
 grep -q 'spi-dev' /etc/modules || echo 'spi-dev' >> /etc/modules
 EOF
+
+echo "Completed SensOS 05-run.sh"
