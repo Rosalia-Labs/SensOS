@@ -48,6 +48,11 @@ parse_switches "$script_name" "$@"
 echo "✅ Wrote config to $config_path:"
 cat "$config_path"
 
+output_dir=/sensos/data/microenv/
+mkdir -p $output_dir
+sudo chown -R sensos-admin:sensos-data $output_dir
+sudo chmod -R 2775 $output_dir
+
 if [[ "$enable_service" == "true" ]]; then
     echo "🔧 Enabling read-i2c-sensors.service..."
     sudo systemctl daemon-reload

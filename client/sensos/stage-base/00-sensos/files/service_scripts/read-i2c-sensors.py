@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+import os
 import sys
+import grp
 import time
 import heapq
 import sqlite3
@@ -11,6 +13,10 @@ sys.path.append("/sensos/lib")
 from utils import read_kv_config, setup_logging
 
 config = read_kv_config("/sensos/etc/i2c-sensors.conf")
+if not config:
+    print("❌ Config file missing or empty!", file=sys.stderr)
+    sys.exit(1)
+
 DB_PATH = Path("/sensos/data/microenv/i2c_readings.db")
 
 MAX_ATTEMPTS = 3
@@ -205,7 +211,6 @@ def flatten_sensor_data(sensor_data, device_address, sensor_type, timestamp):
 
 def store_readings(readings):
     try:
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(DB_PATH) as conn:
             ensure_schema(conn)
             conn.executemany(

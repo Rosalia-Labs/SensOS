@@ -41,6 +41,8 @@ OUTPUT_PATTERN="${BASE_DIR}/queued/%Y/%m/%d/sensos_%Y%m%dT%H%M%S.wav"
 
 # Ensure the base directory exists (arecord won't create intermediate directories)
 mkdir -p "$BASE_DIR"
+sudo chown -R sensos-admin:sensos-data "$BASE_DIR"
+sudo chmod -R 2775 "$BASE_DIR"
 
 echo "Starting continuous recording with the following settings:"
 echo "  DEVICE:   $DEVICE"

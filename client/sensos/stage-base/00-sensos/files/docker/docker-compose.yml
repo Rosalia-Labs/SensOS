@@ -28,7 +28,7 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - /sensos/data/audio_recordings:/mnt/audio_recordings
+      - /sensos/data/audio_recordings:/audio_recordings
     deploy:
       restart_policy:
         condition: on-failure
@@ -47,7 +47,7 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - /sensos/data/audio_recordings:/mnt/audio_recordings
+      - /sensos/data/audio_recordings:/audio_recordings
       - ./birdnet/model:/model
     deploy:
       restart_policy:
@@ -68,7 +68,7 @@ services:
       DB_PORT: ${DB_PORT}
       AUDIO_DIRECTORY: ${AUDIO_DIRECTORY}
     volumes:
-      - /sensos/data/audio_recordings:/mnt/audio_recordings
+      - /sensos/data/audio_recordings:/audio_recordings
     deploy:
       restart_policy:
         condition: on-failure

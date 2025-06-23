@@ -41,6 +41,13 @@ EOF
 echo ".env written to $env_file:"
 cat "$env_file"
 
+if [[ "$build_containers" == "true" ]]; then
+    echo "Building docker images..."
+    build-containers
+else
+    echo "Now call build-containers to prepare docker."
+fi
+
 if [[ "$enable_service" == "true" ]]; then
     echo "Enabling sensos-container.service..."
     sudo systemctl daemon-reload
@@ -51,11 +58,4 @@ if [[ "$start_service" == "true" ]]; then
     echo "Starting sensos-container.service..."
     sudo systemctl daemon-reload
     sudo systemctl start sensos-container.service
-fi
-
-if [[ "$build_containers" == "true" ]]; then
-    echo "Building docker images..."
-    build-containers
-else
-    echo "Now call build-containers to prepare docker."
 fi

@@ -20,7 +20,7 @@ DB_PARAMS = {
     "port": os.environ.get("DB_PORT", 5432),
 }
 
-AUDIO_BASE = Path("/mnt/audio_recordings")
+AUDIO_BASE = Path("/audio_recordings")
 
 HUMAN_VOCAL_SCORE_THRESHOLD = float(os.environ.get("HUMAN_VOCAL_SCORE_THRESHOLD", 0.1))
 

@@ -34,7 +34,7 @@ DB_PARAMS: str = (
 )
 
 # Paths
-ROOT: Path = Path("/mnt/audio_recordings")
+ROOT: Path = Path("/audio_recordings")
 CATALOGED: Path = ROOT / "cataloged"
 
 # Audio constants

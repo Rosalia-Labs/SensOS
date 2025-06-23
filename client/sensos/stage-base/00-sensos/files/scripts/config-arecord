@@ -247,7 +247,9 @@ MAX_TIME=$max_time
 BASE_DIR="$base_dir"
 EOF
 
-sudo chmod -R g+w /sensos/data || true
+mkdir -p $base_dir
+sudo chown -R sensos-admin:sensos-data $base_dir
+sudo chmod -R 2775 $base_dir
 
 echo "Configuration written to $config_file"
 

@@ -14,7 +14,7 @@ import psycopg
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
-ROOT = Path("/mnt/audio_recordings")
+ROOT = Path("/audio_recordings")
 QUEUED = ROOT / "queued"
 CATALOGED = ROOT / "cataloged"
 EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
