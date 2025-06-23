@@ -1,0 +1,84 @@
+#!/bin/bash
+
+# --- You may need to adjust this path
+CONFIG_SCRIPT="/usr/local/bin/config-network.py"
+
+main_menu() {
+    while true; do
+        CHOICE=$(whiptail --title "SensOS Network Configuration" --menu "Choose setup option" 18 60 10 \
+            "1" "Configure Network" \
+            "2" "Force reconfigure (overwrite existing)" \
+            "3" "Exit" 3>&1 1>&2 2>&3)
+
+        case $CHOICE in
+        1) config_network ;;
+        2) config_network_force ;;
+        3) exit 0 ;;
+        *) exit 1 ;;
+        esac
+    done
+}
+
+config_network() {
+    common_prompts
+    # Compose command
+    CMD="$CONFIG_SCRIPT --config-server \"$CONFIG_SERVER\" --port $PORT --network \"$NETWORK\" --subnet $SUBNET"
+    [ -n "$WG_ENDPOINT" ] && CMD="$CMD --wg-endpoint \"$WG_ENDPOINT\""
+    [ "$WG_KEEPALIVE" != "0" ] && CMD="$CMD --wg-keepalive $WG_KEEPALIVE"
+    [ "$ENABLE_SSH_PASSWORDS" = "on" ] && CMD="$CMD --enable-ssh-passwords"
+    [ "$SSH_TUNNEL_PORT" != "2345" ] && CMD="$CMD --ssh-tunnel-port $SSH_TUNNEL_PORT"
+    [ -n "$SSH_TUNNEL_IP" ] && CMD="$CMD --ssh-tunnel-ip \"$SSH_TUNNEL_IP\""
+    [ "$CONNECTIVITY_MODE" != "always" ] && CMD="$CMD --connectivity-mode $CONNECTIVITY_MODE"
+    [ "$BANDWIDTH_POLICY" != "unrestricted" ] && CMD="$CMD --bandwidth-policy $BANDWIDTH_POLICY"
+    [ "$NO_CONNECTIVITY_CHECKS" = "on" ] && CMD="$CMD --no-connectivity-checks"
+    [ -n "$NOTE" ] && CMD="$CMD --note \"$NOTE\""
+    eval $CMD | tee /tmp/sensos-config-network.log
+    whiptail --textbox /tmp/sensos-config-network.log 24 80
+}
+
+config_network_force() {
+    common_prompts
+    CMD="$CONFIG_SCRIPT --force --config-server \"$CONFIG_SERVER\" --port $PORT --network \"$NETWORK\" --subnet $SUBNET"
+    [ -n "$WG_ENDPOINT" ] && CMD="$CMD --wg-endpoint \"$WG_ENDPOINT\""
+    [ "$WG_KEEPALIVE" != "0" ] && CMD="$CMD --wg-keepalive $WG_KEEPALIVE"
+    [ "$ENABLE_SSH_PASSWORDS" = "on" ] && CMD="$CMD --enable-ssh-passwords"
+    [ "$SSH_TUNNEL_PORT" != "2345" ] && CMD="$CMD --ssh-tunnel-port $SSH_TUNNEL_PORT"
+    [ -n "$SSH_TUNNEL_IP" ] && CMD="$CMD --ssh-tunnel-ip \"$SSH_TUNNEL_IP\""
+    [ "$CONNECTIVITY_MODE" != "always" ] && CMD="$CMD --connectivity-mode $CONNECTIVITY_MODE"
+    [ "$BANDWIDTH_POLICY" != "unrestricted" ] && CMD="$CMD --bandwidth-policy $BANDWIDTH_POLICY"
+    [ "$NO_CONNECTIVITY_CHECKS" = "on" ] && CMD="$CMD --no-connectivity-checks"
+    [ -n "$NOTE" ] && CMD="$CMD --note \"$NOTE\""
+    eval $CMD | tee /tmp/sensos-config-network.log
+    whiptail --textbox /tmp/sensos-config-network.log 24 80
+}
+
+common_prompts() {
+    CONFIG_SERVER=$(whiptail --inputbox "Config server hostname/IP" 8 60 "localhost" --title "Config Server" 3>&1 1>&2 2>&3)
+    PORT=$(whiptail --inputbox "Config server port" 8 60 "8765" --title "Port" 3>&1 1>&2 2>&3)
+    NETWORK=$(whiptail --inputbox "Network name" 8 60 "sensos" --title "Network" 3>&1 1>&2 2>&3)
+    SUBNET=$(whiptail --inputbox "Subnet offset for WireGuard IP" 8 60 "1" --title "Subnet Offset" 3>&1 1>&2 2>&3)
+    WG_ENDPOINT=$(whiptail --inputbox "WireGuard endpoint IP (optional)" 8 60 "" --title "WG Endpoint" 3>&1 1>&2 2>&3)
+    WG_KEEPALIVE=$(whiptail --inputbox "WireGuard persistent keepalive interval (0=disabled)" 8 60 "0" --title "WG Keepalive" 3>&1 1>&2 2>&3)
+    ENABLE_SSH_PASSWORDS=$(
+        whiptail --yesno "Enable SSH password authentication?" 8 60 --title "SSH Passwords"
+        echo $?
+    )
+    [ "$ENABLE_SSH_PASSWORDS" = "0" ] && ENABLE_SSH_PASSWORDS="on" || ENABLE_SSH_PASSWORDS="off"
+    SSH_TUNNEL_PORT=$(whiptail --inputbox "SSH tunnel port (default 2345)" 8 60 "2345" --title "SSH Tunnel Port" 3>&1 1>&2 2>&3)
+    SSH_TUNNEL_IP=$(whiptail --inputbox "SSH tunnel IP (optional)" 8 60 "" --title "SSH Tunnel IP" 3>&1 1>&2 2>&3)
+    CONNECTIVITY_MODE=$(whiptail --title "Connectivity Mode" --menu "Network interface behavior" 15 60 4 \
+        "always" "Always connected" \
+        "ondemand" "Connect on demand" \
+        "offline" "Offline" 3>&1 1>&2 2>&3)
+    BANDWIDTH_POLICY=$(whiptail --title "Bandwidth Policy" --menu "Bandwidth policy" 15 60 2 \
+        "unrestricted" "Unrestricted" \
+        "restricted" "Restricted" 3>&1 1>&2 2>&3)
+    NO_CONNECTIVITY_CHECKS=$(
+        whiptail --yesno "Skip connectivity check service?" 8 60 --title "No Connectivity Checks"
+        echo $?
+    )
+    [ "$NO_CONNECTIVITY_CHECKS" = "0" ] && NO_CONNECTIVITY_CHECKS="on" || NO_CONNECTIVITY_CHECKS="off"
+    NOTE=$(whiptail --inputbox "Optional note/description" 8 60 "" --title "Note" 3>&1 1>&2 2>&3)
+}
+
+main_menu

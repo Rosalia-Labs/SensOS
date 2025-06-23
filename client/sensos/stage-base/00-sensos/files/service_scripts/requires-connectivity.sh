@@ -5,6 +5,62 @@ source /sensos/lib/parse-switches.sh
 
 CFG_FILE="/sensos/etc/network.conf"
 CONNECTIVITY_MODE=""
+WIREGUARD_IFACE=""
+API_IP=""
+NEEDS_TEARDOWN=0
+DEFAULT_ROUTE_DEVS=()
+
+AP_IFACE="ap0" # <-- Set your AP interface name here if needed
+
+# Find interfaces with a default route (excluding AP)
+find_default_route_devs() {
+    local devs=()
+    for dev in $(ip route | awk '/^default/ {print $5}' | sort -u); do
+        if [[ "$dev" != "$AP_IFACE" ]]; then
+            devs+=("$dev")
+        fi
+    done
+    echo "${devs[@]}"
+}
+
+setup() {
+    echo "[INFO] Enabling all NM-managed networking..."
+    sudo nmcli networking on
+
+    for i in {1..5}; do
+        status="$(nmcli networking connectivity)"
+        if [[ "$status" == "full" ]]; then
+            break
+        fi
+        sleep 2
+    done
+
+    if [[ "$(nmcli networking connectivity)" != "full" ]]; then
+        echo "[WARN] Did not achieve full networking."
+    fi
+
+    echo "[INFO] Bringing up WireGuard interface ($WIREGUARD_IFACE)..."
+    sudo systemctl start "wg-quick@${WIREGUARD_IFACE}.service"
+}
+
+cleanup() {
+    if [[ $NEEDS_TEARDOWN -eq 1 && "$keep_after" != "true" ]]; then
+        echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
+        sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
+        echo "[INFO] Disconnecting default route interfaces..."
+        for dev in $(ip route | awk '/^default/ {print $5}' | sort -u); do
+            [[ "$dev" == "$AP_IFACE" ]] && continue
+            echo "[INFO] Disconnecting $dev (default route interface)..."
+            sudo nmcli device disconnect "$dev" || true
+        done
+    else
+        echo "[INFO] Skipping teardown (keep-after is true or teardown not needed)."
+    fi
+}
+
+trap cleanup EXIT
+
+# ------- Parse Config and Arguments -------
 
 if [[ ! -f "$CFG_FILE" ]]; then
     echo "[FATAL] $CFG_FILE not found." >&2
@@ -46,9 +102,10 @@ WIREGUARD_IFACE="$NETWORK_NAME"
 API_IP="$SERVER_WG_IP"
 
 register_option "--keep-after" "keep-after" "Keep connectivity after running command" "false"
+register_option "--interval" "ping_interval" "Ping interval in seconds" "30"
+register_option "--timeout" "ping_timeout" "API ping timeout in seconds" "3600"
 
 parse_switches "$(basename "$0")" "$@"
-
 set -- "${REMAINING_ARGS[@]}"
 
 if [[ $# -eq 0 ]]; then
@@ -56,62 +113,39 @@ if [[ $# -eq 0 ]]; then
     exit 1
 fi
 
-NEEDS_TEARDOWN=0
-
-echo "[INFO] Bringing up WireGuard interface ($WIREGUARD_IFACE)..."
-sudo systemctl start "wg-quick@${WIREGUARD_IFACE}.service"
-
 if [[ "$CONNECTIVITY_MODE" != "always" ]]; then
     NEEDS_TEARDOWN=1
 fi
 
-API_PING_TIMEOUT=300
-API_PING_INTERVAL=10
+API_PING_INTERVAL="${ping_interval:-30}"
+API_PING_TIMEOUT="${ping_timeout:-3600}"
 start_time=$(date +%s)
 
-cleanup() {
-    if [[ $NEEDS_TEARDOWN -eq 1 && "$keep_after" != "true" ]]; then
-        echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
-        sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
-    else
-        echo "[INFO] Skipping teardown (keep-after is true or teardown not needed)."
-    fi
-}
-
-trap cleanup EXIT
+# ------- Main Ping & Setup Logic -------
 
 echo "[INFO] Trying to reach API proxy at $API_IP (timeout ${API_PING_TIMEOUT}s)..."
 
-WG_RECOVERY_ATTEMPTED=0
-
-while true; do
-    if ping -c1 -W2 "$API_IP" >/dev/null 2>&1; then
-        echo "[INFO] Ping to $API_IP succeeded."
-        break
-    fi
-
-    now=$(date +%s)
-    elapsed=$((now - start_time))
-    if ((elapsed >= API_PING_TIMEOUT)); then
-        echo "[ERROR] Could not reach $API_IP after ${API_PING_TIMEOUT}s." >&2
-        if [[ $NEEDS_TEARDOWN -eq 1 ]]; then
-            echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
-            sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
+if ping -c1 -W2 "$API_IP" >/dev/null 2>&1; then
+    echo "[INFO] Ping to $API_IP succeeded without bringing up interfaces."
+else
+    setup
+    while true; do
+        if ping -c1 -W2 "$API_IP" >/dev/null 2>&1; then
+            echo "[INFO] Ping to $API_IP succeeded after setup."
+            break
         fi
-        exit 2
-    fi
 
-    if [[ $WG_RECOVERY_ATTEMPTED -eq 0 ]]; then
-        echo "[WARN] Ping failed, attempting to restart WireGuard interface $WIREGUARD_IFACE..."
-        sudo systemctl restart "wg-quick@${WIREGUARD_IFACE}.service"
-        WG_RECOVERY_ATTEMPTED=1
-        sleep 4
-        continue
-    fi
+        now=$(date +%s)
+        elapsed=$((now - start_time))
+        if ((elapsed >= API_PING_TIMEOUT)); then
+            echo "[ERROR] Could not reach $API_IP after ${API_PING_TIMEOUT}s." >&2
+            exit 2
+        fi
 
-    echo "[WARN] Still no reply from $API_IP after ${elapsed}s, retrying..."
-    sleep $API_PING_INTERVAL
-done
+        echo "[WARN] Still no reply from $API_IP after ${elapsed}s, retrying..."
+        sleep $API_PING_INTERVAL
+    done
+fi
 
 echo "[INFO] Running: $*"
 "$@"
