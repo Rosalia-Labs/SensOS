@@ -1,0 +1,11 @@
+[Unit]
+Description=Set up connectivity according to config at boot
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/requires-connectivity.sh --interval 1 --timeout 5 -- /bin/true
+
+[Install]
+WantedBy=multi-user.target
