@@ -69,6 +69,8 @@ def ensure_schema(cursor):
         ON sensos.audio_files(capture_timestamp);
         CREATE INDEX IF NOT EXISTS audio_files_capture_channels_idx
         ON sensos.audio_files(capture_timestamp, channels);
+        CREATE INDEX IF NOT EXISTS audio_files_deleted_idx
+        ON sensos.audio_files(deleted);
         """
     )
 
