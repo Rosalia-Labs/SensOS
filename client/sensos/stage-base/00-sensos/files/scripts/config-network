@@ -639,6 +639,10 @@ def main():
         privileged_shell(f"systemctl stop wg-quick@{args.network}")
         privileged_shell(f"systemctl disable wg-quick@{args.network}")
 
+    # This calls requires-connectivity.sh to bring down interfaces
+    # when in ondemand or offline modes
+    privileged_shell(f"systemctl enable set-network-config.service")
+
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
 
