@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CONFIG_FILE="/sensos/etc/sensos_wifi.conf"
+CONFIG_FILE="/sensos/etc/wifi.conf"
 LOG_DIR="/sensos/log"
 LOG_FILE="$LOG_DIR/wifi.log"
 

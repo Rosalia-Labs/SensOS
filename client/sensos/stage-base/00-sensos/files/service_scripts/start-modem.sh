@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CONFIG_FILE="/sensos/etc/sensos_modem.conf"
+CONFIG_FILE="/sensos/etc/modem.conf"
 LOG_DIR="/sensos/log"
 LOG_FILE="$LOG_DIR/modem.log"
 
@@ -36,15 +36,15 @@ restart_lte() {
     sudo nmcli c up "lte" || {
         echo "Failed to bring up LTE connection. Deleting and recreating..." | tee -a "$LOG_FILE"
         sudo nmcli connection delete "lte" 2>/dev/null
-        sudo nmcli c add type gsm ifname "$MODEM_IFACE" con-name "lte" \
-            connection.interface-name "$MODEM_INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
+        sudo nmcli c add type gsm ifname "$IFACE" con-name "lte" \
+            connection.interface-name "$INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
         sudo nmcli c up "lte"
     }
 }
 
 # Main loop to monitor and restart LTE connection
 while true; do
-    STATUS=$(nmcli device status | grep "$MODEM_IFACE" | awk '{print $3}')
+    STATUS=$(nmcli device status | grep "$IFACE" | awk '{print $3}')
 
     if [[ "$STATUS" == "connected" ]]; then
         echo "LTE connection is up." | tee -a "$LOG_FILE"

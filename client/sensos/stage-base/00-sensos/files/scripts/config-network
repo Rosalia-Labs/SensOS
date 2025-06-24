@@ -603,45 +603,40 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
     print(f"✅ Client network settings written to {settings_file}")
 
 
+import glob
+
+
 def main():
-    setup_logging()
-
-    args = parse_args()
-
-    wg_config_file = os.path.join(WG_DIR, f"{args.network}.conf")
-    wg_private_key = os.path.join(WG_DIR, f"{args.network}-private.key")
-    wg_public_key = os.path.join(WG_DIR, f"{args.network}-public.key")
-    ssh_private = os.path.join(SENSOS_ADMIN_HOME, ".ssh/id_ed25519")
-    ssh_public = os.path.join(SENSOS_ADMIN_HOME, ".ssh/id_ed25519.pub")
-    sensos_net_conf = "/sensos/etc/network.conf"
-
-    preexisting = []
-    for f in [
-        wg_config_file,
-        wg_private_key,
-        wg_public_key,
-        ssh_private,
-        ssh_public,
-        sensos_net_conf,
-    ]:
-        if os.path.exists(f):
-            preexisting.append(f)
-
-    if preexisting and not args.force:
-        print("\n❌ Existing configuration detected:")
-        for f in preexisting:
-            print(f"    {f}")
-        print("\nAborting. Use --force to completely regenerate all keys/configs.\n")
+    username = pwd.getpwuid(os.geteuid()).pw_name
+    if username != "sensos-admin":
+        print(
+            f"\n❌ This script must be run as 'sensos-admin', not '{username}'.",
+            file=sys.stderr,
+        )
+        print("   Please switch users: sudo -u sensos-admin ...\n", file=sys.stderr)
         sys.exit(1)
 
-    if args.force and preexisting:
-        print("⚠️  --force specified, removing old configuration...")
-        for f in preexisting:
-            try:
-                os.remove(f)
-                print(f"  Removed: {f}")
-            except Exception as e:
-                print(f"  Could not remove {f}: {e}")
+    setup_logging()
+    args = parse_args()
+
+    if args.force:
+        sudo_remove_dir(WG_DIR)
+        sudo_create_dir(WG_DIR, owner="root", mode=0o700)
+        ssh_dir = os.path.join(SENSOS_ADMIN_HOME, ".ssh")
+        sudo_remove_dir(ssh_dir)
+        sudo_create_dir(ssh_dir, owner="sensos-admin", mode=0o700)
+        sudo_remove_file(sensos_net_conf)
+
+    wg_exists = any_files_in_dir(WG_DIR)
+    ssh_exists = any_files_in_dir(os.path.join(SENSOS_ADMIN_HOME, ".ssh"))
+    netconf_exists = os.path.exists(sensos_net_conf)
+
+    if not args.force and (wg_exists or ssh_exists or netconf_exists):
+        print(
+            "\n❌ Existing configuration detected (in /etc/wireguard, ~/.ssh, or /sensos/etc/network.conf)."
+        )
+        print("Aborting. Use --force to remove all configs and proceed.\n")
+        sys.exit(1)
 
     print("🚀 Starting device configuration...")
 

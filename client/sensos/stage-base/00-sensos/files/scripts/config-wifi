@@ -3,7 +3,7 @@ set -e
 
 script_name=$(basename "$0")
 config_dir="/sensos/etc"
-config_file="$config_dir/sensos_wifi.conf"
+config_file="$config_dir/wifi.conf"
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh

@@ -3,7 +3,7 @@ set -e
 
 script_name=$(basename "$0")
 config_dir="/sensos/etc"
-config_file="$config_dir/sensos_modem.conf"
+config_file="$config_dir/modem.conf"
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
@@ -18,8 +18,8 @@ get_default() {
 }
 
 register_option --service service "Modem service name (required, e.g. 1nce)" "$(get_default service)"
-register_option --modem-iface modem_iface "Modem network interface" "$(get_default modem_iface wwan0)"
-register_option --modem-internal-name modem_internal_name "Internal modem name" "$(get_default modem_internal_name cdc-wdm0)"
+register_option --iface iface "Modem network interface" "$(get_default iface wwan0)"
+register_option --internal-name internal_name "Internal modem name" "$(get_default internal_name cdc-wdm0)"
 register_option --enable-service enable_service "Enable sensos-modem.service" "$(get_default enable_service true)"
 register_option --start-service start_service "Start sensos-modem.service" "$(get_default start_service false)"
 
@@ -48,8 +48,8 @@ mkdir -p "$config_dir"
 # Write config file
 cat >"$config_file" <<EOF
 SERVICE=$service
-MODEM_IFACE=$modem_iface
-MODEM_INTERNAL_NAME=$modem_internal_name
+IFACE=$iface
+INTERNAL_NAME=$internal_name
 APN=$apn
 EOF
 

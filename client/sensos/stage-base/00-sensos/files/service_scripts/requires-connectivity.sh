@@ -4,28 +4,48 @@ set -e
 source /sensos/lib/parse-switches.sh
 
 CFG_FILE="/sensos/etc/network.conf"
+MODEM_CONF="/sensos/etc/modem.conf"
+WIFI_CONF="/sensos/etc/wifi.conf"
+
 CONNECTIVITY_MODE=""
 WIREGUARD_IFACE=""
 API_IP=""
 NEEDS_TEARDOWN=0
-DEFAULT_ROUTE_DEVS=()
 
-AP_IFACE="ap0" # <-- Set your AP interface name here if needed
+CANDIDATE_DEVS=()
 
-# Find interfaces with a default route (excluding AP)
-find_default_route_devs() {
-    local devs=()
-    for dev in $(ip route | awk '/^default/ {print $5}' | sort -u); do
-        if [[ "$dev" != "$AP_IFACE" ]]; then
-            devs+=("$dev")
-        fi
+if [[ -f "$MODEM_CONF" ]]; then
+    while IFS='=' read -r key value; do
+        key="${key// /}"
+        value="${value// /}"
+        [[ "$key" == "IFACE" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
+    done <"$MODEM_CONF"
+fi
+
+if [[ -f "$WIFI_CONF" ]]; then
+    while IFS='=' read -r key value; do
+        key="${key// /}"
+        value="${value// /}"
+        [[ "$key" == "IFACE" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
+    done <"$WIFI_CONF"
+fi
+
+CANDIDATE_DEVS+=("eth0")
+
+for_each_managed_dev() {
+    for dev in "${CANDIDATE_DEVS[@]}"; do
+        echo "$dev"
     done
-    echo "${devs[@]}"
 }
 
 setup() {
     echo "[INFO] Enabling all NM-managed networking..."
     sudo nmcli networking on
+
+    for dev in $(for_each_managed_dev); do
+        echo "[INFO] Connecting $dev..."
+        sudo nmcli device connect "$dev" || true
+    done
 
     for i in {1..5}; do
         status="$(nmcli networking connectivity)"
@@ -47,10 +67,9 @@ cleanup() {
     if [[ $NEEDS_TEARDOWN -eq 1 && "$keep_after" != "true" ]]; then
         echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
         sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
-        echo "[INFO] Disconnecting default route interfaces..."
-        for dev in $(ip route | awk '/^default/ {print $5}' | sort -u); do
-            [[ "$dev" == "$AP_IFACE" ]] && continue
-            echo "[INFO] Disconnecting $dev (default route interface)..."
+        echo "[INFO] Disconnecting managed interfaces..."
+        for dev in $(for_each_managed_dev); do
+            echo "[INFO] Disconnecting $dev..."
             sudo nmcli device disconnect "$dev" || true
         done
     else
@@ -59,8 +78,6 @@ cleanup() {
 }
 
 trap cleanup EXIT
-
-# ------- Parse Config and Arguments -------
 
 if [[ ! -f "$CFG_FILE" ]]; then
     echo "[FATAL] $CFG_FILE not found." >&2
@@ -101,7 +118,7 @@ fi
 WIREGUARD_IFACE="$NETWORK_NAME"
 API_IP="$SERVER_WG_IP"
 
-register_option "--keep-after" "keep-after" "Keep connectivity after running command" "false"
+register_option "--keep-after" "keep_after" "Keep connectivity after running command" "false"
 register_option "--interval" "ping_interval" "Ping interval in seconds" "30"
 register_option "--timeout" "ping_timeout" "API ping timeout in seconds" "3600"
 
@@ -120,8 +137,6 @@ fi
 API_PING_INTERVAL="${ping_interval:-30}"
 API_PING_TIMEOUT="${ping_timeout:-3600}"
 start_time=$(date +%s)
-
-# ------- Main Ping & Setup Logic -------
 
 echo "[INFO] Trying to reach API proxy at $API_IP (timeout ${API_PING_TIMEOUT}s)..."
 

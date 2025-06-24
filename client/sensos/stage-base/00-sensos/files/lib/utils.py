@@ -47,6 +47,39 @@ def run_sudo_shell(cmd):
         subprocess.run(f"sudo {cmd}", shell=True, check=True)
 
 
+def sudo_remove_dir(path):
+    if os.path.exists(path):
+        run_sudo_shell(f"rm -rf {shlex.quote(path)}")
+
+
+def sudo_create_dir(path, owner="root", mode=0o700):
+    run_sudo_shell(f"mkdir -p {shlex.quote(path)}")
+    run_sudo_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}")
+    run_sudo_shell(f"chown {owner}:{owner} {shlex.quote(path)}")
+
+
+def sudo_remove_file(path):
+    if os.path.exists(path):
+        run_sudo_shell(f"rm -f {shlex.quote(path)}")
+
+
+def any_files_in_dir(path):
+    try:
+        return len(os.listdir(path)) > 0
+    except PermissionError:
+        try:
+            output = run_sudo_command(f"ls -A {shlex.quote(path)}")
+            return bool(output and output.strip())
+        except Exception:
+            print(
+                f"⚠️ Warning: Cannot list {path}, skipping existence check.",
+                file=sys.stderr,
+            )
+            return False
+    except FileNotFoundError:
+        return False
+
+
 def get_basic_auth(api_password):
     return base64.b64encode(f":{api_password}".encode()).decode()
 
