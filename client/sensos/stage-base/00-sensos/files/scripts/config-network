@@ -576,12 +576,15 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
 
 def main():
     username = pwd.getpwuid(os.geteuid()).pw_name
-    if username != "sensos-admin":
+    if username not in ("sensos-admin", "root"):
         print(
-            f"\n❌ This script must be run as 'sensos-admin', not '{username}'.",
+            f"\n❌ This script must be run as 'sensos-admin' or 'root', not '{username}'.",
             file=sys.stderr,
         )
-        print("   Please switch users: sudo -u sensos-admin ...\n", file=sys.stderr)
+        print(
+            "   Please switch users: sudo -u sensos-admin ... or run as root\n",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     setup_logging()
@@ -638,10 +641,7 @@ def main():
     else:
         privileged_shell(f"systemctl stop wg-quick@{args.network}")
         privileged_shell(f"systemctl disable wg-quick@{args.network}")
-
-    # This calls requires-connectivity.sh to bring down interfaces
-    # when in ondemand or offline modes
-    privileged_shell(f"systemctl enable set-network-config.service")
+        privileged_shell(f"systemctl enable set-network-config.service")
 
     print("✅ Configuration complete. Reboot now and check connectivity.")
 

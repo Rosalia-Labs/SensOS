@@ -31,11 +31,11 @@ def send_location(server_ip, port, wg_ip, api_password, latitude, longitude):
 
 
 def write_local_location_conf(latitude, longitude):
-    os.makedirs("/sensos/etc", exist_ok=True)
+    create_dir("/sensos/etc", owner="sensos-admin", mode=0o755)
     path = "/sensos/etc/location.conf"
+    content = f"LATITUDE={latitude}\nLONGITUDE={longitude}\n"
     try:
-        with open(path, "w") as f:
-            f.write(f"LATITUDE={latitude}\nLONGITUDE={longitude}\n")
+        write_file(path, content, mode=0o644, user="sensos-admin")
         print(f"✅ Location written to {path}")
     except Exception as e:
         print(f"❌ Failed to write to {path}: {e}", file=sys.stderr)

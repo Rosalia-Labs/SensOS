@@ -21,140 +21,77 @@ DEFAULT_PORT = "8765"
 
 def privileged_shell(cmd, check=False, silent=False, user=None):
     """
-    Run a shell command. If user is specified, always use sudo -u <user>.
-    If not, try direct, then retry with sudo on failure.
-    Returns (output, rc).
+    Run a shell command as root (or as another user).
+    - If already running as root, do not use sudo.
+    - If not, always use sudo (or sudo -u <user>).
     """
+    is_root = os.geteuid() == 0
     if user:
-        sudo_cmd = f"sudo -u {user} {cmd}"
-        try:
-            output = subprocess.check_output(sudo_cmd, shell=True, text=True).strip()
-            return output, 0
-        except subprocess.CalledProcessError as e:
-            if not silent:
-                print(f"❌ Sudo command failed: {sudo_cmd}\n{e}", file=sys.stderr)
-            if check:
-                raise
-            return None, e.returncode
-        except Exception as e:
-            if not silent:
-                print(f"❌ Error running {sudo_cmd}: {e}", file=sys.stderr)
-            if check:
-                raise
-            return None, 1
+        full_cmd = (
+            f"sudo -u {user} {cmd}"
+            if not is_root
+            else f"su - {user} -c {shlex.quote(cmd)}"
+        )
     else:
-        try:
-            output = subprocess.check_output(cmd, shell=True, text=True).strip()
-            return output, 0
-        except subprocess.CalledProcessError as e:
-            sudo_cmd = f"sudo {cmd}"
-            try:
-                output = subprocess.check_output(
-                    sudo_cmd, shell=True, text=True
-                ).strip()
-                return output, 0
-            except subprocess.CalledProcessError as se:
-                if not silent:
-                    print(f"❌ Sudo command failed: {sudo_cmd}\n{se}", file=sys.stderr)
-                if check:
-                    raise
-                return None, se.returncode
-        except Exception as e:
-            if not silent:
-                print(f"❌ Error running {cmd}: {e}", file=sys.stderr)
-            if check:
-                raise
-            return None, 1
+        full_cmd = cmd if is_root else f"sudo {cmd}"
+    try:
+        output = subprocess.check_output(full_cmd, shell=True, text=True).strip()
+        return output, 0
+    except subprocess.CalledProcessError as e:
+        if not silent:
+            print(f"❌ Command failed: {full_cmd}\n{e}", file=sys.stderr)
+        if check:
+            raise
+        return None, e.returncode
+    except Exception as e:
+        if not silent:
+            print(f"❌ Error running {full_cmd}: {e}", file=sys.stderr)
+        if check:
+            raise
+        return None, 1
 
 
 def remove_dir(path):
-    try:
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        return
-    except PermissionError:
-        privileged_shell(f"rm -rf {shlex.quote(path)}", silent=True)
+    privileged_shell(f"rm -rf {shlex.quote(path)}", silent=True)
 
 
 def create_dir(path, owner="root", mode=0o700):
-    try:
-        os.makedirs(path, exist_ok=True)
-        os.chmod(path, mode)
-        uid = pwd.getpwnam(owner).pw_uid
-        gid = grp.getgrnam(owner).gr_gid
-        os.chown(path, uid, gid)
-    except PermissionError:
-        privileged_shell(f"mkdir -p {shlex.quote(path)}", silent=True)
-        privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
-        privileged_shell(f"chown {owner}:{owner} {shlex.quote(path)}", silent=True)
+    privileged_shell(f"mkdir -p {shlex.quote(path)}", silent=True)
+    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
+    privileged_shell(f"chown {owner}:{owner} {shlex.quote(path)}", silent=True)
 
 
 def remove_file(path):
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    except PermissionError:
-        privileged_shell(f"rm -f {shlex.quote(path)}", silent=True)
+    privileged_shell(f"rm -f {shlex.quote(path)}", silent=True)
 
 
 def any_files_in_dir(path):
-    try:
-        return len(os.listdir(path)) > 0
-    except PermissionError:
-        output, rc = privileged_shell(f"ls -A {shlex.quote(path)}", silent=True)
-        return bool(output and output.strip())
-    except FileNotFoundError:
-        return False
+    output, rc = privileged_shell(f"ls -A {shlex.quote(path)}", silent=True)
+    return bool(output and output.strip())
 
 
 def read_file(filepath):
-    try:
-        with open(filepath, "r") as f:
-            return f.read().strip()
-    except PermissionError:
-        output, rc = privileged_shell(f"cat {shlex.quote(filepath)}", silent=True)
-        return output.strip() if output else None
-    except Exception as e:
-        print(f"❌ Error reading file {filepath}: {e}", file=sys.stderr)
-        return None
+    output, rc = privileged_shell(f"cat {shlex.quote(filepath)}", silent=True)
+    return output.strip() if output else None
 
 
 def write_file(filepath, content, mode=0o644, user="root", group=None):
-    # Try Python first, escalate if necessary
     group = group or user
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        try:
-            shutil.move(tmp_path, filepath)
-        except PermissionError:
-            privileged_shell(
-                f"mv {shlex.quote(tmp_path)} {shlex.quote(filepath)}", silent=True
-            )
-            tmp_path = None  # It's moved already
-        try:
-            os.chmod(filepath, mode)
-        except PermissionError:
-            privileged_shell(
-                f"chmod {oct(mode)[2:]} {shlex.quote(filepath)}", silent=True
-            )
-        try:
-            uid = pwd.getpwnam(user).pw_uid
-            gid = grp.getgrnam(group).gr_gid
-            os.chown(filepath, uid, gid)
-        except PermissionError:
-            privileged_shell(
-                f"chown {user}:{group} {shlex.quote(filepath)}", silent=True
-            )
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    privileged_shell(f"mv {shlex.quote(tmp_path)} {shlex.quote(filepath)}", silent=True)
+    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(filepath)}", silent=True)
+    privileged_shell(f"chown {user}:{group} {shlex.quote(filepath)}", silent=True)
 
 
-# ----- Rest: unchanged logic -----
+def set_permissions_and_owner(
+    path: str, mode: int, user: str = None, group: str = None
+):
+    group = group or user
+    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
+    if user:
+        privileged_shell(f"chown {user}:{group} {shlex.quote(path)}", silent=True)
 
 
 def get_basic_auth(api_password):
@@ -324,24 +261,6 @@ def get_client_wg_ip():
     """Return CLIENT_WG_IP from /sensos/etc/network.conf, or None if not found."""
     config = read_kv_config(NETWORK_CONF)
     return config.get("CLIENT_WG_IP")
-
-
-def set_permissions_and_owner(
-    path: str, mode: int, user: str = None, group: str = None
-):
-    """Set file permissions and ownership. Falls back to sudo on permission error."""
-    group = group or user
-    try:
-        os.chmod(path, mode)
-    except PermissionError:
-        privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
-    if user:
-        try:
-            uid = pwd.getpwnam(user).pw_uid
-            gid = grp.getgrnam(group).gr_gid
-            os.chown(path, uid, gid)
-        except PermissionError:
-            privileged_shell(f"chown {user}:{group} {shlex.quote(path)}", silent=True)
 
 
 class Tee:

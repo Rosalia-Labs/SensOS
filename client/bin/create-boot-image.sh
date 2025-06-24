@@ -16,7 +16,7 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo
     echo "Options:"
-    echo "  --remove-existing-images       Delete the 'deploy' directory before building"
+    echo "  --remove-existing              Delete previously created boot images in the deploy directory"
     echo "  --build-docker-images          Build and store docker images for offline use"
     echo "  --continue                     Continue from a previously interrupted build"
     echo "  -h, --help                     Show this help message and exit"
@@ -26,7 +26,7 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-    --remove-existing-images)
+    --remove-existing)
         REMOVE_DEPLOY=true
         shift
         ;;
