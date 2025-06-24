@@ -22,7 +22,6 @@ DB_PARAMS = {
 
 AUDIO_BASE = Path("/audio_recordings")
 
-HUMAN_VOCAL_SCORE_THRESHOLD = float(os.environ.get("HUMAN_VOCAL_SCORE_THRESHOLD", 0.1))
 BIRDNET_SCORE_THRESHOLD = float(os.environ.get("BIRDNET_SCORE_THRESHOLD", 0.1))
 
 
@@ -76,101 +75,6 @@ def overwrite_segment_with_zeros(
         return False
 
 
-def zero_human_vocal_segments(conn) -> tuple[bool, bool]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                ag.id AS segment_id,
-                af.file_path,
-                ag.channel,
-                ag.start_frame,
-                ag.end_frame
-            FROM sensos.birdnet_scores bs
-            JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
-            JOIN sensos.audio_files af ON ag.file_id = af.id
-            WHERE bs.label ILIKE '%Human vocal%'
-            AND bs.score >= %s
-            AND af.file_path IS NOT NULL
-            AND NOT ag.vocal_check
-            ORDER BY ag.start_frame
-            LIMIT 1
-            """,
-            (HUMAN_VOCAL_SCORE_THRESHOLD,),
-        )
-
-        seg = cur.fetchone()
-
-    if not seg:
-        logger.info("No more human vocal segments to process.")
-        return False, False
-
-    frame_count = seg["end_frame"] - seg["start_frame"]
-    if frame_count <= 0:
-        logger.warning(f"Invalid frame range for segment {seg['segment_id']}")
-        return False
-
-    success = overwrite_segment_with_zeros(
-        seg["file_path"], seg["start_frame"], frame_count, seg["channel"]
-    )
-
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sensos.audio_segments SET vocal_check = TRUE WHERE id = %s",
-            (seg["segment_id"],),
-        )
-        conn.commit()
-
-    return True, success
-
-
-def zero_birdnet_low_score_segments(conn) -> tuple[bool, bool]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                ag.id AS segment_id,
-                af.file_path,
-                ag.channel,
-                ag.start_frame,
-                ag.end_frame,
-                bs.score
-            FROM sensos.birdnet_scores bs
-            JOIN sensos.audio_segments ag ON bs.segment_id = ag.id
-            JOIN sensos.audio_files af ON ag.file_id = af.id
-            WHERE bs.score < %s
-            AND af.file_path IS NOT NULL
-            AND NOT ag.vocal_check
-            ORDER BY ag.start_frame
-            LIMIT 1
-            """,
-            (BIRDNET_SCORE_THRESHOLD,),
-        )
-        seg = cur.fetchone()
-
-    if not seg:
-        logger.info("No more low-score segments to process.")
-        return False, False
-
-    frame_count = seg["end_frame"] - seg["start_frame"]
-    if frame_count <= 0:
-        logger.warning(f"Invalid frame range for segment {seg['segment_id']}")
-        return False, False
-
-    success = overwrite_segment_with_zeros(
-        seg["file_path"], seg["start_frame"], frame_count, seg["channel"]
-    )
-
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sensos.audio_segments SET vocal_check = TRUE WHERE id = %s",
-            (seg["segment_id"],),
-        )
-        conn.commit()
-
-    return True, success
-
-
 def check_segment_for_deletion(conn, segment_id) -> bool:
     """
     Returns True if the segment should be deleted (zeroed), False otherwise.
@@ -187,7 +91,7 @@ def check_segment_for_deletion(conn, segment_id) -> bool:
         for row in scores:
             if (
                 row["label"].lower().startswith("human vocal")
-                and row["score"] >= HUMAN_VOCAL_SCORE_THRESHOLD
+                and row["score"] >= BIRDNET_SCORE_THRESHOLD
             ):
                 logger.info(
                     f"Segment {segment_id} flagged for zeroing: Human vocal, score={row['score']}"
@@ -320,6 +224,22 @@ def main():
                             )
                         if success:
                             logger.info(f"Zeroed segment {seg['segment_id']}.")
+                            touched_file_ids.add(seg["file_id"])
+                            if is_file_fully_zeroed(conn, seg["file_id"]):
+                                file_path = AUDIO_BASE / seg["file_path"]
+                                if file_path.exists():
+                                    try:
+                                        file_path.unlink()
+                                        logger.info(
+                                            f"Deleted fully zeroed file: {file_path}"
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            f"Failed to delete zeroed file {file_path}: {e}"
+                                        )
+                                with conn.cursor() as cur:
+                                    mark_file_deleted(cur, seg["file_id"])
+                                    conn.commit()
                         else:
                             logger.warning(
                                 f"Failed to zero segment {seg['segment_id']}."
@@ -331,25 +251,6 @@ def main():
                             (delete, seg["segment_id"]),
                         )
                         conn.commit()
-
-                    if delete:
-                        if is_file_fully_zeroed(conn, seg["file_id"]):
-                            file_path = AUDIO_BASE / seg["file_path"]
-                            if file_path.exists():
-                                try:
-                                    file_path.unlink()
-                                    logger.info(
-                                        f"Deleted fully zeroed file: {file_path}"
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        f"Failed to delete zeroed file {file_path}: {e}"
-                                    )
-                            with conn.cursor() as cur:
-                                mark_file_deleted(cur, seg["file_id"])
-                                conn.commit()
-
-                        touched_file_ids.add(seg["file_id"])
 
                     for file_id in touched_file_ids:
                         with conn.cursor() as cur:
