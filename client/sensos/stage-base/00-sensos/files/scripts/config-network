@@ -245,7 +245,13 @@ def register_peer(
         )
         sys.exit(1)
 
-    # If you have a compute_hostname() utility, call it here; else use wg_ip directly.
+    ip_parts = wg_ip.split(".")
+    if len(ip_parts) == 4:
+        hostname = f"{network_name}_{ip_parts[2]}_{ip_parts[3]}"
+    else:
+        print("❌ Error: Malformed WireGuard IP address: %s" % wg_ip, file=sys.stderr)
+        sys.exit(1)
+
     hostname = f"{network_name}-{wg_ip.replace('.', '-')}"
     register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_password)
     return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
@@ -574,6 +580,33 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
     print(f"✅ Client network settings written to {settings_file}")
 
 
+def sensos_config_files_exist():
+    # List of files produced by this script
+    files_to_check = [
+        os.path.join(WG_DIR, f"{args.network}-private.key"),
+        os.path.join(WG_DIR, f"{args.network}-public.key"),
+        os.path.join(WG_DIR, f"{args.network}.conf"),
+        os.path.join(SENSOS_ADMIN_HOME, ".ssh", "id_ed25519"),
+        os.path.join(SENSOS_ADMIN_HOME, ".ssh", "id_ed25519.pub"),
+        SENSOS_NET_CONF,
+    ]
+    return [f for f in files_to_check if os.path.exists(f)]
+
+
+def remove_sensos_config_files(network_name):
+    # Remove all the files we generate
+    files_to_remove = [
+        os.path.join(WG_DIR, f"{network_name}-private.key"),
+        os.path.join(WG_DIR, f"{network_name}-public.key"),
+        os.path.join(WG_DIR, f"{network_name}.conf"),
+        os.path.join(SENSOS_ADMIN_HOME, ".ssh", "id_ed25519"),
+        os.path.join(SENSOS_ADMIN_HOME, ".ssh", "id_ed25519.pub"),
+        SENSOS_NET_CONF,
+    ]
+    for f in files_to_remove:
+        remove_file(f)  # Assuming remove_file does not error if not present
+
+
 def main():
     username = pwd.getpwuid(os.geteuid()).pw_name
     if username not in ("sensos-admin", "root"):
@@ -590,24 +623,18 @@ def main():
     setup_logging()
     args = parse_args()
 
-    if args.force:
-        remove_dir(WG_DIR)
-        create_dir(WG_DIR, owner="root", mode=0o700)
-        ssh_dir = os.path.join(SENSOS_ADMIN_HOME, ".ssh")
-        remove_dir(ssh_dir)
-        create_dir(ssh_dir, owner="sensos-admin", mode=0o700)
-        remove_file(SENSOS_NET_CONF)
+    existing_files = sensos_config_files_exist()
 
-    wg_exists = any_files_in_dir(WG_DIR)
-    ssh_exists = any_files_in_dir(os.path.join(SENSOS_ADMIN_HOME, ".ssh"))
-    netconf_exists = os.path.exists(SENSOS_NET_CONF)
-
-    if not args.force and (wg_exists or ssh_exists or netconf_exists):
+    if not args.force and existing_files:
         print(
-            "\n❌ Existing configuration detected (in /etc/wireguard, ~/.ssh, or /sensos/etc/network.conf)."
+            "\n❌ Existing SensOS config files detected:\n  "
+            + "\n  ".join(existing_files)
         )
         print("Aborting. Use --force to remove all configs and proceed.\n")
         sys.exit(1)
+
+    if args.force:
+        remove_sensos_config_files(args.network)
 
     print("🚀 Starting device configuration...")
 
