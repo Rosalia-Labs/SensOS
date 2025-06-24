@@ -11,7 +11,7 @@ import tempfile
 import subprocess
 import configparser
 import argparse
-
+import json
 
 API_PASSWORD_FILE = "/sensos/keys/api_password"
 DEFAULTS_CONF = "/sensos/etc/defaults.conf"
@@ -19,65 +19,121 @@ NETWORK_CONF = "/sensos/etc/network.conf"
 DEFAULT_PORT = "8765"
 
 
-def is_root():
-    return os.geteuid() == 0
-
-
-def run_command(cmd):
+def privileged_shell(cmd, check=False, silent=False):
+    """
+    Try a shell command. On failure, retry with sudo. Returns (output, rc).
+    """
     try:
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
-    except Exception as e:
-        return f"ERROR: {e}"
-
-
-def run_sudo_command(cmd):
-    if is_root():
-        return run_command(cmd)
-    try:
-        return run_command(f"sudo {cmd}")
+        output = subprocess.check_output(cmd, shell=True, text=True).strip()
+        return output, 0
     except subprocess.CalledProcessError as e:
-        print(f"❌ Sudo command failed: {cmd}\n{e}", file=sys.stderr)
-        return None
+        try:
+            output = subprocess.check_output(
+                f"sudo {cmd}", shell=True, text=True
+            ).strip()
+            return output, 0
+        except subprocess.CalledProcessError as se:
+            if not silent:
+                print(f"❌ Sudo command failed: {cmd}\n{se}", file=sys.stderr)
+            if check:
+                raise
+            return None, se.returncode
+    except Exception as e:
+        if not silent:
+            print(f"❌ Error running {cmd}: {e}", file=sys.stderr)
+        if check:
+            raise
+        return None, 1
 
 
-def run_sudo_shell(cmd):
-    if is_root():
-        subprocess.run(cmd, shell=True, check=True)
-    else:
-        subprocess.run(f"sudo {cmd}", shell=True, check=True)
+def remove_dir(path):
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        privileged_shell(f"rm -rf {shlex.quote(path)}", silent=True)
 
 
-def sudo_remove_dir(path):
-    if os.path.exists(path):
-        run_sudo_shell(f"rm -rf {shlex.quote(path)}")
+def create_dir(path, owner="root", mode=0o700):
+    try:
+        os.makedirs(path, exist_ok=True)
+        os.chmod(path, mode)
+        uid = pwd.getpwnam(owner).pw_uid
+        gid = grp.getgrnam(owner).gr_gid
+        os.chown(path, uid, gid)
+    except PermissionError:
+        privileged_shell(f"mkdir -p {shlex.quote(path)}", silent=True)
+        privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
+        privileged_shell(f"chown {owner}:{owner} {shlex.quote(path)}", silent=True)
 
 
-def sudo_create_dir(path, owner="root", mode=0o700):
-    run_sudo_shell(f"mkdir -p {shlex.quote(path)}")
-    run_sudo_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}")
-    run_sudo_shell(f"chown {owner}:{owner} {shlex.quote(path)}")
-
-
-def sudo_remove_file(path):
-    if os.path.exists(path):
-        run_sudo_shell(f"rm -f {shlex.quote(path)}")
+def remove_file(path):
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        privileged_shell(f"rm -f {shlex.quote(path)}", silent=True)
 
 
 def any_files_in_dir(path):
     try:
         return len(os.listdir(path)) > 0
     except PermissionError:
-        try:
-            output = run_sudo_command(f"ls -A {shlex.quote(path)}")
-            return bool(output and output.strip())
-        except Exception:
-            print(
-                f"⚠️ Warning: Cannot list {path}, skipping existence check.",
-                file=sys.stderr,
-            )
-            return False
+        output, rc = privileged_shell(f"ls -A {shlex.quote(path)}", silent=True)
+        return bool(output and output.strip())
     except FileNotFoundError:
         return False
+
+
+def read_file(filepath):
+    try:
+        with open(filepath, "r") as f:
+            return f.read().strip()
+    except PermissionError:
+        output, rc = privileged_shell(f"cat {shlex.quote(filepath)}", silent=True)
+        return output.strip() if output else None
+    except Exception as e:
+        print(f"❌ Error reading file {filepath}: {e}", file=sys.stderr)
+        return None
+
+
+def write_file(filepath, content, mode=0o644, user="root", group=None):
+    # Try Python first, escalate if necessary
+    group = group or user
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            shutil.move(tmp_path, filepath)
+        except PermissionError:
+            privileged_shell(
+                f"mv {shlex.quote(tmp_path)} {shlex.quote(filepath)}", silent=True
+            )
+            tmp_path = None  # It's moved already
+        try:
+            os.chmod(filepath, mode)
+        except PermissionError:
+            privileged_shell(
+                f"chmod {oct(mode)[2:]} {shlex.quote(filepath)}", silent=True
+            )
+        try:
+            uid = pwd.getpwnam(user).pw_uid
+            gid = grp.getgrnam(group).gr_gid
+            os.chown(filepath, uid, gid)
+        except PermissionError:
+            privileged_shell(
+                f"chown {user}:{group} {shlex.quote(filepath)}", silent=True
+            )
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+# ----- Rest: unchanged logic -----
 
 
 def get_basic_auth(api_password):
@@ -98,24 +154,20 @@ def read_api_password():
     if not os.path.exists(API_PASSWORD_FILE):
         print("❌ API password file missing", file=sys.stderr)
         return None
-    with open(API_PASSWORD_FILE) as f:
-        return f.read().strip()
+    return read_file(API_PASSWORD_FILE)
 
 
 def detect_wireguard_api():
     if not os.path.exists(NETWORK_CONF):
         return None, None
-
     config = {}
     with open(NETWORK_CONF) as f:
         for line in f:
             if "=" in line:
                 k, v = line.strip().split("=", 1)
                 config[k] = v
-
     port = config.get("SERVER_PORT", DEFAULT_PORT)
     server_ip = config.get("SERVER_WG_IP")
-
     url = f"http://{server_ip}:{port}/"
     try:
         resp = requests.get(url, timeout=2)
@@ -123,7 +175,6 @@ def detect_wireguard_api():
             return server_ip, port
     except Exception:
         pass
-
     return None, None
 
 
@@ -131,11 +182,9 @@ def load_defaults(*sections, path=DEFAULTS_CONF):
     defaults = {}
     if not os.path.exists(path):
         return defaults
-
     parser = configparser.ConfigParser()
     parser.optionxform = str  # preserve case
     parser.read(path)
-
     for section in sections:
         if section in parser:
             defaults.update(parser[section].items())
@@ -199,54 +248,30 @@ def get_api_password(config_server, port):
         )
         print("📡 Is the device online? Is the server address correct?")
         return None
-
     tries = 3
     for attempt in range(tries):
         if os.path.exists(API_PASSWORD_FILE):
-            with open(API_PASSWORD_FILE, "r") as f:
-                stored_password = f.read().strip()
+            stored_password = read_file(API_PASSWORD_FILE)
             print("Testing stored API password...")
             if validate_api_password(config_server, port, stored_password):
                 print("✅ API password from file is valid.")
                 return stored_password
             else:
                 print("⚠️ Stored API password is invalid.", file=sys.stderr)
-
         api_password = input("🔑 Enter API password: ").strip()
         if validate_api_password(config_server, port, api_password):
             if not api_password:
                 print("❌ Error: API password is empty. Not saving.", file=sys.stderr)
                 continue
-            with open(API_PASSWORD_FILE, "w") as f:
-                f.write(api_password)
-            os.chmod(API_PASSWORD_FILE, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP)
+            write_file(API_PASSWORD_FILE, api_password + "\n", mode=0o640, user="root")
             print(f"✅ API password saved securely in {API_PASSWORD_FILE}.")
             return api_password
         else:
             print("❌ API password is invalid, please try again.", file=sys.stderr)
-
     print(
         "🚫 Failed to provide a valid API password after 3 attempts.", file=sys.stderr
     )
     return None
-
-
-def read_file(filepath):
-    try:
-        with open(filepath, "r") as f:
-            return f.read().strip()
-    except Exception as e:
-        print(f"❌ Error reading file {filepath}: {e}", file=sys.stderr)
-        return None
-
-
-def sudo_read_file(filepath):
-    try:
-        content = run_sudo_command(f"cat {filepath}")
-        return content.strip()
-    except Exception as e:
-        print(f"❌ Error reading {filepath} with sudo: {e}", file=sys.stderr)
-        return None
 
 
 def compute_api_server_wg_ip(client_wg_ip):
@@ -258,174 +283,6 @@ def compute_api_server_wg_ip(client_wg_ip):
         )
         return None
     return f"{parts[0]}.{parts[1]}.0.1"
-
-
-def parse_local_config(config_file):
-    config = {}
-    content = sudo_read_file(config_file)
-    if not content:
-        return config
-    current_section = None
-    for line in content.splitlines():
-        line = line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            current_section = line[1:-1].strip()
-        elif "=" in line and current_section:
-            key, value = [x.strip() for x in line.split("=", 1)]
-            if current_section.lower() == "interface" and key.lower() == "address":
-                config["wg_ip"] = value.split("/")[0]
-            elif current_section.lower() == "peer" and key.lower() == "publickey":
-                config["server_pubkey"] = value
-    return config
-
-
-def compute_hostname(network_name, wg_ip):
-    """Compute hostname as {network_name}-{3rd_octet}-{4th_octet} from a WG IP like '10.1.3.7'."""
-    ip_parts = wg_ip.split(".")
-    if len(ip_parts) != 4:
-        print(f"❌ Error: Invalid IP format '{wg_ip}'.", file=sys.stderr)
-        return None
-    return f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
-
-
-class Tee:
-    """Write output to both terminal and a log file."""
-
-    def __init__(self, log_file, mode="a"):
-        self.terminal = sys.stdout
-        self.log = open(log_file, mode)
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.terminal.flush()
-        self.log.write(message)
-        self.log.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
-
-
-def setup_logging(log_filename=None):
-    """Configure logging to /sensos/log/{script_name}.log or a custom filename, plus stdout/stderr."""
-
-    script_name = os.path.basename(sys.argv[0])
-    if "." in script_name:
-        script_name = script_name.split(".")[0]
-
-    if log_filename is None:
-        log_filename = f"{script_name}.log"
-
-    log_dir = "/sensos/log"
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, log_filename)
-
-    sys.stdout = Tee(log_path)
-    sys.stderr = sys.stdout
-
-
-def safe_cmd_output(cmd, try_sudo=False):
-    try:
-        return subprocess.check_output(cmd, shell=True, text=True).strip()
-    except subprocess.CalledProcessError as e:
-        if not try_sudo:
-            return safe_cmd_output(f"sudo {cmd}", try_sudo=True)
-        else:
-            return f"ERROR: {e}"
-
-
-# Note: the registry functionality is not being used at the moment
-
-REGISTRY_CONFIG_FILE = "/sensos/.sensos_registry_config.json"
-
-
-def validate_registry_password(registry_info, registry_password):
-    url = f"https://{registry_info['registry_ip']}:{registry_info['registry_port']}/v2/"
-    auth = (registry_info["registry_user"], registry_password)
-    try:
-        response = requests.get(url, auth=auth, timeout=5, verify=False)
-        return response.status_code == 200
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Debug: Error during request: {e}", file=sys.stderr)
-        return False
-
-
-def save_registry_config(registry_info, registry_password):
-    if not registry_info or not registry_password:
-        print(
-            "❌ Error: Incomplete registry configuration data. Not saving.",
-            file=sys.stderr,
-        )
-        return
-    required_keys = ["registry_ip", "registry_port", "registry_user"]
-    if not all(key in registry_info for key in required_keys):
-        print(
-            "❌ Error: Registry information is incomplete. Not saving.", file=sys.stderr
-        )
-        return
-    config = {
-        "registry_ip": registry_info["registry_ip"],
-        "registry_port": registry_info["registry_port"],
-        "registry_user": registry_info["registry_user"],
-        "registry_password": registry_password,
-    }
-    with open(REGISTRY_CONFIG_FILE, "w") as f:
-        json.dump(config, f)
-    os.chmod(REGISTRY_CONFIG_FILE, 0o640)
-    print(f"✅ Registry configuration saved to {REGISTRY_CONFIG_FILE}.")
-
-
-def get_registry_password_from_info(registry_info):
-    tries = 3
-    for attempt in range(tries):
-        if os.path.exists(REGISTRY_CONFIG_FILE):
-            with open(REGISTRY_CONFIG_FILE, "r") as f:
-                stored_config = json.load(f)
-                stored_password = stored_config.get("registry_password")
-                if stored_password:
-                    return stored_password
-            print(
-                "⚠️ Password not found in config file or file malformed.",
-                file=sys.stderr,
-            )
-
-        registry_password = input("🔑 Enter registry password: ").strip()
-        if not registry_password:
-            print("❌ Error: Empty registry password provided.", file=sys.stderr)
-            continue
-        if validate_registry_password(registry_info, registry_password):
-            save_registry_config(registry_info, registry_password)
-            print(f"✅ Registry password saved to {REGISTRY_CONFIG_FILE}.")
-            return registry_password
-    print(
-        "❌ Failed to obtain a valid registry password after 3 attempts.",
-        file=sys.stderr,
-    )
-    return None
-
-
-def is_wireguard_active_from_conf(max_handshake_age=90):
-    config = read_network_conf()
-    interface = config.get("NETWORK_NAME")
-    if not interface:
-        print("❌ NETWORK_NAME not found in network.conf", file=sys.stderr)
-        return False
-
-    try:
-        output = subprocess.check_output(["wg", "show", interface], text=True)
-    except subprocess.CalledProcessError:
-        return False
-
-    for line in output.splitlines():
-        if "latest handshake:" in line:
-            if "ago" in line:
-                parts = line.strip().split()
-                try:
-                    seconds_ago = int(parts[2])
-                    return seconds_ago < max_handshake_age
-                except (IndexError, ValueError):
-                    continue
-    return False
 
 
 def read_kv_config(path):
@@ -451,143 +308,48 @@ def get_client_wg_ip():
 def set_permissions_and_owner(
     path: str, mode: int, user: str = None, group: str = None
 ):
-    """Set file permissions and ownership. Uses sudo if not root."""
-    # Set permissions first (can be done as user if owned)
+    """Set file permissions and ownership. Falls back to sudo on permission error."""
+    group = group or user
     try:
         os.chmod(path, mode)
     except PermissionError:
-        subprocess.run(["sudo", "chmod", oct(mode)[2:], path], check=True)
-
+        privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
     if user:
-        group = group or user
         try:
-            import pwd, grp
-
             uid = pwd.getpwnam(user).pw_uid
             gid = grp.getgrnam(group).gr_gid
-        except KeyError:
-            raise ValueError(f"User or group '{user}:{group}' not found.")
-
-        # Try normal chown first
-        try:
             os.chown(path, uid, gid)
         except PermissionError:
-            subprocess.run(["sudo", "chown", f"{user}:{group}", path], check=True)
+            privileged_shell(f"chown {user}:{group} {shlex.quote(path)}", silent=True)
 
 
-def sudo_write_file(
-    content: str,
-    dest_path: str,
-    mode: int = 0o644,
-    user: str = "root",
-    group: str = None,
-):
-    """
-    Safely write `content` to `dest_path` using a temporary file and move it with sudo.
-    Sets permissions and ownership afterward.
+class Tee:
+    """Write output to both terminal and a log file."""
 
-    Args:
-        content (str): The full content to write.
-        dest_path (str): The destination path to write the file to.
-        mode (int): File permission bits (e.g., 0o600).
-        user (str): Owner username (default: root).
-        group (str): Group name (default: same as user).
-    """
-    with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
-        tmp.write(content)
-        tmp.flush()
-        tmp_path = tmp.name
+    def __init__(self, log_file, mode="a"):
+        self.terminal = sys.stdout
+        self.log = open(log_file, mode)
 
-    try:
-        run_sudo_shell(f"mv {shlex.quote(tmp_path)} {shlex.quote(dest_path)}")
-        set_permissions_and_owner(dest_path, mode, user=user, group=group)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    def write(self, message):
+        self.terminal.write(message)
+        self.terminal.flush()
+        self.log.write(message)
+        self.log.flush()
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
 
 
-def start_service(service_name):
-    """Start the specified systemd service using sudo."""
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping starting service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "start", service_name], check=True)
-        print(f"✅ Service {service_name} started.")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error starting service {service_name}: {e}", file=sys.stderr)
-
-
-def stop_service(service_name):
-    """Stop the specified systemd service using sudo."""
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping stopping service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "stop", service_name], check=True)
-        print(f"✅ Service {service_name} stopped.")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error stopping service {service_name}: {e}", file=sys.stderr)
-
-
-def enable_service(service_name, start=False):
-    """Enable and optionally start the specified systemd service using sudo."""
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping enabling service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "enable", service_name], check=True)
-        if start:
-            start_service(service_name)
-            print(f"✅ Service {service_name} enabled and started.")
-        else:
-            print(f"✅ Service {service_name} enabled.")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error enabling service {service_name}: {e}", file=sys.stderr)
-
-
-def disable_service(service_name, stop=False):
-    if shutil.which("systemctl") is None:
-        print(
-            f"❌ Error: systemctl command not found. Skipping disabling service {service_name}.",
-            file=sys.stderr,
-        )
-        return
-    try:
-        subprocess.run(["sudo", "systemctl", "disable", service_name], check=True)
-        if stop:
-            stop_service(service_name)
-            print(f"✅ Service {service_name} disabled and stopped.")
-        else:
-            print(f"✅ Service {service_name} disabled (boot only, not stopped now).")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Error disabling service {service_name}: {e}", file=sys.stderr)
-
-
-def enable_wireguard(netname: str, start=False):
-    service_name = f"wg-quick@{netname}.service"
-    enable_service(service_name, start=start)
-
-
-def disable_wireguard(netname: str, stop=False):
-    service_name = f"wg-quick@{netname}.service"
-    disable_service(service_name, stop=stop)
-
-
-def start_wireguard(netname: str):
-    service_name = f"wg-quick@{netname}.service"
-    start_service(service_name)
-
-
-def stop_wireguard(netname: str):
-    service_name = f"wg-quick@{netname}.service"
-    stop_service(service_name)
+def setup_logging(log_filename=None):
+    """Configure logging to /sensos/log/{script_name}.log or a custom filename, plus stdout/stderr."""
+    script_name = os.path.basename(sys.argv[0])
+    if "." in script_name:
+        script_name = script_name.split(".")[0]
+    if log_filename is None:
+        log_filename = f"{script_name}.log"
+    log_dir = "/sensos/log"
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, log_filename)
+    sys.stdout = Tee(log_path)
+    sys.stderr = sys.stdout
