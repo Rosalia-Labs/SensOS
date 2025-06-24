@@ -56,9 +56,10 @@ def ensure_schema(cursor):
             format TEXT,   
             subtype TEXT,
             capture_timestamp TIMESTAMPTZ,
-            cataloged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        """
+            cataloged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            deleted BOOLEAN NOT NULL DEFAULT FALSE,
+            deleted_at TIMESTAMPTZ
+        );"""
     )
     cursor.execute(
         """
@@ -257,11 +258,32 @@ def wait_for_db(max_retries=30, delay=5):
     raise RuntimeError("Database not ready after multiple attempts.")
 
 
+def remove_deleted_files(cur, root=ROOT):
+    """
+    Delete files from disk that are marked as deleted in the database,
+    if they still exist. Log each deletion.
+    """
+    cur.execute("SELECT file_path FROM sensos.audio_files WHERE deleted = TRUE")
+    count = 0
+    for row in cur.fetchall():
+        file_path = root / row["file_path"]
+        if file_path.exists():
+            try:
+                file_path.unlink()
+                logging.info(f"Removed file marked as deleted: {file_path}")
+                count += 1
+            except Exception as e:
+                logging.error(f"Failed to remove deleted file {file_path}: {e}")
+    if count:
+        logging.info(f"Removed {count} deleted files from disk")
+
+
 def main():
     wait_for_db()
     with psycopg.connect(**DB_PARAMS) as conn:
         with conn.cursor() as cur:
             ensure_schema(cur)
+            remove_deleted_files(cur)
             process_files(cur)
             check_catalog(cur)
             conn.commit()

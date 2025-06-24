@@ -16,15 +16,16 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
+register_option --birdnet-score-threshold birdnet_score_threshold "Set BirdNET score threshold for deletion" "$(get_default birdnet_score_threshold 0.1)"
+register_option --build-containers build_containers "Call build containers to load docker images" "$(get_default build_containers true)"
+register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
+register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
 register_option --postgres-db postgres_db "Set database name" "$(get_default postgres_db postgres)"
 register_option --postgres-user postgres_user "Set database user" "$(get_default postgres_user postgres)"
 register_option --postgres-password postgres_password "Set database password" "$(get_default postgres_password sensos)"
 register_option --db-host db_host "Set database host" "$(get_default db_host sensos-client-database)"
 register_option --db-port db_port "Set database port" "$(get_default db_port 5432)"
 register_option --db-data-path db_data_path "Set Docker volume path" "$(get_default db_data_path /sensos/data/database)"
-register_option --build-containers build_containers "Call build containers to load docker images" "$(get_default build_containers true)"
-register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
-register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
 
 parse_switches "$script_name" "$@"
 
@@ -36,6 +37,7 @@ POSTGRES_PASSWORD=${postgres_password}
 DB_HOST=${db_host}
 DB_PORT=${db_port}
 DB_DATA_PATH=${db_data_path}
+BIRDNET_SCORE_THRESHOLD=${birdnet_score_threshold}
 EOF
 
 echo ".env written to $env_file:"

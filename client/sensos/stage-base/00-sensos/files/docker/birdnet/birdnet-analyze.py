@@ -87,7 +87,8 @@ def initialize_schema() -> None:
                 channel INT NOT NULL,
                 start_frame BIGINT NOT NULL,
                 end_frame BIGINT NOT NULL CHECK (end_frame > start_frame),
-                vocal_check BOOLEAN NOT NULL DEFAULT FALSE,
+                checked BOOLEAN NOT NULL DEFAULT FALSE,
+                zeroed BOOLEAN NOT NULL DEFAULT FALSE,
                 UNIQUE (file_id, channel, start_frame)
             );"""
             )

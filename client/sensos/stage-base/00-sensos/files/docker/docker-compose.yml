@@ -29,10 +29,6 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - /sensos/data/audio_recordings:/audio_recordings
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
 
   sensos-client-birdnet:
     image: sensos-client-birdnet
@@ -49,10 +45,6 @@ services:
     volumes:
       - /sensos/data/audio_recordings:/audio_recordings
       - ./birdnet/model:/model
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
 
   sensos-client-db-manager:
     image: sensos-client-db-manager
@@ -61,6 +53,7 @@ services:
     depends_on:
       - sensos-client-database
     environment:
+      BIRDNET_SCORE_THRESHOLD: ${BIRDNET_SCORE_THRESHOLD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -68,10 +61,6 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - /sensos/data/audio_recordings:/audio_recordings
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
 
   sensos-client-sqlite-importer:
     image: sensos-client-sqlite-importer
@@ -87,10 +76,6 @@ services:
       DB_PORT: ${DB_PORT}
     volumes:
       - /sensos/data/microenv:/microenv
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
 
   sensos-system-recorder:
     image: sensos-client-system-recorder
@@ -110,15 +95,11 @@ services:
       - /sys:/host/sys:ro
       - /:/host/rootfs:ro
       - /sensos/data:/sensos/data:ro
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 3
 
   sensos-system-reporter:
     image: sensos-client-system-reporter
     container_name: sensos-client-system-reporter
-    restart: "no"
+    restart: no
     depends_on:
       - sensos-client-database
     environment:
@@ -128,5 +109,5 @@ services:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
     volumes:
-      - /sensos:/sensos:ro"
+      - /sensos:/sensos:ro
     entrypoint: ["python3", "reporter.py"]
