@@ -212,16 +212,20 @@ def main():
                 touched_file_ids = set()
                 for seg in segments:
                     delete = check_segment_for_deletion(conn, seg["segment_id"])
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE sensos.audio_segments SET checked = TRUE, zeroed = %s WHERE id = %s",
+                            (delete, seg["segment_id"]),
+                        )
+                        conn.commit()
                     if delete:
                         frame_count = seg["end_frame"] - seg["start_frame"]
-                        success = False
-                        if frame_count > 0:
-                            success = overwrite_segment_with_zeros(
-                                seg["file_path"],
-                                seg["start_frame"],
-                                frame_count,
-                                seg["channel"],
-                            )
+                        success = overwrite_segment_with_zeros(
+                            seg["file_path"],
+                            seg["start_frame"],
+                            frame_count,
+                            seg["channel"],
+                        )
                         if success:
                             logger.info(f"Zeroed segment {seg['segment_id']}.")
                             touched_file_ids.add(seg["file_id"])
@@ -245,26 +249,19 @@ def main():
                                 f"Failed to zero segment {seg['segment_id']}."
                             )
 
+                for file_id in touched_file_ids:
                     with conn.cursor() as cur:
                         cur.execute(
-                            "UPDATE sensos.audio_segments SET checked = TRUE, zeroed = %s WHERE id = %s",
-                            (delete, seg["segment_id"]),
+                            "SELECT file_path FROM sensos.audio_files WHERE id = %s AND deleted = FALSE",
+                            (file_id,),
                         )
-                        conn.commit()
-
-                    for file_id in touched_file_ids:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "SELECT file_path FROM sensos.audio_files WHERE id = %s AND deleted = FALSE",
-                                (file_id,),
-                            )
-                            row = cur.fetchone()
-                            if row:
-                                seg = {
-                                    "file_id": file_id,
-                                    "file_path": row["file_path"],
-                                }
-                                compress_file_if_done(conn, seg)
+                        row = cur.fetchone()
+                        if row:
+                            seg = {
+                                "file_id": file_id,
+                                "file_path": row["file_path"],
+                            }
+                            compress_file_if_done(conn, seg)
 
         except Exception as e:
             logger.error(f"Error: {e}")
