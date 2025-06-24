@@ -208,6 +208,24 @@ class TestUtils(unittest.TestCase):
     def test_any_files_in_dir_not_found(self):
         self.assertFalse(utils.any_files_in_dir("/definitely/not/found"))
 
+    def test_privileged_shell_with_user_jumps_to_sudo(self):
+        # If user is passed, should immediately call sudo -u <user> ...
+        with patch("subprocess.check_output") as mock_chk:
+            mock_chk.return_value = "userok\n"
+            out, rc = utils.privileged_shell("echo userok", user="nobody")
+            self.assertEqual(out, "userok")
+            self.assertEqual(rc, 0)
+            # Should use 'sudo -u nobody'
+            self.assertTrue(mock_chk.call_args[0][0].startswith("sudo -u nobody "))
+
+    def test_privileged_shell_with_user_fails(self):
+        # If sudo -u <user> fails, should return (None, rc)
+        with patch("subprocess.check_output") as mock_chk:
+            mock_chk.side_effect = subprocess.CalledProcessError(2, "cmd")
+            out, rc = utils.privileged_shell("echo fail", user="nobody")
+            self.assertIsNone(out)
+            self.assertEqual(rc, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

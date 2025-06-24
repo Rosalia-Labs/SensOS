@@ -19,31 +19,52 @@ NETWORK_CONF = "/sensos/etc/network.conf"
 DEFAULT_PORT = "8765"
 
 
-def privileged_shell(cmd, check=False, silent=False):
+def privileged_shell(cmd, check=False, silent=False, user=None):
     """
-    Try a shell command. On failure, retry with sudo. Returns (output, rc).
+    Run a shell command. If user is specified, always use sudo -u <user>.
+    If not, try direct, then retry with sudo on failure.
+    Returns (output, rc).
     """
-    try:
-        output = subprocess.check_output(cmd, shell=True, text=True).strip()
-        return output, 0
-    except subprocess.CalledProcessError as e:
+    if user:
+        sudo_cmd = f"sudo -u {user} {cmd}"
         try:
-            output = subprocess.check_output(
-                f"sudo {cmd}", shell=True, text=True
-            ).strip()
+            output = subprocess.check_output(sudo_cmd, shell=True, text=True).strip()
             return output, 0
-        except subprocess.CalledProcessError as se:
+        except subprocess.CalledProcessError as e:
             if not silent:
-                print(f"❌ Sudo command failed: {cmd}\n{se}", file=sys.stderr)
+                print(f"❌ Sudo command failed: {sudo_cmd}\n{e}", file=sys.stderr)
             if check:
                 raise
-            return None, se.returncode
-    except Exception as e:
-        if not silent:
-            print(f"❌ Error running {cmd}: {e}", file=sys.stderr)
-        if check:
-            raise
-        return None, 1
+            return None, e.returncode
+        except Exception as e:
+            if not silent:
+                print(f"❌ Error running {sudo_cmd}: {e}", file=sys.stderr)
+            if check:
+                raise
+            return None, 1
+    else:
+        try:
+            output = subprocess.check_output(cmd, shell=True, text=True).strip()
+            return output, 0
+        except subprocess.CalledProcessError as e:
+            sudo_cmd = f"sudo {cmd}"
+            try:
+                output = subprocess.check_output(
+                    sudo_cmd, shell=True, text=True
+                ).strip()
+                return output, 0
+            except subprocess.CalledProcessError as se:
+                if not silent:
+                    print(f"❌ Sudo command failed: {sudo_cmd}\n{se}", file=sys.stderr)
+                if check:
+                    raise
+                return None, se.returncode
+        except Exception as e:
+            if not silent:
+                print(f"❌ Error running {cmd}: {e}", file=sys.stderr)
+            if check:
+                raise
+            return None, 1
 
 
 def remove_dir(path):

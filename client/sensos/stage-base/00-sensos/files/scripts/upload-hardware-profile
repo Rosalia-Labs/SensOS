@@ -12,22 +12,44 @@ sys.path.insert(0, "/sensos/lib")
 from utils import *
 
 DEFAULT_PORT = "8765"
+NETWORK_CONF = "/sensos/etc/network.conf"
 
 ARG_DEFS = [
     (
         ["--config-server"],
         {"help": "Configuration server hostname or IP", "dest": "config_server"},
     ),
-    (["--port"], {"help": "Server port", "dest": "port"}),
+    (
+        ["--port"],
+        {"help": "Server port", "dest": "port"},
+    ),
 ]
 
 
 def generate_hardware_profile():
     def safe(cmd):
         try:
-            return run_command(cmd)
+            output = run_command(cmd)
+            if output is None:
+                # Typically when run_command() failed, e.g. command not found
+                if "vcgencmd" in cmd:
+                    # Only warn once
+                    if not hasattr(safe, "vcgencmd_warned"):
+                        print(
+                            "⚠️ Warning: vcgencmd is not installed. Skipping firmware info.",
+                            file=sys.stderr,
+                        )
+                        safe.vcgencmd_warned = True
+                return None
+            return output
         except Exception as e:
-            print(f"⚠️ Warning: failed to run '{cmd}': {e}", file=sys.stderr)
+            # Only warn once for vcgencmd
+            if "vcgencmd" in cmd and not hasattr(safe, "vcgencmd_warned"):
+                print(
+                    "⚠️ Warning: vcgencmd is not installed. Skipping firmware info.",
+                    file=sys.stderr,
+                )
+                safe.vcgencmd_warned = True
             return None
 
     try:
@@ -40,31 +62,55 @@ def generate_hardware_profile():
     return remove_nulls(
         {
             "hostname": socket.gethostname(),
-            "model": safe("cat /proc/device-tree/model"),
-            "kernel_version": safe("uname -a"),
+            "model": (safe("cat /proc/device-tree/model") or "").strip(),
+            "kernel_version": (safe("uname -a") or "").strip(),
             "cpu": {
-                "model": safe("grep 'Model' /proc/cpuinfo | awk -F': ' '{print $2}'"),
-                "revision": safe(
-                    "grep 'Revision' /proc/cpuinfo | awk -F': ' '{print $2}'"
-                ),
-                "serial": safe("grep 'Serial' /proc/cpuinfo | awk -F': ' '{print $2}'"),
+                "model": (
+                    safe("grep 'Model' /proc/cpuinfo | awk -F': ' '{print $2}'") or ""
+                ).strip(),
+                "revision": (
+                    safe("grep 'Revision' /proc/cpuinfo | awk -F': ' '{print $2}'")
+                    or ""
+                ).strip(),
+                "serial": (
+                    safe("grep 'Serial' /proc/cpuinfo | awk -F': ' '{print $2}'") or ""
+                ).strip(),
             },
             "firmware": {
-                "bootloader": safe("vcgencmd bootloader_version"),
-                "firmware": safe("vcgencmd version"),
+                "bootloader": (safe("vcgencmd bootloader_version") or "").strip(),
+                "firmware": (safe("vcgencmd version") or "").strip(),
             },
             "memory": {
                 "total": psutil.virtual_memory().total,
                 "available": psutil.virtual_memory().available,
             },
             "disks": disks,
-            "usb_devices": safe("lsusb"),
+            "usb_devices": (safe("lsusb") or "").strip(),
             "network_interfaces": {
                 iface: [addr.address for addr in addrs if addr.family == socket.AF_INET]
                 for iface, addrs in psutil.net_if_addrs().items()
             },
         }
     )
+
+
+def get_server_info(args):
+    # CLI overrides always win.
+    if args.config_server and args.port:
+        return args.config_server, str(args.port)
+    # If only one CLI override is present, treat as incomplete, ignore and fall back.
+    # Try to read from network.conf
+    conf = read_kv_config(NETWORK_CONF)
+    server_ip = conf.get("SERVER_WG_IP")
+    port = conf.get("SERVER_PORT", DEFAULT_PORT)
+    if not server_ip:
+        print(
+            "❌ Could not determine configuration server. "
+            "Provide --config-server or ensure /sensos/etc/network.conf has SERVER_WG_IP.",
+            file=sys.stderr,
+        )
+        return None, None
+    return server_ip, str(port)
 
 
 def upload_hardware_profile(server_ip, port, api_password):
@@ -92,19 +138,10 @@ def upload_hardware_profile(server_ip, port, api_password):
 
 def main():
     setup_logging()
-
     args = parse_args_with_defaults(ARG_DEFS, ["global", "upload_hardware_profile"])
-
-    server_ip = args.config_server
-    port = args.port or DEFAULT_PORT
-
-    if not server_ip:
-        server_ip, port = detect_wireguard_api()
-        if server_ip:
-            print(f"ℹ️ Detected WireGuard API at {server_ip}:{port}")
-        else:
-            print("❌ Could not detect configuration server.", file=sys.stderr)
-            return
+    server_ip, port = get_server_info(args)
+    if not server_ip or not port:
+        return
 
     api_password = get_api_password(server_ip, port)
     if not api_password:
