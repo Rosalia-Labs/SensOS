@@ -252,7 +252,6 @@ def register_peer(
         print("❌ Error: Malformed WireGuard IP address: %s" % wg_ip, file=sys.stderr)
         sys.exit(1)
 
-    hostname = f"{network_name}-{wg_ip.replace('.', '-')}"
     register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_password)
     return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
 
@@ -580,7 +579,7 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
     print(f"✅ Client network settings written to {settings_file}")
 
 
-def sensos_config_files_exist():
+def sensos_config_files_exist(args):
     # List of files produced by this script
     files_to_check = [
         os.path.join(WG_DIR, f"{args.network}-private.key"),
@@ -623,7 +622,7 @@ def main():
     setup_logging()
     args = parse_args()
 
-    existing_files = sensos_config_files_exist()
+    existing_files = sensos_config_files_exist(args)
 
     if not args.force and existing_files:
         print(
