@@ -246,11 +246,7 @@ def register_peer(
         sys.exit(1)
 
     ip_parts = wg_ip.split(".")
-    if len(ip_parts) == 4:
-        hostname = f"{network_name}_{ip_parts[2]}_{ip_parts[3]}"
-    else:
-        print("❌ Error: Malformed WireGuard IP address: %s" % wg_ip, file=sys.stderr)
-        sys.exit(1)
+    hostname = f"{network_name}-{ip_parts[2]}-{ip_parts[3]}"
 
     register_wireguard_key(config_server, port, wg_ip, wg_public_key, api_password)
     return wg_ip, hostname, server_pubkey, wg_public_ip, wg_port
