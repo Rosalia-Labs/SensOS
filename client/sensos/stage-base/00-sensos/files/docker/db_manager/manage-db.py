@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Set, List
 import numpy as np
 import soundfile as sf
+import traceback
+
 
 # --- Config & Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -52,7 +54,8 @@ def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
             """,
             (table_name,),
         )
-        return cur.fetchone()[0]
+        row = cur.fetchone()
+        return row["exists"] if row else False
 
 
 def get_next_unchecked_segments(
@@ -68,7 +71,7 @@ def get_next_unchecked_segments(
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE NOT ag.checked
               AND af.deleted = FALSE
-              AND af.file_path LIKE '%.wav'
+              AND af.file_path LIKE '%%.wav'
             ORDER BY ag.start_frame
             LIMIT %s
             """,
@@ -273,13 +276,19 @@ def process_segment(conn: psycopg.Connection, seg: Dict[str, Any]) -> Optional[i
     - If zeroing is needed, zero the segment and mark as zeroed.
     - Return file_id if erased, else None.
     """
+    if seg.get("zeroed"):
+        mark_segment_checked(conn, seg)
+        logger.warning(
+            f"Segment {seg['segment_id']} is zeroed but reports not checked."
+        )
+        return None
     scores = get_birdnet_scores(conn, seg["segment_id"])
     if not scores:
         logger.warning(
             f"Segment {seg['segment_id']} has no BirdNET scores; skipping for now."
         )
         return None
-    mark_segment_checked(conn, seg["segment_id"])
+    mark_segment_checked(conn, seg)
     if should_zero_segment(scores):
         return zero_segment(conn, seg)
     return None
@@ -292,9 +301,7 @@ def wait_for_birdnet_table(conn: psycopg.Connection) -> None:
         time.sleep(60)
 
 
-def get_disk_free_gb_and_percent(
-    path: str = "/sensos/data",
-) -> Optional[Dict[str, float]]:
+def get_disk_free_gb_and_percent(path: str) -> Optional[Dict[str, float]]:
     try:
         total, used, free = shutil.disk_usage(path)
         free_gb = free / (1024**3)
@@ -386,7 +393,7 @@ def get_lowest_score_segment_for_frequent_label(conn, week_start):
             JOIN sensos.audio_segments ag ON ts.segment_id = ag.id
             JOIN sensos.audio_files af ON ag.file_id = af.id
             WHERE ts.label = (SELECT label FROM most_freq_label)
-            AND af.file_path LIKE '%.wav'
+            AND af.file_path LIKE '%%.wav'
             ORDER BY ts.score ASC
             LIMIT 1
             """,
@@ -408,7 +415,7 @@ def get_lowest_score_segment_for_frequent_label(conn, week_start):
 
 def zero_redundant_segments(conn, min_free_gb=32):
     while True:
-        disk = get_disk_free_gb_and_percent()
+        disk = get_disk_free_gb_and_percent(AUDIO_BASE)
         if disk is not None and disk["disk_available_gb"] > min_free_gb:
             logger.info("Enough disk space. Done.")
             break
@@ -456,7 +463,7 @@ def main_loop() -> None:
 
                 handle_compression_for_files(conn, touched_file_ids)
 
-                disk = get_disk_free_gb_and_percent()
+                disk = get_disk_free_gb_and_percent(AUDIO_BASE)
                 if disk and disk["disk_available_gb"] < 32:
                     logger.warning(
                         f"Disk space low ({disk['disk_available_gb']} GB left). Starting emergency cleanup."
@@ -464,7 +471,8 @@ def main_loop() -> None:
                     zero_redundant_segments(conn, min_free_gb=64)
 
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Error: {e!r} ({type(e)})")
+            logger.error(traceback.format_exc())
             time.sleep(60)
 
 

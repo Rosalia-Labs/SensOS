@@ -3,6 +3,7 @@ import requests
 import psycopg
 from psycopg.rows import dict_row
 from datetime import datetime, timedelta
+from decimal import Decimal
 import platform
 
 NETWORK_CONF = "/sensos/etc/network.conf"
@@ -25,6 +26,16 @@ def load_api_password():
         with open(API_PASS_FILE) as f:
             return f.read().strip()
     return None
+
+
+def convert_decimals(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [convert_decimals(v) for v in obj]
+    return obj
 
 
 def get_api_vars():
@@ -106,6 +117,7 @@ def main():
         "status_message": f"Reporting {stats['count']} system samples in past 24h",
     }
 
+    payload = convert_decimals(payload)
     print(f"Posting payload: {payload}")
     response = requests.post(
         api_url, auth=(api_user, api_pass), json=payload, timeout=10
