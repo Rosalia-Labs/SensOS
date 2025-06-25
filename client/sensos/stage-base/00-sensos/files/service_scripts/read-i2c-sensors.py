@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 sys.path.append("/sensos/lib")
-from utils import read_kv_config, setup_logging
+from utils import read_kv_config, setup_logging, set_permissions_and_owner, create_dir
 
 config = read_kv_config("/sensos/etc/i2c-sensors.conf")
 if not config:
@@ -18,6 +18,8 @@ if not config:
     sys.exit(1)
 
 DB_PATH = Path("/sensos/data/microenv/i2c_readings.db")
+
+create_dir(DB_PATH.parent, "sensos-admin", "sensos-data", 0o2775)
 
 MAX_ATTEMPTS = 3
 BACKOFF_MULTIPLIER = 2

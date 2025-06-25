@@ -55,10 +55,11 @@ def remove_dir(path):
     privileged_shell(f"rm -rf {shlex.quote(path)}", silent=True)
 
 
-def create_dir(path, owner="root", mode=0o700):
+def create_dir(path, owner="root", group=None, mode=0o700):
+    group = group or owner
     privileged_shell(f"mkdir -p {shlex.quote(path)}", silent=True)
     privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
-    privileged_shell(f"chown {owner}:{owner} {shlex.quote(path)}", silent=True)
+    privileged_shell(f"chown {owner}:{group} {shlex.quote(path)}", silent=True)
 
 
 def remove_file(path):
