@@ -50,8 +50,8 @@ FULL_SPECTRUM_BINS: int = 20
 BIOACOUSTIC_BINS: int = 20
 
 # BirdNET model and labels
-MODEL_PATH: str = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Model_FP32.tflite"
-LABELS_PATH: str = "/model/V2.4/BirdNET_GLOBAL_6K_V2.4_Labels.txt"
+MODEL_PATH: str = "/model/BirdNET_v2.4_tflite/audio-model.tflite"
+LABELS_PATH: str = "/model/BirdNET_v2.4_tflite/labels/en_us.txt"
 
 
 birdnet_model: BirdNETModel = load_birdnet_model(MODEL_PATH, LABELS_PATH)
