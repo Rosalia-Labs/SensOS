@@ -161,7 +161,6 @@ def overwrite_segment_with_zeros(seg: Dict[str, Any]) -> bool:
 def zero_segment(conn, seg: Dict[str, Any]) -> Optional[int]:
     if overwrite_segment_with_zeros(seg):
         mark_segment_zeroed(conn, seg)
-        logger.info(f"Zeroed segment {seg['segment_id']}.")
         handle_fully_zeroed_file(conn, seg)
         return seg["file_id"]
     else:
