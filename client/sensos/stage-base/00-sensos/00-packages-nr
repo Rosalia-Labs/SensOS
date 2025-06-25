@@ -17,5 +17,3 @@ libffi-dev
 libssl-dev
 sqlite3
 jq
-raspberrypi-bootloader
-raspberrypi-kernel
