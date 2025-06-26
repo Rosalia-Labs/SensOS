@@ -2,7 +2,8 @@
 Description=Keep LTE Modem Connection Alive
 Wants=network-online.target
 After=network-online.target NetworkManager.service
-Requires=NetworkManager.service
+Requires=NetworkManager.service ensure-sensos-dir.service
+Requires=ensure-sensos-dir.service
 
 [Service]
 Type=simple

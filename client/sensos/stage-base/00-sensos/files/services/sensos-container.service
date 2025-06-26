@@ -1,7 +1,7 @@
 [Unit]
 Description=Start SensOS Docker Containers
-After=network.target docker.service
-Requires=docker.service
+After=network.target docker.service ensure-sensos-dir.service
+Requires=docker.service ensure-sensos-dir.service
 
 [Service]
 Type=simple

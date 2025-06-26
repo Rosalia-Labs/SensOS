@@ -3,5 +3,5 @@ Description=Send device status update (requires connectivity)
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/requires-connectivity.sh /usr/local/bin/send-status-update.sh
+ExecStart=/usr/local/bin/requires-connectivity.sh -- /usr/local/bin/send-status-update.sh
 

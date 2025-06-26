@@ -1,7 +1,9 @@
 [Unit]
 Description=Continuously update /sensos/etc/location.conf from GPS
 After=local-fs.target gpsd.service
-Requires=local-fs.target
+Requires=local-fs.target  ensure-sensos-dir.service
+Requires=ensure-sensos-dir.service
+
 
 [Service]
 Type=simple

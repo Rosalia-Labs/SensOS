@@ -1,6 +1,7 @@
 [Unit]
 Description=Continuous Audio Recording Service
-After=network.target
+After=network.target ensure-sensos-dir.service
+Requires=ensure-sensos-dir.service
 
 [Service]
 Type=simple

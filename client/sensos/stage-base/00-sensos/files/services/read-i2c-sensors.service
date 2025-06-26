@@ -1,6 +1,7 @@
 [Unit]
 Description=Read I2C sensors and store readings
-After=multi-user.target
+After=multi-user.target ensure-sensos-dir.service
+Requires=ensure-sensos-dir.service
 
 [Service]
 Type=simple

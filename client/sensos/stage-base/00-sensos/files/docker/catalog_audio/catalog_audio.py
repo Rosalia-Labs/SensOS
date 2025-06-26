@@ -268,7 +268,7 @@ def remove_deleted_files(cur, root=ROOT):
     cur.execute("SELECT file_path FROM sensos.audio_files WHERE deleted = TRUE")
     count = 0
     for row in cur.fetchall():
-        file_path = root / row["file_path"]
+        file_path = root / row[0]
         if file_path.exists():
             try:
                 file_path.unlink()

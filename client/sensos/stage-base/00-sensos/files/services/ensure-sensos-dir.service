@@ -1,0 +1,12 @@
+[Unit]
+Description=Ensure /sensos directory structure exists with correct permissions
+After=local-fs.target sensos-data.mount
+RequiresMountsFor=/sensos/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ensure-sensos-dir.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
