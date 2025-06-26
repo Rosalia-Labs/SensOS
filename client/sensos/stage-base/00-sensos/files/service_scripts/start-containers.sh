@@ -26,6 +26,11 @@ fi
 echo "[INFO] Loading any available images from local tarballs..."
 load_images_from_disk
 
+# Ensure directories
+sudo mkdir -p /sensos/data/microenv
+sudo chown -R sensos-admin:sensos-data /sensos/data/microenv
+sudo chmod -R 2775 /sensos/data/microenv
+
 # Prepare Docker Compose command
 COMPOSE_CMD=(docker compose)
 
