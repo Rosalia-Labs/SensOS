@@ -4,6 +4,8 @@ import os
 import sys
 import tempfile
 import builtins
+from pathlib import Path
+
 
 sys.path.insert(0, "/sensos_lib")
 import utils
@@ -238,6 +240,26 @@ class TestUtils(unittest.TestCase):
         with patch("builtins.open", mock_open()):
             utils.setup_logging("myprog.log")
             self.assertIsInstance(sys.stdout, utils.Tee)
+
+    @patch("utils.privileged_shell")
+    def test_create_dir_accepts_pathlib_path(self, mock_priv):
+        """create_dir should accept pathlib.Path objects for path"""
+        path = Path("/tmp/foo/bar")
+        utils.create_dir(path, owner="alice", mode=0o755)
+        # The command should use the string representation
+        calls = [
+            call(f"mkdir -p {path}", silent=True),
+            call(f"chmod 755 {path}", silent=True),
+            call(f"chown alice:alice {path}", silent=True),
+        ]
+        mock_priv.assert_has_calls(calls, any_order=False)
+
+    @patch("utils.privileged_shell")
+    def test_remove_dir_accepts_pathlib_path(self, mock_priv):
+        """remove_dir should accept pathlib.Path objects for path"""
+        path = Path("/tmp/foo/bar")
+        utils.remove_dir(path)
+        mock_priv.assert_called_with(f"rm -rf {path}", silent=True)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@ def privileged_shell(cmd, check=False, silent=False, user=None):
         full_cmd = (
             f"sudo -u {user} {cmd}"
             if not is_root
-            else f"su - {user} -c {shlex.quote(cmd)}"
+            else f"su - {user} -c {shlex.quote(str(cmd))}"
         )
     else:
         full_cmd = cmd if is_root else f"sudo {cmd}"
@@ -52,22 +52,22 @@ def privileged_shell(cmd, check=False, silent=False, user=None):
 
 
 def remove_dir(path):
-    privileged_shell(f"rm -rf {shlex.quote(path)}", silent=True)
+    privileged_shell(f"rm -rf {shlex.quote(str(path))}", silent=True)
 
 
 def create_dir(path, owner="root", group=None, mode=0o700):
     group = group or owner
-    privileged_shell(f"mkdir -p {shlex.quote(path)}", silent=True)
-    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
-    privileged_shell(f"chown {owner}:{group} {shlex.quote(path)}", silent=True)
+    privileged_shell(f"mkdir -p {shlex.quote(str(path))}", silent=True)
+    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(str(path))}", silent=True)
+    privileged_shell(f"chown {owner}:{group} {shlex.quote(str(path))}", silent=True)
 
 
 def remove_file(path):
-    privileged_shell(f"rm -f {shlex.quote(path)}", silent=True)
+    privileged_shell(f"rm -f {shlex.quote(str(path))}", silent=True)
 
 
 def any_files_in_dir(path):
-    output, rc = privileged_shell(f"ls -A {shlex.quote(path)}", silent=True)
+    output, rc = privileged_shell(f"ls -A {shlex.quote(str(path))}", silent=True)
     return bool(output and output.strip())
 
 
@@ -90,9 +90,9 @@ def set_permissions_and_owner(
     path: str, mode: int, user: str = None, group: str = None
 ):
     group = group or user
-    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(path)}", silent=True)
+    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(str(path))}", silent=True)
     if user:
-        privileged_shell(f"chown {user}:{group} {shlex.quote(path)}", silent=True)
+        privileged_shell(f"chown {user}:{group} {shlex.quote(str(path))}", silent=True)
 
 
 def get_basic_auth(api_password):
