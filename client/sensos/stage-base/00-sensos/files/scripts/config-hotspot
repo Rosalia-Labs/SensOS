@@ -18,9 +18,34 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
-default_ssid=$(hostname | sed 's/-/_/g')
-register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid "$default_ssid")"
-register_option --password password "WiFi password (8–63 chars, required)" "$(get_default password)"
+network_conf="/sensos/etc/network.conf"
+
+if [[ ! -f "$network_conf" ]]; then
+    echo "ERROR: $network_conf does not exist."
+    exit 1
+fi
+
+NETWORK_NAME=""
+CLIENT_WG_IP=""
+while IFS='=' read -r key value; do
+    key=$(echo "$key" | tr -d ' ')
+    value=$(echo "$value" | tr -d ' ')
+    case "$key" in
+    NETWORK_NAME) NETWORK_NAME="$value" ;;
+    CLIENT_WG_IP) CLIENT_WG_IP="$value" ;;
+    esac
+done <"$network_conf"
+
+if [[ -z "$NETWORK_NAME" || -z "$CLIENT_WG_IP" ]]; then
+    echo "ERROR: NETWORK_NAME or CLIENT_WG_IP not set in $network_conf"
+    exit 1
+fi
+
+IFS='.' read -r _ _ oct3 oct4 <<<"$CLIENT_WG_IP"
+default_ssid="${NETWORK_NAME}-${oct3}-${oct4}"
+
+register_option --ssid ssid "WiFi SSID" "$(get_default ssid "$default_ssid")"
+register_option --password password "WiFi password (8–63 chars)" "$(get_default password)"
 register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
 register_option --interface interface "Wireless interface to use" "$(get_default interface wlan0)"
 register_option --enable-service enable_service "Enable sensos-hotspot.service" "$(get_default enable_service true)"

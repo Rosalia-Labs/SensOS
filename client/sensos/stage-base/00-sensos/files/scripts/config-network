@@ -81,11 +81,11 @@ def parse_args():
             },
         ),
         (
-            ["--enable-ssh-passwords"],
+            ["--disable-ssh-passwords"],
             {
                 "action": "store_true",
-                "help": "Enable SSH password authentication (default: disabled)",
-                "dest": "enable_ssh_passwords",
+                "help": "Disable SSH password authentication (default: enabled)",
+                "dest": "disable_ssh_passwords",
             },
         ),
         (
@@ -149,10 +149,10 @@ def parse_args():
     return parse_args_with_defaults(arg_defs, ["global", script_name])
 
 
-def enable_ssh(passwords: bool = False):
+def enable_ssh(disable_passwords: bool = False):
     sshd_dir = "/etc/ssh/sshd_config.d"
     custom_conf = os.path.join(sshd_dir, "sensos.conf")
-    password_setting = "yes" if passwords else "no"
+    password_setting = "no" if disable_passwords else "yes"
 
     create_dir(sshd_dir, owner="root", mode=0o755)
     config = f"""\
@@ -162,7 +162,7 @@ PubkeyAuthentication yes
 """
     write_file(custom_conf, config, mode=0o644, user="root")
     print(
-        f"✅ SSH passwords are {'enabled' if passwords else 'disabled'} in {custom_conf}."
+        f"✅ SSH passwords are {'disabled' if disable_passwords else 'enabled'} in {custom_conf}."
     )
 
     privileged_shell("systemctl enable ssh")
@@ -653,7 +653,7 @@ def main():
     write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip)
     configure_ssh(args, api_password, client_wg_ip)
 
-    enable_ssh(passwords=args.enable_ssh_passwords)
+    enable_ssh(disable_passwords=args.disable_ssh_passwords)
 
     if args.connectivity_mode == "always":
         privileged_shell(f"systemctl enable wg-quick@{args.network}")
