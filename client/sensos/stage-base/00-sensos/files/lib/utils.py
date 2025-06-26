@@ -72,7 +72,7 @@ def any_files_in_dir(path):
 
 
 def read_file(filepath):
-    output, rc = privileged_shell(f"cat {shlex.quote(filepath)}", silent=True)
+    output, rc = privileged_shell(f"cat {shlex.quote(str(filepath))}", silent=True)
     return output.strip() if output else None
 
 
@@ -81,9 +81,11 @@ def write_file(filepath, content, mode=0o644, user="root", group=None):
     with tempfile.NamedTemporaryFile("w", delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
-    privileged_shell(f"mv {shlex.quote(tmp_path)} {shlex.quote(filepath)}", silent=True)
-    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(filepath)}", silent=True)
-    privileged_shell(f"chown {user}:{group} {shlex.quote(filepath)}", silent=True)
+    privileged_shell(
+        f"mv {shlex.quote(tmp_path)} {shlex.quote(str(filepath))}", silent=True
+    )
+    privileged_shell(f"chmod {oct(mode)[2:]} {shlex.quote(str(filepath))}", silent=True)
+    privileged_shell(f"chown {user}:{group} {shlex.quote(str(filepath))}", silent=True)
 
 
 def set_permissions_and_owner(
