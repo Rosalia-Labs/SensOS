@@ -242,12 +242,23 @@ def main():
 
     polling_queue = []
 
+    # Each heap entry: (next_time, sensor_dict)
     for key, addr, sensor_type, read_func in sensors:
-        interval = get_interval(f"{key}_INTERVAL_SEC")
-        if interval is not None:
+        base_interval = get_interval(f"{key}_INTERVAL_SEC")
+        if base_interval is not None:
             heapq.heappush(
                 polling_queue,
-                (time.time(), key, addr, sensor_type, read_func, interval),
+                (
+                    time.time(),
+                    {
+                        "key": key,
+                        "addr": addr,
+                        "sensor_type": sensor_type,
+                        "read_func": read_func,
+                        "base_interval": base_interval,
+                        "current_interval": base_interval,
+                    },
+                ),
             )
 
     if not polling_queue:
@@ -257,47 +268,48 @@ def main():
     print("🔁 Entering sensor loop (priority queue with retries + backoff)")
     while polling_queue:
         now = time.time()
-        next_time, key, addr, sensor_type, read_func, interval = heapq.heappop(
-            polling_queue
-        )
-
+        next_time, sensor = heapq.heappop(polling_queue)
         wait = max(0, next_time - now)
         time.sleep(wait)
 
         timestamp = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-        print(f"⏱️ Polling {sensor_type} at {addr}...")
+        print(f"⏱️ Polling {sensor['sensor_type']} at {sensor['addr']}...")
 
         data = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                data = read_func(addr)
+                data = sensor["read_func"](sensor["addr"])
                 if data:
                     break
                 else:
                     print(
-                        f"⚠️ {sensor_type} returned no data (attempt {attempt}/{MAX_ATTEMPTS})"
+                        f"⚠️ {sensor['sensor_type']} returned no data (attempt {attempt}/{MAX_ATTEMPTS})"
                     )
             except Exception as e:
                 print(
-                    f"⚠️ Error on attempt {attempt} reading {sensor_type}: {e}",
+                    f"⚠️ Error on attempt {attempt} reading {sensor['sensor_type']}: {e}",
                     file=sys.stderr,
                 )
             time.sleep(0.2)
 
         if data:
-            print(f"📟 {sensor_type} ({addr}) data: {data}")
-            readings = flatten_sensor_data(data, addr, sensor_type, timestamp)
+            print(f"📟 {sensor['sensor_type']} ({sensor['addr']}) data: {data}")
+            readings = flatten_sensor_data(
+                data, sensor["addr"], sensor["sensor_type"], timestamp
+            )
             store_readings(readings)
-            next_interval = interval
+            # Reset interval after success
+            sensor["current_interval"] = sensor["base_interval"]
         else:
             print(
-                f"❌ All {MAX_ATTEMPTS} attempts failed for {sensor_type} at {addr}, backing off."
+                f"❌ All {MAX_ATTEMPTS} attempts failed for {sensor['sensor_type']} at {sensor['addr']}, backing off."
             )
-            next_interval = interval * BACKOFF_MULTIPLIER
+            sensor["current_interval"] = min(
+                sensor["current_interval"] * BACKOFF_MULTIPLIER, 3600
+            )
 
         heapq.heappush(
-            polling_queue,
-            (time.time() + next_interval, key, addr, sensor_type, read_func, interval),
+            polling_queue, (time.time() + sensor["current_interval"], sensor)
         )
 
 
