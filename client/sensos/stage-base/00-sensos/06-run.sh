@@ -12,4 +12,9 @@ on_chroot <<EOF
 systemctl enable send-status-update.timer
 EOF
 
+# Enable monitoring disk usage
+on_chroot <<EOF
+systemctl enable monitor-disk-space.timer
+EOF
+
 echo "Completed SensOS 06-run.sh"
