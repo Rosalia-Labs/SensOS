@@ -1,5 +1,11 @@
 #!/bin/bash
 
+source /sensos/lib/parse-switches.sh
+
+register_option --simulate-min-mb simulate_min_mb "Simulate minimum available MB for test runs" ""
+
+parse_switches "$0" "$@"
+
 # List of mountpoints to monitor
 MOUNTPOINTS=("/" "/data")
 
@@ -11,17 +17,22 @@ SERVICES=(
 )
 
 # Find the minimum available MB across all mountpoints
-MIN_MB=""
-for MP in "${MOUNTPOINTS[@]}"; do
-    if df -P "$MP" &>/dev/null; then
-        MB=$(df -P "$MP" | awk 'NR==2 {print int($4/1024)}')
-        if [ -z "$MIN_MB" ] || [ "$MB" -lt "$MIN_MB" ]; then
-            MIN_MB=$MB
+if [[ -n "$simulate_min_mb" ]]; then
+    MIN_MB="$simulate_min_mb"
+    TEST_MODE=1
+else
+    MIN_MB=""
+    for MP in "${MOUNTPOINTS[@]}"; do
+        if df -P "$MP" &>/dev/null; then
+            MB=$(df -P "$MP" | awk 'NR==2 {print int($4/1024)}')
+            if [ -z "$MIN_MB" ] || [ "$MB" -lt "$MIN_MB" ]; then
+                MIN_MB=$MB
+            fi
+        else
+            logger -t diskmon "Warning: mountpoint $MP not found"
         fi
-    else
-        logger -t diskmon "Warning: mountpoint $MP not found"
-    fi
-done
+    done
+fi
 
 # If no mountpoints were available, abort
 if [ -z "$MIN_MB" ]; then
@@ -35,12 +46,20 @@ for entry in "${SERVICES[@]}"; do
     IS_ACTIVE=$(systemctl is-active "$SERVICE" 2>/dev/null)
 
     if [ "$MIN_MB" -lt "$STOP_MB" ] && [ "$IS_ACTIVE" = "active" ]; then
-        systemctl stop "$SERVICE"
-        logger -t diskmon "Stopped $SERVICE: minimum space $MIN_MB MB < $STOP_MB MB"
+        if [[ -n "$TEST_MODE" ]]; then
+            echo "[SIMULATE] Would stop $SERVICE: minimum space $MIN_MB MB < $STOP_MB MB"
+        else
+            systemctl stop "$SERVICE"
+            logger -t diskmon "Stopped $SERVICE: minimum space $MIN_MB MB < $STOP_MB MB"
+        fi
     fi
 
     if [ "$MIN_MB" -gt "$START_MB" ] && [ "$IS_ACTIVE" != "active" ]; then
-        systemctl start "$SERVICE"
-        logger -t diskmon "Started $SERVICE: minimum space $MIN_MB MB > $START_MB MB"
+        if [[ -n "$TEST_MODE" ]]; then
+            echo "[SIMULATE] Would start $SERVICE: minimum space $MIN_MB MB > $START_MB MB"
+        else
+            systemctl start "$SERVICE"
+            logger -t diskmon "Started $SERVICE: minimum space $MIN_MB MB > $START_MB MB"
+        fi
     fi
 done
