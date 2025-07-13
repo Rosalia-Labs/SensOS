@@ -19,6 +19,14 @@ DB_PARAMS = {
 }
 
 
+def table_exists(sqlite_conn, table_name):
+    cur = sqlite_conn.cursor()
+    cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,)
+    )
+    return cur.fetchone() is not None
+
+
 def connect_pg_with_retry():
     while True:
         try:
@@ -57,6 +65,11 @@ def main():
     while True:
         try:
             with sqlite3.connect(SQLITE_PATH) as sqlite_conn:
+                if not table_exists(sqlite_conn, "i2c_readings"):
+                    logger.info("i2c_readings table not found in SQLite. Waiting...")
+                    time.sleep(60)
+                    continue
+
                 sqlite_conn.row_factory = sqlite3.Row
                 sqlite_cur = sqlite_conn.cursor()
 
