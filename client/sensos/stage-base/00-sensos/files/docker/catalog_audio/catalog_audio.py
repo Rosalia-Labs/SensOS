@@ -174,10 +174,16 @@ def process_file(cursor, path: Path):
     new_path = CATALOGED / rel_input.parent / output_name
     new_rel = new_path.relative_to(ROOT).as_posix()
 
-    # Skip if already processed
     cursor.execute("SELECT 1 FROM sensos.audio_files WHERE file_path = %s", (new_rel,))
     if cursor.fetchone():
         logging.warning(f"Already processed: {new_rel}")
+        try:
+            os.remove(path)
+            logging.info(f"Removed already-processed input file from queued: {path}")
+        except Exception as e:
+            logging.error(
+                f"Failed to remove already-processed input file: {path} — {e}"
+            )
         return
 
     try:
