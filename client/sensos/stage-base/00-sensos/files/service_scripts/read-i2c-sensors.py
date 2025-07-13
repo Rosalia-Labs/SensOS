@@ -214,7 +214,6 @@ def flatten_sensor_data(sensor_data, device_address, sensor_type, timestamp):
 def store_readings(readings):
     try:
         with sqlite3.connect(DB_PATH) as conn:
-            ensure_schema(conn)
             conn.executemany(
                 """
                 INSERT INTO i2c_readings (timestamp, device_address, sensor_type, key, value)
@@ -230,6 +229,9 @@ def store_readings(readings):
 
 def main():
     setup_logging("read_i2c_sensors.log")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        ensure_schema(conn)
 
     sensors = [
         ("BME280_0x76", "0x76", "BME280", read_bme280),

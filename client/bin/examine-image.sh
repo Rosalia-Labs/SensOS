@@ -15,7 +15,7 @@ echo "Using image: $IMAGE_PATH"
 
 docker build -t debian-guestmount - <<EOF
 FROM debian:stable-slim
-RUN apt update && apt-get install --no-install-recommends -y libguestfs-tools
+RUN apt update && apt install -y libguestfs-tools
 EOF
 
 docker run --rm -it --privileged \
