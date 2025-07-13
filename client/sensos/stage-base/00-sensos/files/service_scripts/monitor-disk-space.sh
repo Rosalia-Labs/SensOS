@@ -7,7 +7,7 @@ register_option --simulate-min-mb simulate_min_mb "Simulate minimum available MB
 parse_switches "$0" "$@"
 
 # List of mountpoints to monitor
-MOUNTPOINTS=("/" "/data")
+MOUNTPOINTS=("/" "/sensos/data")
 
 # Services and thresholds (service_name stop_MB start_MB)
 SERVICES=(
