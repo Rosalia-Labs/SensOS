@@ -31,25 +31,9 @@ def generate_hardware_profile():
         try:
             output = run_command(cmd)
             if output is None:
-                # Typically when run_command() failed, e.g. command not found
-                if "vcgencmd" in cmd:
-                    # Only warn once
-                    if not hasattr(safe, "vcgencmd_warned"):
-                        print(
-                            "⚠️ Warning: vcgencmd is not installed. Skipping firmware info.",
-                            file=sys.stderr,
-                        )
-                        safe.vcgencmd_warned = True
                 return None
             return output
-        except Exception as e:
-            # Only warn once for vcgencmd
-            if "vcgencmd" in cmd and not hasattr(safe, "vcgencmd_warned"):
-                print(
-                    "⚠️ Warning: vcgencmd is not installed. Skipping firmware info.",
-                    file=sys.stderr,
-                )
-                safe.vcgencmd_warned = True
+        except Exception:
             return None
 
     try:
@@ -59,7 +43,7 @@ def generate_hardware_profile():
         print(f"⚠️ Warning: failed to parse lsblk output as JSON: {e}", file=sys.stderr)
         disks = None
 
-    return remove_nulls(
+    profile = remove_nulls(
         {
             "hostname": socket.gethostname(),
             "model": (safe("cat /proc/device-tree/model") or "").strip(),
@@ -76,10 +60,7 @@ def generate_hardware_profile():
                     safe("grep 'Serial' /proc/cpuinfo | awk -F': ' '{print $2}'") or ""
                 ).strip(),
             },
-            "firmware": {
-                "bootloader": (safe("vcgencmd bootloader_version") or "").strip(),
-                "firmware": (safe("vcgencmd version") or "").strip(),
-            },
+            "firmware": {},
             "memory": {
                 "total": psutil.virtual_memory().total,
                 "available": psutil.virtual_memory().available,
@@ -92,6 +73,7 @@ def generate_hardware_profile():
             },
         }
     )
+    return profile
 
 
 def get_server_info(args):
