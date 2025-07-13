@@ -231,6 +231,7 @@ def main():
     setup_logging("read_i2c_sensors.log")
 
     with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         ensure_schema(conn)
 
     sensors = [
