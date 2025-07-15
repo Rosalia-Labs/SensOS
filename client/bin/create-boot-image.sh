@@ -54,6 +54,17 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
+# Ensure pi-gen is checked out at a tag, not a dev branch or random commit.
+CURRENT_PI_GEN_TAG=$(git -C "$PI_GEN_DIR" describe --exact-match --tags 2>/dev/null || true)
+if [ -z "$CURRENT_PI_GEN_TAG" ]; then
+    echo "ERROR: pi-gen is not checked out at a release tag."
+    echo "Please checkout a tagged release in pi-gen (e.g., git checkout <tag>)."
+    echo "Current pi-gen HEAD: $(git -C "$PI_GEN_DIR" rev-parse --short HEAD)"
+    exit 1
+else
+    echo "pi-gen is on tag: $CURRENT_PI_GEN_TAG"
+fi
+
 echo
 echo "Building image using config:"
 cat "$CONFIG_FILE"
