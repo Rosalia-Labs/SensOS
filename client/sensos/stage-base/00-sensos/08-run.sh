@@ -20,16 +20,7 @@ fi
 sed -i 's|^#*Storage=.*|Storage=persistent|' "$JOURNALD_CONF"
 grep -q "^Storage=" "$JOURNALD_CONF" || echo "Storage=persistent" >> "$JOURNALD_CONF"
 
-sed -i 's|^#*SystemMaxUse=.*|SystemMaxUse=128M|' "$JOURNALD_CONF"
-grep -q "^SystemMaxUse=" "$JOURNALD_CONF" || echo "SystemMaxUse=128M" >> "$JOURNALD_CONF"
-
-sed -i 's|^#*SystemMaxFileSize=.*|SystemMaxFileSize=32M|' "$JOURNALD_CONF"
-grep -q "^SystemMaxFileSize=" "$JOURNALD_CONF" || echo "SystemMaxFileSize=32M" >> "$JOURNALD_CONF"
-
-sed -i 's|^#*SystemMaxFiles=.*|SystemMaxFiles=4|' "$JOURNALD_CONF"
-grep -q "^SystemMaxFiles=" "$JOURNALD_CONF" || echo "SystemMaxFiles=4" >> "$JOURNALD_CONF"
-
-sed -i 's|^#*MaxRetentionSec=.*|MaxRetentionSec=2week|' "$JOURNALD_CONF"
-grep -q "^MaxRetentionSec=" "$JOURNALD_CONF" || echo "MaxRetentionSec=2week" >> "$JOURNALD_CONF"
+sed -i 's|^#*SystemMaxUse=.*|SystemMaxUse=256M|' "$JOURNALD_CONF"
+grep -q "^SystemMaxUse=" "$JOURNALD_CONF" || echo "SystemMaxUse=256M" >> "$JOURNALD_CONF"
 
 EOF
