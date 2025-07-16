@@ -31,6 +31,13 @@ sudo mkdir -p /sensos/data/microenv
 sudo chown -R sensos-admin:sensos-data /sensos/data/microenv
 sudo chmod -R 2775 /sensos/data/microenv
 
+if [[ -f /sensos/etc/location.conf ]]; then
+    source /sensos/etc/location.conf
+    export LATITUDE LONGITUDE
+else
+    echo "WARNING: Missing /sensos/etc/location.conf" >&2
+fi
+
 # Prepare Docker Compose command
 COMPOSE_CMD=(docker compose)
 

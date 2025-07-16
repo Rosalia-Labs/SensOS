@@ -8,6 +8,7 @@ import numpy as np
 import psycopg
 import soundfile as sf
 import tflite_runtime.interpreter as tflite
+import shutil
 
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
@@ -19,6 +20,14 @@ from sound_utils import (
     scale_by_max_value,
     invoke_birdnet,
 )
+
+try:
+    shutil.rmtree("/root/.cache/numba")
+except Exception:
+    pass
+
+latitude = float(os.environ.get("LATITUDE", "0"))
+longitude = float(os.environ.get("LONGITUDE", "0"))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -53,8 +62,11 @@ BIOACOUSTIC_BINS: int = 20
 MODEL_PATH: str = "/model/BirdNET_v2.4_tflite/audio-model.tflite"
 LABELS_PATH: str = "/model/BirdNET_v2.4_tflite/labels/en_us.txt"
 
-
 birdnet_model: BirdNETModel = load_birdnet_model(MODEL_PATH, LABELS_PATH)
+
+META_MODEL_PATH: str = "/model/BirdNET_v2.4_tflite/meta-model.tflite"
+
+birdnet_meta_model: BirdNETModel = load_birdnet_model(META_MODEL_PATH, LABELS_PATH)
 
 
 def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
@@ -260,6 +272,7 @@ def analyze_and_store_features(
     embedding, top_scores, hill, simpson = invoke_birdnet(
         normalized_audio, birdnet_model
     )
+    locality_score = invoke_birdnet_meta(embedding, latitude, longitude, birdnet_model)
     cur.execute(
         "INSERT INTO sensos.sound_statistics (segment_id, peak_amplitude, rms, snr) VALUES (%s, %s, %s, %s);",
         (segment_id, peak, rms, snr),
