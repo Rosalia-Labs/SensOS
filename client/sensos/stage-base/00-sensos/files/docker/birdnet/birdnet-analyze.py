@@ -8,6 +8,7 @@ import numpy as np
 import psycopg
 import soundfile as sf
 import tflite_runtime.interpreter as tflite
+from datetime import date
 import shutil
 
 from pathlib import Path
@@ -18,7 +19,7 @@ from sound_utils import (
     compute_audio_features,
     compute_binned_spectrum,
     scale_by_max_value,
-    invoke_birdnet,
+    invoke_birdnet_with_location,
 )
 
 try:
@@ -140,8 +141,9 @@ def initialize_schema() -> None:
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
                 segment_id INTEGER REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                label TEXT,
-                score FLOAT,
+                label TEXT NOT NULL,
+                score FLOAT NOT NULL,
+                likely FLOAT,
                 PRIMARY KEY (segment_id, label)
             );"""
             )
@@ -251,6 +253,37 @@ def insert_segment(
     return cur.fetchone()[0]
 
 
+def get_segment_date(cur: "psycopg.Cursor", segment_id: int) -> date:
+    """
+    Fetches the recording date for the given audio segment.
+    Assumes every segment has a non-null capture_timestamp.
+
+    Args:
+        cur: Database cursor.
+        segment_id: ID of the segment in sensos.audio_segments.
+
+    Returns:
+        Observation date as a datetime.date.
+
+    Raises:
+        ValueError: If the segment is not found.
+    """
+    cur.execute(
+        """
+        SELECT f.capture_timestamp
+        FROM sensos.audio_segments s
+        JOIN sensos.audio_files f ON s.file_id = f.id
+        WHERE s.id = %s
+        """,
+        (segment_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ValueError(f"Segment {segment_id} not found or missing audio_files row.")
+
+    return row[0].date()
+
+
 def analyze_and_store_features(
     cur: psycopg.Cursor, segment_id: int, raw_audio: np.ndarray
 ) -> None:
@@ -269,10 +302,15 @@ def analyze_and_store_features(
         float_audio, SAMPLE_RATE, N_FFT, HOP_LENGTH, 1000, 8000, BIOACOUSTIC_BINS
     )
     normalized_audio = scale_by_max_value(float_audio)
-    embedding, top_scores, hill, simpson = invoke_birdnet(
-        normalized_audio, birdnet_model
+    obs_date = get_segment_date(cur, segment_id)
+    embedding, top_scores, hill, simpson = invoke_birdnet_with_location(
+        normalized_audio,
+        birdnet_model,
+        birdnet_meta_model,
+        latitude,
+        longitude,
+        obs_date,
     )
-    locality_score = invoke_birdnet_meta(embedding, latitude, longitude, birdnet_model)
     cur.execute(
         "INSERT INTO sensos.sound_statistics (segment_id, peak_amplitude, rms, snr) VALUES (%s, %s, %s, %s);",
         (segment_id, peak, rms, snr),
@@ -289,10 +327,10 @@ def analyze_and_store_features(
         "INSERT INTO sensos.birdnet_embeddings (segment_id, vector) VALUES (%s, %s);",
         (segment_id, embedding.tolist()),
     )
-    for label, score in top_scores.items():
+    for label, (score, likely) in top_scores.items():
         cur.execute(
-            "INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES (%s, %s, %s);",
-            (segment_id, label, score),
+            "INSERT INTO sensos.birdnet_scores (segment_id, label, score, likely) VALUES (%s, %s, %s, %s);",
+            (segment_id, label, score, likely),
         )
     cur.execute(
         "INSERT INTO sensos.score_statistics (segment_id, hill_number, simpson_index) VALUES (%s, %s, %s);",
