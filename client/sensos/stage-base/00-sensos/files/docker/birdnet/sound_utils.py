@@ -1,9 +1,11 @@
-import numpy as np
 import librosa
+import numpy as np
 import tflite_runtime.interpreter as tflite
 
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 from dataclasses import dataclass
+
+import datetime
 
 
 @dataclass
@@ -179,3 +181,62 @@ def scale_by_max_value(audio: np.ndarray) -> np.ndarray:
         return np.zeros_like(audio, dtype=np.float32)
     scale = max_val * (32768.0 / 32767.0)
     return (audio / scale).astype(np.float32)
+
+
+def invoke_birdnet_with_location(
+    audio: np.ndarray,
+    model: BirdNETModel,
+    meta_model: BirdNETModel,
+    latitude: float,
+    longitude: float,
+    date: datetime.date,
+) -> Tuple[np.ndarray, Dict[str, Tuple[float, Optional[float]]], float, float]:
+    """
+    Like invoke_birdnet, but also returns the locality likelihood ("likely" score) for each top label.
+    If latitude and longitude are both zero, the likely score is None.
+
+    Returns:
+        - Embedding vector
+        - Dict: label -> (audio_score, likely_score or None)
+        - Hill number
+        - Simpson index
+    """
+    # --- Standard BirdNET audio inference ---
+    input_data = np.expand_dims(audio, axis=0).astype(np.float32)
+    model.interpreter.set_tensor(model.input_details[0]["index"], input_data)
+    model.interpreter.invoke()
+    scores = model.interpreter.get_tensor(model.output_details[0]["index"])
+    embedding = model.interpreter.get_tensor(model.output_details[0]["index"] - 1)
+    scores_flat = flat_sigmoid(scores.flatten())
+    embedding_flat = embedding.flatten()
+    total = np.sum(scores_flat)
+    probs = scores_flat / total if total > 0 else np.zeros_like(scores_flat)
+    entropy = -np.sum(probs[probs > 0] * np.log2(probs[probs > 0]))
+
+    # --- Run meta-model for locality scores (unless lat/lon both zero) ---
+    likely_scores = None
+    if not (latitude == 0 and longitude == 0):
+        week = date.isocalendar()[1]
+        week = min(max(week, 1), 48)
+        sample = np.expand_dims(
+            np.array([latitude, longitude, week], dtype="float32"), 0
+        )
+        meta_model.interpreter.set_tensor(meta_model.input_details[0]["index"], sample)
+        meta_model.interpreter.invoke()
+        likely_scores = meta_model.interpreter.get_tensor(
+            meta_model.output_details[0]["index"]
+        )[0]
+
+    # --- Build combined top-5 dictionary ---
+    top_indices = np.argsort(scores_flat)[-5:][::-1]
+    top_scores = {}
+    for i in top_indices:
+        likely = float(likely_scores[i]) if likely_scores is not None else None
+        top_scores[model.labels[i]] = (float(scores_flat[i]), likely)
+
+    return (
+        embedding_flat,
+        top_scores,
+        float(2**entropy),
+        float(np.sum(probs**2)),
+    )
