@@ -1,17 +1,31 @@
 import os
 import time
-import shutil
 import psycopg
 import logging
-from psycopg.rows import dict_row
 from pathlib import Path
 from typing import Optional, Dict, Any, Set, List
-import numpy as np
 import soundfile as sf
 import traceback
 
+from db_utils import (
+    connect_with_retry,
+    wait_for_birdnet_table,
+    mark_segment_zeroed,
+    is_file_fully_zeroed,
+    mark_file_deleted,
+    has_new_segments,
+    mark_new_segments_processed,
+    zero_segments_below_threshold,
+)
 
-# --- Config & Logging ---
+from storage_utils import (
+    overwrite_segment_with_zeros,
+    delete_audio_file_from_disk,
+    get_disk_free_gb_and_percent,
+)
+
+
+# === CONFIG & LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("db-manager")
 
@@ -30,69 +44,7 @@ ENABLE_COMPRESSION = os.environ.get("SENSOS_ENABLE_COMPRESSION", "0").lower() in
     "yes",
 )
 
-
-def connect_with_retry() -> psycopg.Connection:
-    """Try to connect to Postgres with retry."""
-    while True:
-        try:
-            conn = psycopg.connect(**DB_PARAMS, row_factory=dict_row)
-            return conn
-        except Exception as e:
-            logger.warning(f"Waiting for DB connection: {e}")
-            time.sleep(5)
-
-
-def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
-    """Check if table exists in sensos schema."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'sensos' AND table_name = %s
-            )
-            """,
-            (table_name,),
-        )
-        row = cur.fetchone()
-        return row["exists"] if row else False
-
-
-def get_next_unchecked_segments(
-    conn: psycopg.Connection, batch_size: int = 100
-) -> List[Dict[str, Any]]:
-    """Fetch the next batch of unchecked segments."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT ag.id AS segment_id, af.file_path, af.id AS file_id,
-                   ag.channel, ag.start_frame, ag.end_frame
-            FROM sensos.audio_segments ag
-            JOIN sensos.audio_files af ON ag.file_id = af.id
-            WHERE NOT ag.checked
-              AND af.deleted = FALSE
-              AND af.file_path LIKE '%%.wav'
-            ORDER BY ag.start_frame
-            LIMIT %s
-            """,
-            (batch_size,),
-        )
-        return cur.fetchall()
-
-
-def get_birdnet_scores(
-    conn: psycopg.Connection, segment_id: int
-) -> List[Dict[str, Any]]:
-    """Fetch BirdNET scores for a segment."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT label, score FROM sensos.birdnet_scores
-            WHERE segment_id = %s
-            """,
-            (segment_id,),
-        )
-        return cur.fetchall()
+# === SEGMENT QUERIES & UTILITIES ===
 
 
 def should_zero_segment(scores: List[Dict[str, Any]]) -> bool:
@@ -114,53 +66,12 @@ def should_zero_segment(scores: List[Dict[str, Any]]) -> bool:
     return False
 
 
-def mark_segment_checked(conn: psycopg.Connection, seg: Dict[str, Any]) -> None:
-    """Mark segment as checked."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sensos.audio_segments SET checked = TRUE WHERE id = %s",
-            (seg["segment_id"],),
-        )
-        conn.commit()
-
-
-def mark_segment_zeroed(conn: psycopg.Connection, seg: Dict[str, Any]) -> None:
-    """Mark segment as zeroed (erased)."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sensos.audio_segments SET zeroed = TRUE WHERE id = %s",
-            (seg["segment_id"],),
-        )
-        conn.commit()
-
-
-def overwrite_segment_with_zeros(seg: Dict[str, Any]) -> bool:
-    """Overwrite the segment with zeros."""
-    full_path = AUDIO_BASE / seg["file_path"]
-
-    frame_count = seg["end_frame"] - seg["start_frame"]
-    if not full_path.exists():
-        logger.warning(f"Missing file on disk: {full_path}")
-        return False
-
-    try:
-        with sf.SoundFile(full_path, mode="r+") as f:
-            f.seek(seg["start_frame"])
-            zeros = np.zeros((frame_count, f.channels), dtype="float32")
-            f.write(zeros)
-            f.flush()
-        logger.info(
-            f'Wrote zeros to {seg["file_path"]} at frame {seg["start_frame"]} for {frame_count} frames'
-        )
-        return True
-    except Exception as e:
-        logger.error(f'Failed to zero segment in {seg["file_path"]}: {e}')
-        return False
+# === SEGMENT ZEROING, MERGING, & DELETION ===
 
 
 def zero_segment(conn, seg: Dict[str, Any]) -> Optional[int]:
-    if overwrite_segment_with_zeros(seg):
-        mark_segment_zeroed(conn, seg)
+    if overwrite_segment_with_zeros(seg, AUDIO_BASE):
+        mark_segment_zeroed(conn, seg["segment_id"])
         handle_fully_zeroed_file(conn, seg)
         return seg["file_id"]
     else:
@@ -168,151 +79,145 @@ def zero_segment(conn, seg: Dict[str, Any]) -> Optional[int]:
         return None
 
 
-def is_file_fully_zeroed(conn: psycopg.Connection, file_id: int) -> bool:
-    """Return True if all segments for file are zeroed."""
+def zero_human_segments(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT BOOL_AND(zeroed) AS all_zeroed
-            FROM sensos.audio_segments
-            WHERE file_id = %s
+            UPDATE sensos.audio_segments
+            SET zeroed = TRUE
+            WHERE id IN (
+                SELECT s2.id
+                FROM sensos.audio_segments s2
+                JOIN (
+                    SELECT s.file_id, s.channel, s.start_frame, s.end_frame
+                    FROM sensos.audio_segments s
+                    JOIN sensos.birdnet_scores b ON s.id = b.segment_id
+                    WHERE b.label ILIKE '%human%' AND b.score >= %s
+                ) as human
+                ON s2.file_id = human.file_id AND s2.channel = human.channel
+                    AND NOT (s2.end_frame <= human.start_frame OR s2.start_frame >= human.end_frame)
+            )
             """,
-            (file_id,),
+            (BIRDNET_SCORE_THRESHOLD,),
         )
-        result = cur.fetchone()
-        return result and result["all_zeroed"] is True
+        conn.commit()
+        logger.info("Zeroed out all segments overlapping human vocalizations.")
 
 
-def all_segments_checked(conn: psycopg.Connection, file_id: int) -> bool:
-    """Return True if all segments for file are checked."""
+def merge_segments_with_same_label(conn):
+    with conn.cursor() as cur:
+        # For each file/channel, get all non-zeroed segments and their top label/score
+        cur.execute(
+            """
+            SELECT s.id, s.file_id, s.channel, s.start_frame, s.end_frame,
+                (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_label,
+                (SELECT score FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_score
+            FROM sensos.audio_segments s
+            WHERE s.zeroed IS NOT TRUE
+            ORDER BY s.file_id, s.channel, s.start_frame
+        """
+        )
+        segs = cur.fetchall()
+
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for seg in segs:
+            groups[(seg["file_id"], seg["channel"], seg["top_label"])].append(seg)
+
+        for (file_id, channel, label), group in groups.items():
+            group.sort(key=lambda x: x["start_frame"])
+            run = []
+            for seg in group:
+                # Overlap or adjacency?
+                if not run or seg["start_frame"] <= run[-1]["end_frame"]:
+                    run.append(seg)
+                else:
+                    # Merge the current run if >1 segment
+                    if len(run) > 1:
+                        # Anchor is the segment with the highest top_score
+                        anchor = max(run, key=lambda s: s["top_score"])
+                        new_start = min(s["start_frame"] for s in run)
+                        new_end = max(s["end_frame"] for s in run)
+                        # Update anchor's bounds
+                        cur.execute(
+                            "UPDATE sensos.audio_segments SET start_frame = %s, end_frame = %s WHERE id = %s",
+                            (new_start, new_end, anchor["id"]),
+                        )
+                        # Delete all other segments in the run
+                        to_delete = tuple(
+                            s["id"] for s in run if s["id"] != anchor["id"]
+                        )
+                        if to_delete:
+                            cur.execute(
+                                f"DELETE FROM sensos.audio_segments WHERE id IN %s",
+                                (to_delete,),
+                            )
+                        conn.commit()
+                        logger.info(
+                            f"Merged {len(run)} segments (label={label}) into anchor {anchor['id']} (score={anchor['top_score']})"
+                        )
+                    run = [seg]
+            # Handle last run
+            if len(run) > 1:
+                anchor = max(run, key=lambda s: s["top_score"])
+                new_start = min(s["start_frame"] for s in run)
+                new_end = max(s["end_frame"] for s in run)
+                cur.execute(
+                    "UPDATE sensos.audio_segments SET start_frame = %s, end_frame = %s WHERE id = %s",
+                    (new_start, new_end, anchor["id"]),
+                )
+                to_delete = tuple(s["id"] for s in run if s["id"] != anchor["id"])
+                if to_delete:
+                    cur.execute(
+                        f"DELETE FROM sensos.audio_segments WHERE id IN %s",
+                        (to_delete,),
+                    )
+                conn.commit()
+                logger.info(
+                    f"Merged {len(run)} segments (label={label}) into anchor {anchor['id']} (score={anchor['top_score']})"
+                )
+
+
+def delete_fully_zeroed_files(conn):
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT BOOL_AND(checked) AS all_checked
-            FROM sensos.audio_segments
-            WHERE file_id = %s
-            """,
-            (file_id,),
+            SELECT af.id, af.file_path
+            FROM sensos.audio_files af
+            WHERE af.deleted = FALSE
+            AND NOT EXISTS (
+                SELECT 1 FROM sensos.audio_segments s WHERE s.file_id = af.id AND s.zeroed = FALSE
+            )
+        """
         )
-        result = cur.fetchone()
-        return result and result["all_checked"] is True
-
-
-def mark_file_deleted(conn: psycopg.Connection, file_id: int) -> None:
-    """Mark file as deleted in DB."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE id = %s",
-            (file_id,),
-        )
+        rows = cur.fetchall()
+        for row in rows:
+            path = AUDIO_BASE / row["file_path"]
+            if path.exists():
+                try:
+                    path.unlink()
+                    logger.info(f"Deleted file {path}")
+                except Exception as e:
+                    logger.error(f"Could not delete {path}: {e}")
+            cur.execute(
+                "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE id = %s",
+                (row["id"],),
+            )
         conn.commit()
 
 
-def delete_audio_file_from_disk(seg: Dict[str, Any]) -> None:
-    """Delete audio file from disk."""
-    file_path = AUDIO_BASE / seg["file_path"]
-    if file_path.exists():
-        try:
-            file_path.unlink()
-            logger.info(f"Deleted fully zeroed file: {file_path}")
-        except Exception as e:
-            logger.error(f"Failed to delete zeroed file {file_path}: {e}")
-
-
-def compress_file_if_done(
-    conn: psycopg.Connection, file_id: int, file_path: str
-) -> None:
-    """Compress .wav to .flac and update DB, if all segments checked."""
-    wav_path = AUDIO_BASE / file_path
-    flac_path = wav_path.with_suffix(".flac")
-    if not wav_path.exists() or wav_path.suffix.lower() != ".wav":
-        return
-
-    if all_segments_checked(conn, file_id):
-        try:
-            data, sr = sf.read(wav_path)
-            sf.write(flac_path, data, sr, format="FLAC")
-            wav_path.unlink()
-            new_rel_path = flac_path.relative_to(AUDIO_BASE).as_posix()
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE sensos.audio_files SET file_path = %s WHERE id = %s",
-                    (new_rel_path, file_id),
-                )
-                conn.commit()
-            logger.info(f"Compressed to FLAC and updated DB: {new_rel_path}")
-        except Exception as e:
-            logger.error(f"Failed to compress {wav_path} to FLAC: {e}")
+# === FILE & SEGMENT COMPRESSION ===
 
 
 def handle_fully_zeroed_file(conn: psycopg.Connection, seg: Dict[str, Any]) -> None:
     """Delete file from disk and mark as deleted in DB if all segments zeroed."""
     if is_file_fully_zeroed(conn, seg["file_id"]):
-        delete_audio_file_from_disk(seg)
+        delete_audio_file_from_disk(seg, AUDIO_BASE)
         mark_file_deleted(conn, seg["file_id"])
 
 
-def handle_compression_for_files(conn: psycopg.Connection, file_ids: Set[int]) -> None:
-    """Try to compress to FLAC for each affected file."""
-    if not ENABLE_COMPRESSION:
-        logger.info("Compression is disabled by config. Skipping FLAC compression.")
-        return
-    for file_id in file_ids:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT file_path FROM sensos.audio_files WHERE id = %s AND deleted = FALSE",
-                (file_id,),
-            )
-            row = cur.fetchone()
-            if row:
-                compress_file_if_done(conn, file_id, row["file_path"])
-
-
-def process_segment(conn: psycopg.Connection, seg: Dict[str, Any]) -> Optional[int]:
-    """
-    Inspect one segment:
-    - Only mark as checked if scores exist.
-    - If zeroing is needed, zero the segment and mark as zeroed.
-    - Return file_id if erased, else None.
-    """
-    if seg.get("zeroed"):
-        mark_segment_checked(conn, seg)
-        logger.warning(
-            f"Segment {seg['segment_id']} is zeroed but reports not checked."
-        )
-        return None
-    scores = get_birdnet_scores(conn, seg["segment_id"])
-    if not scores:
-        logger.warning(
-            f"Segment {seg['segment_id']} has no BirdNET scores; skipping for now."
-        )
-        return None
-    mark_segment_checked(conn, seg)
-    if should_zero_segment(scores):
-        return zero_segment(conn, seg)
-    return None
-
-
-def wait_for_birdnet_table(conn: psycopg.Connection) -> None:
-    """Wait for BirdNET table to exist before processing."""
-    while not table_exists(conn, "birdnet_scores"):
-        logger.info("Waiting for sensos.birdnet_scores table to be created.")
-        time.sleep(60)
-
-
-def get_disk_free_gb_and_percent(path: str) -> Optional[Dict[str, float]]:
-    try:
-        total, used, free = shutil.disk_usage(path)
-        free_gb = free / (1024**3)
-        percent_free = 100 * free / total if total else 0
-        return {
-            "disk_available_gb": round(free_gb, 2),
-            "percent_free": round(percent_free, 2),
-            "total_gb": round(total / (1024**3), 2),
-        }
-    except Exception as e:
-        logger.warning(f"Could not get disk usage for {path}: {e}")
-        return None
+# === EMERGENCY CLEANUP / REDUNDANT ZEROING ===
 
 
 def get_richest_week(conn):
@@ -441,36 +346,39 @@ def zero_redundant_segments(conn, min_free_gb=32):
         logger.info("Pass complete. Checking disk again.")
 
 
-def main_loop() -> None:
-    """Main infinite processing loop."""
+# === MAIN LOOPS ===
+
+
+def batch_postprocess(conn):
+    logger.info("Step 1: Zero out human vocal (and overlapping) segments.")
+    zero_human_segments(conn)
+
+    logger.info(
+        "Step 2: Merge overlapping/adjacent segments with same top label (anchor=highest score)."
+    )
+    merge_segments_with_same_label(conn)
+
+    logger.info("Step 3: Zero out segments below BirdNET score threshold.")
+    zero_segments_below_threshold(conn, BIRDNET_SCORE_THRESHOLD)
+
+    logger.info("Step 4: Delete fully zeroed files from filesystem and DB.")
+    delete_fully_zeroed_files(conn)
+
+
+def main_loop():
     while True:
         try:
-            with connect_with_retry() as conn:
+            with connect_with_retry(DB_PARAMS) as conn:
                 wait_for_birdnet_table(conn)
-
-                segments = get_next_unchecked_segments(conn, batch_size=100)
-                if not segments:
-                    logger.info("No unchecked segments to process.")
+                # Optionally, only fetch truly new/unprocessed segments
+                if has_new_segments(conn):  # You'll need a utility for this!
+                    batch_postprocess(conn)
+                    mark_new_segments_processed(conn)
+                else:
+                    logger.info("No new segments. Sleeping...")
                     time.sleep(60)
-                    continue
-
-                touched_file_ids: Set[int] = set()
-                for seg in segments:
-                    file_id = process_segment(conn, seg)
-                    if file_id:
-                        touched_file_ids.add(file_id)
-
-                handle_compression_for_files(conn, touched_file_ids)
-
-                disk = get_disk_free_gb_and_percent(AUDIO_BASE)
-                if disk and disk["disk_available_gb"] < 32:
-                    logger.warning(
-                        f"Disk space low ({disk['disk_available_gb']} GB left). Starting emergency cleanup."
-                    )
-                    zero_redundant_segments(conn, min_free_gb=64)
-
         except Exception as e:
-            logger.error(f"Error: {e!r} ({type(e)})")
+            logger.error(f"Error: {e!r}")
             logger.error(traceback.format_exc())
             time.sleep(60)
 
