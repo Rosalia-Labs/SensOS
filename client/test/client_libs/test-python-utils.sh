@@ -5,7 +5,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Absolute path to the /sensos/lib directory containing utils.py and test-utils.py
-SENSOS_LIB_DIR="$SCRIPT_DIR/../sensos/stage-base/00-sensos/files/lib"
+SENSOS_LIB_DIR="$SCRIPT_DIR/../../sensos/stage-base/00-sensos/files/lib"
 
 # Run in a transient Docker container
 docker run --rm \

@@ -6,6 +6,7 @@ from db_utils import mark_segments_processed
 import numpy as np
 import soundfile as sf
 from pathlib import Path
+from unittest import mock
 
 DB_PARAMS = {
     "dbname": "testdb",
@@ -208,7 +209,90 @@ def test_batch_postprocess_and_merging():
             print("Merged segment from 0 to 2000:", merged)
 
 
+def seed_thinnable_data(conn):
+    make_test_audio("thin1.wav", nframes=4000, nchannels=1, sr=48000)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO sensos.audio_files (file_path) VALUES ('thin1.wav') RETURNING id;"
+        )
+        file_id = cur.fetchone()["id"]
+        # Insert 3 overlapping segments with the same label, and one with a different label
+        # This will make the "cardinal" label most common, lowest score gets zeroed first
+        segments = []
+        for start, end, score in [(0, 1000, 0.1), (1000, 2000, 0.3), (2000, 3000, 0.2)]:
+            cur.execute(
+                """
+                INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame, processed, zeroed)
+                VALUES (%s, 0, %s, %s, FALSE, FALSE)
+                RETURNING id;
+                """,
+                (file_id, start, end),
+            )
+            seg_id = cur.fetchone()["id"]
+            segments.append(seg_id)
+            cur.execute(
+                """
+                INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES
+                (%s, 'cardinal', %s)
+                """,
+                (seg_id, score),
+            )
+        # Add a different label
+        cur.execute(
+            """
+            INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame, processed, zeroed)
+            VALUES (%s, 0, 3000, 4000, FALSE, FALSE)
+            RETURNING id;
+            """,
+            (file_id,),
+        )
+        other_seg = cur.fetchone()["id"]
+        cur.execute(
+            """
+            INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES
+            (%s, 'bluejay', 0.9)
+            """,
+            (other_seg,),
+        )
+        conn.commit()
+    return segments + [other_seg]
+
+
+def test_thinning_logic():
+    with psycopg.connect(**DB_PARAMS) as conn:
+        conn.row_factory = psycopg.rows.dict_row
+
+        setup_schema(conn)
+        seg_ids = seed_thinnable_data(conn)
+
+        # Patch get_disk_free_mb to always trigger thinning!
+        import manage_db
+
+        with mock.patch.object(manage_db, "get_disk_free_mb", return_value=0.0):
+            manage_db.batch_postprocess(conn, seg_ids)
+            mark_segments_processed(conn, seg_ids)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, zeroed, processed FROM sensos.audio_segments ORDER BY id;"
+            )
+            all_segs = cur.fetchall()
+            print("Thinning segments:", all_segs)
+
+            # The lowest-score "cardinal" segment (score=0.1) should be zeroed first
+            # The rest should remain unzeroed (unless you batch, then next lowest would go too)
+            cardinal_zeroed = [
+                row for row in all_segs if row["zeroed"] and row["id"] != seg_ids[3]
+            ]
+            assert (
+                len(cardinal_zeroed) == 1
+            ), "Only one cardinal segment should be zeroed in first batch"
+            assert all(row["processed"] for row in all_segs), "All should be processed"
+            print("Thinning test passed, segment zeroed:", cardinal_zeroed[0]["id"])
+
+
 if __name__ == "__main__":
     test_batch_postprocess()
     test_batch_postprocess_and_merging()
+    test_thinning_logic()
     print("All tests passed.")

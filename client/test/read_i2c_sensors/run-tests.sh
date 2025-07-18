@@ -2,8 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_FILE="$SCRIPT_DIR/../sensos/stage-base/00-sensos/files/service_scripts/read-i2c-sensors.py"
-LIB_DIR="$SCRIPT_DIR/../sensos/stage-base/00-sensos/files/lib"
+SCRIPT_FILE="$SCRIPT_DIR/../../sensos/stage-base/00-sensos/files/service_scripts/read-i2c-sensors.py"
+LIB_DIR="$SCRIPT_DIR/../../sensos/stage-base/00-sensos/files/lib"
 
 docker run --rm \
   -v "$SCRIPT_FILE":/orig/read-i2c-sensors.py:ro \

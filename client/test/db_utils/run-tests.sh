@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PY_SOURCE="$SCRIPT_DIR/../sensos/stage-base/00-sensos/files/docker/db_manager/db_utils.py"
+PY_SOURCE="$SCRIPT_DIR/../../sensos/stage-base/00-sensos/files/docker/db_manager/db_utils.py"
 NETWORK_NAME="testnet"
 
 # Clean up containers/network on exit

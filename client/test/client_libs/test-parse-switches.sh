@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LIB_DIR="$SCRIPT_DIR/../sensos/stage-base/00-sensos/files/lib"
+LIB_DIR="$SCRIPT_DIR/../../sensos/stage-base/00-sensos/files/lib"
 
 docker run --rm \
   -v "$LIB_DIR:/sensos/lib:ro" \
