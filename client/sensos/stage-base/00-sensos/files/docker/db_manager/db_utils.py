@@ -110,16 +110,38 @@ def mark_new_segments_processed(conn):
         conn.commit()
 
 
-def zero_segments_below_threshold(conn, threshold: float):
+def get_unprocessed_segment_ids(conn) -> list:
+    """Return a list of segment IDs that are unprocessed (processed=FALSE)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM sensos.audio_segments WHERE processed = FALSE")
+        return [row[0] for row in cur.fetchall()]
+
+
+def mark_segments_processed(conn, segment_ids):
+    """Mark the provided segment IDs as processed."""
+    if not segment_ids:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sensos.audio_segments SET processed = TRUE WHERE id = ANY(%s)",
+            (segment_ids,),
+        )
+        conn.commit()
+
+
+def zero_segments_below_threshold(conn, threshold: float, segment_ids):
     """
-    Zero out all segments whose *highest* BirdNET score is below the given threshold and which are not already zeroed.
+    Zero out all *unprocessed* segments in the snapshot whose highest BirdNET score is below the given threshold.
     """
+    if not segment_ids:
+        return
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE sensos.audio_segments
             SET zeroed = TRUE
-            WHERE zeroed = FALSE
+            WHERE zeroed = FALSE AND processed = FALSE
+              AND id = ANY(%s)
               AND id IN (
                   SELECT s.id
                   FROM sensos.audio_segments s
@@ -128,10 +150,10 @@ def zero_segments_below_threshold(conn, threshold: float):
                       FROM sensos.birdnet_scores
                       GROUP BY segment_id
                   ) maxes ON s.id = maxes.segment_id
-                  WHERE maxes.max_score < %s
+                  WHERE maxes.max_score < %s AND s.id = ANY(%s)
               )
             """,
-            (threshold,),
+            (segment_ids, threshold, segment_ids),
         )
         conn.commit()
         print(f"Zeroed all segments below BirdNET score threshold ({threshold})")

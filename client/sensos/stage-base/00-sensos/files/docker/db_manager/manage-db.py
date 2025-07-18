@@ -10,10 +10,11 @@ import traceback
 from db_utils import (
     connect_with_retry,
     wait_for_birdnet_table,
-    has_new_segments,
-    mark_new_segments_processed,
+    get_unprocessed_segment_ids,
+    mark_segments_processed,
     zero_segments_below_threshold,
 )
+
 
 # === CONFIG & LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -38,13 +39,17 @@ ENABLE_COMPRESSION = os.environ.get("SENSOS_ENABLE_COMPRESSION", "0").lower() in
 # === SEGMENT ZEROING, MERGING, & DELETION ===
 
 
-def zero_human_segments(conn):
+def zero_human_segments(conn, segment_ids):
+    if not segment_ids:
+        return
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE sensos.audio_segments
             SET zeroed = TRUE
-            WHERE id IN (
+            WHERE processed = FALSE
+              AND id = ANY(%s)
+              AND id IN (
                 SELECT s2.id
                 FROM sensos.audio_segments s2
                 JOIN (
@@ -52,58 +57,55 @@ def zero_human_segments(conn):
                     FROM sensos.audio_segments s
                     JOIN sensos.birdnet_scores b ON s.id = b.segment_id
                     WHERE b.label ILIKE '%human%' AND b.score >= %s
+                      AND s.id = ANY(%s)
                 ) as human
                 ON s2.file_id = human.file_id AND s2.channel = human.channel
                     AND NOT (s2.end_frame <= human.start_frame OR s2.start_frame >= human.end_frame)
+                WHERE s2.id = ANY(%s)
             )
             """,
-            (BIRDNET_SCORE_THRESHOLD,),
+            (segment_ids, BIRDNET_SCORE_THRESHOLD, segment_ids, segment_ids),
         )
         conn.commit()
         logger.info("Zeroed out all segments overlapping human vocalizations.")
 
 
-def merge_segments_with_same_label(conn):
+def merge_segments_with_same_label(conn, segment_ids):
+    if not segment_ids:
+        return
     with conn.cursor() as cur:
-        # For each file/channel, get all non-zeroed segments and their top label/score
         cur.execute(
             """
             SELECT s.id, s.file_id, s.channel, s.start_frame, s.end_frame,
                 (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_label,
                 (SELECT score FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_score
             FROM sensos.audio_segments s
-            WHERE s.zeroed IS NOT TRUE
+            WHERE s.zeroed IS NOT TRUE AND s.processed = FALSE AND s.id = ANY(%s)
             ORDER BY s.file_id, s.channel, s.start_frame
-        """
+            """,
+            (segment_ids,),
         )
         segs = cur.fetchall()
-
         from collections import defaultdict
 
         groups = defaultdict(list)
         for seg in segs:
             groups[(seg["file_id"], seg["channel"], seg["top_label"])].append(seg)
-
         for (file_id, channel, label), group in groups.items():
             group.sort(key=lambda x: x["start_frame"])
             run = []
             for seg in group:
-                # Overlap or adjacency?
                 if not run or seg["start_frame"] <= run[-1]["end_frame"]:
                     run.append(seg)
                 else:
-                    # Merge the current run if >1 segment
                     if len(run) > 1:
-                        # Anchor is the segment with the highest top_score
                         anchor = max(run, key=lambda s: s["top_score"])
                         new_start = min(s["start_frame"] for s in run)
                         new_end = max(s["end_frame"] for s in run)
-                        # Update anchor's bounds
                         cur.execute(
                             "UPDATE sensos.audio_segments SET start_frame = %s, end_frame = %s WHERE id = %s",
                             (new_start, new_end, anchor["id"]),
                         )
-                        # Delete all other segments in the run
                         to_delete = tuple(
                             s["id"] for s in run if s["id"] != anchor["id"]
                         )
@@ -117,7 +119,6 @@ def merge_segments_with_same_label(conn):
                             f"Merged {len(run)} segments (label={label}) into anchor {anchor['id']} (score={anchor['top_score']})"
                         )
                     run = [seg]
-            # Handle last run
             if len(run) > 1:
                 anchor = max(run, key=lambda s: s["top_score"])
                 new_start = min(s["start_frame"] for s in run)
@@ -169,10 +170,10 @@ def delete_fully_zeroed_files(conn):
 # === MAIN LOOPS ===
 
 
-def batch_postprocess(conn):
-    zero_human_segments(conn)
-    merge_segments_with_same_label(conn)
-    zero_segments_below_threshold(conn, BIRDNET_SCORE_THRESHOLD)
+def batch_postprocess(conn, segment_ids):
+    zero_human_segments(conn, segment_ids)
+    merge_segments_with_same_label(conn, segment_ids)
+    zero_segments_below_threshold(conn, BIRDNET_SCORE_THRESHOLD, segment_ids)
     delete_fully_zeroed_files(conn)
 
 
@@ -181,9 +182,10 @@ def main_loop():
         try:
             with connect_with_retry(DB_PARAMS) as conn:
                 wait_for_birdnet_table(conn)
-                if has_new_segments(conn):
-                    batch_postprocess(conn)
-                    mark_new_segments_processed(conn)
+                segment_ids = get_unprocessed_segment_ids(conn)
+                if segment_ids:
+                    batch_postprocess(conn, segment_ids)
+                    mark_segments_processed(conn, segment_ids)
                 else:
                     logger.info("No new segments. Sleeping...")
                     time.sleep(60)
