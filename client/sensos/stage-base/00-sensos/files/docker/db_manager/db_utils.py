@@ -9,6 +9,7 @@ def connect_with_retry(DB_PARAMS: dict) -> psycopg.Connection:
     while True:
         try:
             conn = psycopg.connect(**DB_PARAMS)
+            conn.row_factory = psycopg.rows.dict_row
             return conn
         except Exception as e:
             print(f"Waiting for DB connection: {e}")

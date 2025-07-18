@@ -17,5 +17,5 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Add main script
-COPY manage-db.py .
-CMD ["python", "manage-db.py"]
+COPY manage_db.py .
+CMD ["python", "manage_db.py"]

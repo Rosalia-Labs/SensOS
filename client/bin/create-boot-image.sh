@@ -116,6 +116,7 @@ try_rm_rf_contents() {
     fi
 }
 
+
 echo "Copying custom stage to pi-gen..."
 try_rm_rf "$STAGE_DST"
 cp -R "$STAGE_SRC" "$STAGE_DST"

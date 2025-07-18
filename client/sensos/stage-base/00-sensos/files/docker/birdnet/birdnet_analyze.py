@@ -340,6 +340,7 @@ def analyze_and_store_features(
 
 
 def is_valid_metadata(file_info: Tuple[int, str, Path, Dict[str, Any]]) -> bool:
+    file_path = None
     try:
         _, file_path, abs_path, meta = file_info
         info = sf.info(abs_path)

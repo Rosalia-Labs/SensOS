@@ -170,9 +170,10 @@ def process_files(cur) -> int:
 
 def process_file(cursor, path: Path):
     rel_input = path.relative_to(QUEUED)
-    output_name = path.stem + ".wav"
+    output_name = path.stem + ".flac"
     new_path = CATALOGED / rel_input.parent / output_name
     new_rel = new_path.relative_to(ROOT).as_posix()
+    tmp_path = None
 
     cursor.execute("SELECT 1 FROM sensos.audio_files WHERE file_path = %s", (new_rel,))
     if cursor.fetchone():
@@ -198,14 +199,13 @@ def process_file(cursor, path: Path):
         tmp_path = new_path.with_suffix(".tmp")
         data, sr = sf.read(path, always_2d=True)
         tmp_path.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(tmp_path, data, sr, format="WAV", subtype=info.subtype)
+        sf.write(tmp_path, data, sr, format="FLAC")
         tmp_path.replace(new_path)
 
-        # Re-read metadata from the final WAV file
         try:
             final_info = sf.info(new_path)
         except Exception as e:
-            logging.error(f"Could not read WAV metadata from {new_path}: {e}")
+            logging.error(f"Could not read FLAC metadata from {new_path}: {e}")
             return
 
         os.remove(path)
@@ -233,7 +233,7 @@ def process_file(cursor, path: Path):
 
     except Exception as e:
         logging.error(f"Failed processing {path}: {e}")
-        if "tmp_path" in locals() and tmp_path.exists():
+        if tmp_path is not None and tmp_path.exists():
             try:
                 tmp_path.unlink()
             except Exception:
