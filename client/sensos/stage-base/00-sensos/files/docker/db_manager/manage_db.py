@@ -135,6 +135,28 @@ def zero_human_segments(conn, segment_ids):
 def merge_segments_with_same_label(conn, segment_ids):
     if not segment_ids:
         return
+
+    def _merge_segment_run(cur, run, label):
+        if len(run) <= 1:
+            return
+        anchor = max(run, key=lambda s: s["top_score"])
+        new_start = min(s["start_frame"] for s in run)
+        new_end = max(s["end_frame"] for s in run)
+        to_delete = [s["id"] for s in run if s["id"] != anchor["id"]]
+        if to_delete:
+            placeholders = ",".join(["%s"] * len(to_delete))
+            cur.execute(
+                f"DELETE FROM sensos.audio_segments WHERE id IN ({placeholders})",
+                to_delete,
+            )
+        cur.execute(
+            "UPDATE sensos.audio_segments SET start_frame = %s, end_frame = %s WHERE id = %s",
+            (new_start, new_end, anchor["id"]),
+        )
+        logger.info(
+            f"Merged {len(run)} segments (label={label}) into anchor {anchor['id']} (score={anchor['top_score']})"
+        )
+
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -152,6 +174,7 @@ def merge_segments_with_same_label(conn, segment_ids):
         groups = defaultdict(list)
         for seg in segs:
             groups[(seg["file_id"], seg["channel"], seg["top_label"])].append(seg)
+
         for (file_id, channel, label), group in groups.items():
             group.sort(key=lambda x: x["start_frame"])
             run = []
@@ -159,44 +182,11 @@ def merge_segments_with_same_label(conn, segment_ids):
                 if not run or seg["start_frame"] <= run[-1]["end_frame"]:
                     run.append(seg)
                 else:
-                    if len(run) > 1:
-                        anchor = max(run, key=lambda s: s["top_score"])
-                        new_start = min(s["start_frame"] for s in run)
-                        new_end = max(s["end_frame"] for s in run)
-                        cur.execute(
-                            "UPDATE sensos.audio_segments SET start_frame = %s, end_frame = %s WHERE id = %s",
-                            (new_start, new_end, anchor["id"]),
-                        )
-                        to_delete = tuple(
-                            s["id"] for s in run if s["id"] != anchor["id"]
-                        )
-                        if to_delete:
-                            cur.execute(
-                                f"DELETE FROM sensos.audio_segments WHERE id IN %s",
-                                (to_delete,),
-                            )
-                        conn.commit()
-                        logger.info(
-                            f"Merged {len(run)} segments (label={label}) into anchor {anchor['id']} (score={anchor['top_score']})"
-                        )
+                    _merge_segment_run(cur, run, label)
+                    conn.commit()
                     run = [seg]
-            if len(run) > 1:
-                anchor = max(run, key=lambda s: s["top_score"])
-                new_start = min(s["start_frame"] for s in run)
-                new_end = max(s["end_frame"] for s in run)
-                cur.execute(
-                    "UPDATE sensos.audio_segments SET start_frame = %s, end_frame = %s WHERE id = %s",
-                    (new_start, new_end, anchor["id"]),
-                )
-                to_delete = tuple(s["id"] for s in run if s["id"] != anchor["id"])
-                if to_delete:
-                    placeholders = ",".join(["%s"] * len(to_delete))
-                    sql = f"DELETE FROM sensos.audio_segments WHERE id IN ({placeholders})"
-                    cur.execute(sql, to_delete)
-                conn.commit()
-                logger.info(
-                    f"Merged {len(run)} segments (label={label}) into anchor {anchor['id']} (score={anchor['top_score']})"
-                )
+            _merge_segment_run(cur, run, label)
+            conn.commit()
 
 
 def delete_fully_zeroed_files(conn):
@@ -390,6 +380,11 @@ def main_loop(conn):
         except Exception as e:
             logger.error(f"Error: {e!r}")
             logger.error(traceback.format_exc())
+            try:
+                conn.rollback()
+                logger.info("Rolled back failed transaction.")
+            except Exception as rollback_error:
+                logger.error(f"Error during rollback: {rollback_error}")
             time.sleep(5 if TESTING else 60)
 
 

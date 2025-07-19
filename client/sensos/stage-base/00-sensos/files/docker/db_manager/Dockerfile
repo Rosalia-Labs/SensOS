@@ -12,10 +12,11 @@ RUN apt-get update && \
 RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
+# Install dependencies first to leverage cache
 COPY requirements.txt .
-
 RUN pip install -r requirements.txt
 
-# Add main script
+# Copy source code *after* installing dependencies
 COPY manage_db.py db_utils.py ./
+
 CMD ["python", "manage_db.py"]
