@@ -1,0 +1,2 @@
+#!/bin/bash
+exec docker exec -ti sensos-client-database psql -U postgres
