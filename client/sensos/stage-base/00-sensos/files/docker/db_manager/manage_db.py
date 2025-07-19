@@ -20,7 +20,6 @@ from db_utils import (
 TESTING = False
 MAX_CYCLES = 5
 
-# === CONFIG & LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("db-manager")
 
@@ -51,7 +50,7 @@ def get_disk_free_mb(path: Path) -> Optional[float]:
 
 
 def zero_segments_by_file(
-    segments: List[Dict[str, Any]], audio_base: Path
+    segments: List[Dict[str, Any]], audio_base: Path, conn
 ) -> List[int]:
 
     zeroed_ids = []
@@ -62,7 +61,19 @@ def zero_segments_by_file(
     for file_path, segs in by_file.items():
         if not file_path.exists():
             logger.warning(f"Audio file not found: {file_path}")
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE sensos.audio_files SET deleted = TRUE WHERE id = %s",
+                        (segs[0]["file_id"],),
+                    )
+                    conn.commit()
+                    logger.info(f"Marked file as deleted in DB: {segs[0]['file_path']}")
+            except Exception as e:
+                logger.error(f"Failed to mark file deleted in DB: {file_path} — {e}")
+                conn.rollback()
             continue
+
         if TESTING:
             logger.info(
                 f"[TESTING] Would zero {len(segs)} segments in {file_path.name}"
@@ -111,7 +122,7 @@ def zero_human_segments(conn, segment_ids):
     if not segments:
         return
 
-    zeroed_ids = zero_segments_by_file([dict(s) for s in segments], AUDIO_BASE)
+    zeroed_ids = zero_segments_by_file([dict(s) for s in segments], AUDIO_BASE, conn)
 
     if zeroed_ids:
         with conn.cursor() as cur:
@@ -327,7 +338,7 @@ def thin_data_until_disk_usage_ok(
 
         logger.info(f"Identified {len(segments)} segments for thinning.")
 
-        zeroed_ids = zero_segments_by_file(segments, AUDIO_BASE)
+        zeroed_ids = zero_segments_by_file(segments, AUDIO_BASE, conn)
 
         if zeroed_ids:
             with conn.cursor() as cur:

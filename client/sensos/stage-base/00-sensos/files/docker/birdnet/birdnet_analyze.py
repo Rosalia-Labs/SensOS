@@ -182,15 +182,17 @@ def get_next_file(cur: psycopg.Cursor) -> Optional[Tuple[int, str]]:
     return cur.fetchone()
 
 
-def fetch_metadata(cur: psycopg.Cursor, file_id: int) -> Tuple[Path, Dict[str, Any]]:
+def fetch_metadata(
+    cur: psycopg.Cursor, file_id: int
+) -> Optional[Tuple[Path, Dict[str, Any]]]:
     cur.execute("SELECT file_path FROM sensos.audio_files WHERE id = %s;", (file_id,))
     row = cur.fetchone()
     if row is None:
-        raise ValueError(f"No file entry found for id {file_id}")
+        return None
+
     (file_path,) = row
     path = CATALOGED / Path(file_path).relative_to("cataloged")
-    if not path.exists():
-        raise FileNotFoundError(f"File not found: {path}")
+
     info = sf.info(path)
     return path, {
         "channels": info.channels,
@@ -207,8 +209,13 @@ def get_file_and_metadata(
     file_entry = get_next_file(cur)
     if not file_entry:
         return None
+
     file_id, file_path = file_entry
-    abs_path, meta = fetch_metadata(cur, file_id)
+    result = fetch_metadata(cur, file_id)
+    if result is None:
+        return None
+
+    abs_path, meta = result
     return file_id, file_path, abs_path, meta
 
 
@@ -363,28 +370,45 @@ def main() -> None:
             with psycopg.connect(DB_PARAMS) as conn:
                 with conn.cursor() as cur:
                     file_info = get_file_and_metadata(cur)
+
                     if file_info is None:
                         logger.info("No unprocessed files found. Sleeping 60s...")
                         time.sleep(60)
                         continue
+
+                    file_id, file_path, abs_path, meta = file_info
+
+                    if not abs_path.exists():
+                        logger.warning(f"File missing from disk: {abs_path}")
+                        cur.execute(
+                            "UPDATE sensos.audio_files SET deleted = TRUE WHERE id = %s",
+                            (file_id,),
+                        )
+                        conn.commit()
+                        continue
+
                     if is_valid_metadata(file_info):
                         process_file(cur, file_info)
                     else:
-                        _, file_path, *_ = file_info
                         try:
-                            path = CATALOGED / Path(file_path).relative_to("cataloged")
-                            os.unlink(path)
+                            abs_path.unlink(missing_ok=True)
                             cur.execute(
-                                "DELETE FROM sensos.audio_files WHERE file_path = %s",
-                                (file_path,),
+                                "DELETE FROM sensos.audio_files WHERE id = %s",
+                                (file_id,),
+                            )
+                            logger.warning(
+                                f"Deleted DB record for {file_path} due to invalid metadata"
                             )
                             conn.commit()
                             logger.warning(
-                                f"Deleted invalid file and DB row for {file_path}"
+                                f"Marked invalid file as deleted: {file_path}"
                             )
                         except Exception as e:
-                            logger.error(f"Failed to clean up {file_path}: {e}")
+                            logger.error(
+                                f"Failed to mark invalid file deleted: {file_path} — {e}"
+                            )
                             conn.rollback()
+
         except Exception as e:
             logger.exception("❌ Failed to process file. Rolled back.")
             time.sleep(10)
