@@ -29,7 +29,7 @@ def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
             (table_name,),
         )
         row = cur.fetchone()
-        return row[0] if row else False
+        return row["exists"] if row else False
 
 
 def wait_for_birdnet_table(conn: psycopg.Connection) -> None:
