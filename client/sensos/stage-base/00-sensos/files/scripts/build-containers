@@ -11,6 +11,10 @@ load_defaults /sensos/etc/defaults.conf "$script_name"
 
 # Register CLI options
 register_option --local-only LOCAL_ONLY "Restrict to local images only (do not pull from network)" "false"
+register_option --force-rebuild FORCE_REBUILD "Force rebuild of all images, even if they already exist" "false"
+register_option --no-cache NO_CACHE "Pass --no-cache to docker build (do not use build cache)" "false"
+register_option --parallel PARALLEL "Max parallel builds (0 = no parallelism)" "0"
+register_option --only ONLY "Build only the specified image (e.g., sensos-client-foo)" ""
 
 parse_switches "$script_name" "$@"
 
@@ -56,21 +60,76 @@ elif [[ "$LOCAL_ONLY" == "false" ]]; then
     OFFLINE=false
 fi
 
+echo "[DEBUG] FORCE_REBUILD=$FORCE_REBUILD"
+echo "[DEBUG] NO_CACHE=$NO_CACHE"
+echo "[DEBUG] ONLY=$ONLY"
+echo "[DEBUG] PARALLEL=$PARALLEL"
+
+build_command() {
+    local image_name="$1"
+    local docker_dir="$2"
+    local -a build_args=()
+    [[ "$NO_CACHE" == "true" ]] && build_args+=(--no-cache)
+    printf 'docker build %s -t %q %q\n' "${build_args[*]}" "$image_name" "$docker_dir"
+}
+
+run_builds() {
+    local -a commands=("$@")
+    if [[ "$PARALLEL" -gt 0 ]]; then
+        printf '%s\n' "${commands[@]}" | xargs -L1 -P "$PARALLEL" -I CMD bash -c 'CMD'
+    else
+        for cmd in "${commands[@]}"; do
+            bash -c "$cmd"
+        done
+    fi
+}
+
+rebuild_all_images() {
+    local -a commands=()
+    while IFS= read -r docker_dir; do
+        image_name="sensos-client-$(basename "$docker_dir" | tr '_' '-')"
+        [[ -n "$ONLY" && "$image_name" != "$ONLY" ]] && continue
+        echo "[BUILD] Queuing rebuild: $image_name from $docker_dir"
+        commands+=("$(build_command "$image_name" "$docker_dir")")
+    done < <(find . -type f -name 'Dockerfile' -exec dirname {} \;)
+    run_builds "${commands[@]}"
+}
+
+build_missing_images() {
+    local -a commands=()
+    for image in "${missing_images[@]}"; do
+        [[ -n "$ONLY" && "$image" != "$ONLY" ]] && continue
+        docker_dir=$(find . -type f -name 'Dockerfile' -exec dirname {} \; | grep "${image#sensos-client-}" | head -n1)
+        if [[ -z "$docker_dir" ]]; then
+            echo "[WARN] Could not find Dockerfile directory for $image"
+            continue
+        fi
+        echo "[BUILD] Queuing missing image: $image from $docker_dir"
+        commands+=("$(build_command "$image" "$docker_dir")")
+    done
+    run_builds "${commands[@]}"
+}
+
+if [[ "$FORCE_REBUILD" == "true" ]]; then
+    echo "[INFO] --force-rebuild specified: rebuilding images..."
+    rebuild_all_images
+    exit 0
+fi
+
 echo "[INFO] Effective build mode: $([[ "$OFFLINE" == true ]] && echo "LOCAL ONLY" || echo "NETWORK ALLOWED")"
 
 echo "[INFO] Loading any available images from local tarballs..."
 load_images_from_disk
 
-# Check for missing images
 missing_images=()
 while IFS= read -r docker_dir; do
     image_name="sensos-client-$(basename "$docker_dir" | tr '_' '-')"
+    [[ -n "$ONLY" && "$image_name" != "$ONLY" ]] && continue
     if ! docker image inspect "$image_name" >/dev/null 2>&1; then
         missing_images+=("$image_name")
     fi
 done < <(find . -type f -name 'Dockerfile' -exec dirname {} \;)
 
-# Decide based on missing images
 if [[ "${#missing_images[@]}" -gt 0 ]]; then
     echo "[INFO] Missing Docker images detected:"
     printf '  %s\n' "${missing_images[@]}"
