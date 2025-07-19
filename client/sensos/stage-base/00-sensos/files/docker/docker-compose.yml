@@ -42,6 +42,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
+      LATITUDE: ${LATITUDE}
+      LONGITUDE: ${LONGITUDE}
     volumes:
       - /sensos/data/audio_recordings:/audio_recordings
       - ./birdnet/model:/model

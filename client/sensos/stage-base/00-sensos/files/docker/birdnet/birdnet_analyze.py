@@ -27,8 +27,16 @@ try:
 except Exception:
     pass
 
-latitude = float(os.environ.get("LATITUDE", "0"))
-longitude = float(os.environ.get("LONGITUDE", "0"))
+
+def safe_float_env(key: str, default: float = 0.0) -> float:
+    try:
+        return float(os.environ.get(key, default) or default)
+    except ValueError:
+        return default
+
+
+latitude = safe_float_env("LATITUDE")
+longitude = safe_float_env("LONGITUDE")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")

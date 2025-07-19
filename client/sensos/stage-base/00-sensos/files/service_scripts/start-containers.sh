@@ -33,6 +33,7 @@ sudo chmod -R 2775 /sensos/data/microenv
 
 if [[ -f /sensos/etc/location.conf ]]; then
     source /sensos/etc/location.conf
+    echo "Latitude = $LATITUDE Longitude = $LONGITUDE"
     export LATITUDE LONGITUDE
 else
     echo "WARNING: Missing /sensos/etc/location.conf" >&2

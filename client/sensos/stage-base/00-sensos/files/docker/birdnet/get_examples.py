@@ -43,13 +43,10 @@ def extract_and_write(abs_path, start_frame, end_frame, channel, out_path, sampl
             sf_file.seek(start_frame)
             frames_to_read = end_frame - start_frame
             audio = sf_file.read(frames=frames_to_read, dtype="float32", always_2d=True)
-            # Select only the segment's channel
             if audio.shape[1] > 1:
                 audio = audio[:, channel].reshape(-1, 1)
-            # Ensure output directory exists
             os.makedirs(out_path.parent, exist_ok=True)
-            # Write to .wav file
-            sf.write(str(out_path), audio, sample_rate, format="WAV", subtype="PCM_16")
+            sf.write(str(out_path), audio, sample_rate, format="FLAC", subtype="PCM_16")
         logger.info(f"Wrote {out_path}")
     except Exception as e:
         logger.error(f"Failed to write {out_path}: {e}")
