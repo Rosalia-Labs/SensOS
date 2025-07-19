@@ -77,9 +77,7 @@ def zero_segments_by_file(
                 end = seg["end_frame"]
                 data[start:end, ch] = 0
             new_path = file_path.with_suffix(".flac")
-            tmp_path = new_path.with_suffix(".zeroing.tmp")
-            sf.write(tmp_path, data, sr, format="FLAC")
-            tmp_path.replace(new_path)
+            sf.write(new_path, data, sr, format="FLAC")
             if file_path != new_path and file_path.exists():
                 try:
                     file_path.unlink()
