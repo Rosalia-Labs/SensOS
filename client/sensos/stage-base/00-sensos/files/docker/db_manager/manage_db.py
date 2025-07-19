@@ -76,9 +76,15 @@ def zero_segments_by_file(
                 start = seg["start_frame"]
                 end = seg["end_frame"]
                 data[start:end, ch] = 0
-            tmp_path = file_path.with_suffix(file_path.suffix + ".zeroing.tmp")
+            new_path = file_path.with_suffix(".flac")
+            tmp_path = new_path.with_suffix(".zeroing.tmp")
             sf.write(tmp_path, data, sr, format="FLAC")
-            tmp_path.replace(file_path)
+            tmp_path.replace(new_path)
+            if file_path != new_path and file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Could not remove original file {file_path}: {e}")
             logger.info(f"Zeroed {len(segs)} segment(s) in {file_path.name}")
             zeroed_ids.extend([s["id"] for s in segs])
         except Exception as e:
