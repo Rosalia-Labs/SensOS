@@ -57,7 +57,7 @@ def main():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT *
+                SELECT label, segment_id, file_id, channel, start_frame, end_frame, score, likely
                 FROM (
                     SELECT
                         b.label,
@@ -67,13 +67,21 @@ def main():
                         s.start_frame,
                         s.end_frame,
                         b.score,
-                        ROW_NUMBER() OVER (PARTITION BY b.label ORDER BY b.score DESC) AS rn
+                        b.likely,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY s.file_id, s.start_frame, s.end_frame
+                            ORDER BY b.score DESC
+                        ) AS rn_within_window,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY b.label
+                            ORDER BY b.score DESC
+                        ) AS rn_within_label
                     FROM sensos.birdnet_scores b
                     JOIN sensos.audio_segments s ON b.segment_id = s.id
                     WHERE b.score >= %s
-                      AND s.zeroed IS NOT TRUE
+                    AND s.zeroed IS NOT TRUE
                 ) sub
-                WHERE rn <= %s
+                WHERE rn_within_window = 1 AND rn_within_label <= %s
                 ORDER BY score DESC
                 LIMIT %s
                 """,
@@ -85,7 +93,16 @@ def main():
                 f"Extracting {len(segments)} segments (top {TOP_N} per label, global max {TOTAL_LIMIT})."
             )
             for row in segments:
-                label, seg_id, file_id, channel, start_frame, end_frame, score, rn = row
+                (
+                    label,
+                    seg_id,
+                    file_id,
+                    channel,
+                    start_frame,
+                    end_frame,
+                    score,
+                    likely,
+                ) = row
                 cur.execute(
                     """SELECT file_path, sample_rate, channels, format, subtype
                        FROM sensos.audio_files WHERE id = %s""",
@@ -97,7 +114,8 @@ def main():
                     continue
                 file_path, sample_rate, channels, fmt, subtype = f
                 abs_path = AUDIO_BASE_PATH / file_path
-                base_name = f"{label}_{score:.3f}_{seg_id}.wav"
+                likely_str = f"{likely:.3f}" if likely is not None else "none"
+                base_name = f"{label}_{score:.3f}_{likely_str}_{seg_id}.flac"
                 out_name = safe_filename(base_name)
                 out_path = OUTPUT_PATH / out_name
 
