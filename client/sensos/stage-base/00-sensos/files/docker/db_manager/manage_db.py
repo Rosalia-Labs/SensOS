@@ -1,5 +1,7 @@
 import os
 import time
+import atexit
+import signal
 import psycopg
 import logging
 from pathlib import Path
@@ -14,6 +16,9 @@ from db_utils import (
     get_unprocessed_segment_ids,
     mark_segments_processed,
 )
+
+TESTING = False
+MAX_CYCLES = 5
 
 # === CONFIG & LOGGING ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -48,11 +53,6 @@ def get_disk_free_mb(path: Path) -> Optional[float]:
 def zero_segments_by_file(
     segments: List[Dict[str, Any]], audio_base: Path
 ) -> List[int]:
-    """
-    Zeroes all given segments, grouped by file. Returns a list of IDs successfully zeroed.
-    Each segment dict must have file_path, channel, start_frame, end_frame, and id.
-    """
-    from collections import defaultdict
 
     zeroed_ids = []
     by_file = defaultdict(list)
@@ -62,6 +62,12 @@ def zero_segments_by_file(
     for file_path, segs in by_file.items():
         if not file_path.exists():
             logger.warning(f"Audio file not found: {file_path}")
+            continue
+        if TESTING:
+            logger.info(
+                f"[TESTING] Would zero {len(segs)} segments in {file_path.name}"
+            )
+            zeroed_ids.extend([s["id"] for s in segs])
             continue
         try:
             data, sr = sf.read(file_path, dtype="int32", always_2d=True)
@@ -194,11 +200,14 @@ def delete_fully_zeroed_files(conn):
         for row in rows:
             path = AUDIO_BASE / row["file_path"]
             if path.exists():
-                try:
-                    path.unlink()
-                    logger.info(f"Deleted file {path}")
-                except Exception as e:
-                    logger.error(f"Could not delete {path}: {e}")
+                if TESTING:
+                    logger.info(f"[TESTING] Would delete file {path}")
+                else:
+                    try:
+                        path.unlink()
+                        logger.info(f"Deleted file {path}")
+                    except Exception as e:
+                        logger.error(f"Could not delete {path}: {e}")
             cur.execute(
                 "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE id = %s",
                 (row["id"],),
@@ -223,7 +232,6 @@ def pick_segments_for_thinning(conn, max_segments=1000):
     picked_segments = []
 
     while len(picked_segments) < max_segments:
-        # 1. Find week with most remaining data
         clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
             sql = f"""
@@ -242,7 +250,6 @@ def pick_segments_for_thinning(conn, max_segments=1000):
                 break
             week_num = int(row["week_num"])
 
-        # 2. Find top label in that week
         clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
             sql = f"""
@@ -266,7 +273,6 @@ def pick_segments_for_thinning(conn, max_segments=1000):
                 break
             label = row["label"]
 
-        # 3. Pick lowest score segment for that label/week
         clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
             sql = f"""
@@ -331,7 +337,7 @@ def thin_data_until_disk_usage_ok(
             logger.warning("Could not determine free disk space. Aborting thinning.")
             return
 
-        if free_mb > start_threshold:
+        if free_mb > stop_threshold:
             logger.info("Disk usage is within acceptable bounds, no thinning required.")
             return
 
@@ -350,27 +356,77 @@ def batch_postprocess(conn, segment_ids):
     delete_fully_zeroed_files(conn)
 
 
-def main_loop():
+def main_loop(conn):
+    cycle = 0
     while True:
+        if TESTING and cycle >= MAX_CYCLES:
+            logger.info(f"[TESTING] Reached max cycles ({MAX_CYCLES}), exiting loop.")
+            break
+        cycle += 1
         try:
-            with connect_with_retry(DB_PARAMS) as conn:
-                wait_for_birdnet_table(conn)
-                segment_ids = get_unprocessed_segment_ids(conn)
-                if segment_ids:
-                    batch_postprocess(conn, segment_ids)
-                    mark_segments_processed(conn, segment_ids)
-                else:
-                    logger.info("No new segments. Sleeping...")
-                    time.sleep(60)
+            wait_for_birdnet_table(conn)
+            segment_ids = get_unprocessed_segment_ids(conn)
+            if segment_ids:
+                batch_postprocess(conn, segment_ids)
+                mark_segments_processed(conn, segment_ids)
+            else:
+                logger.info("No new segments. Sleeping...")
+                time.sleep(5 if TESTING else 60)
         except Exception as e:
             logger.error(f"Error: {e!r}")
             logger.error(traceback.format_exc())
-            time.sleep(60)
+            time.sleep(5 if TESTING else 60)
 
 
-def main() -> None:
-    time.sleep(60)
-    main_loop()
+def run_with_testing_transaction():
+    with connect_with_retry(DB_PARAMS) as conn:
+        conn.autocommit = False
+        with conn.cursor() as cur:
+            cur.execute("BEGIN;")
+        logger.info("[TESTING] BEGIN issued, running in test transaction.")
+
+        def rollback():
+            logger.info("[TESTING] Rolling back all changes (END of dry run)")
+            try:
+                conn.rollback()
+            except Exception as e:
+                logger.error(f"[TESTING] Error during rollback: {e}")
+
+        atexit.register(rollback)
+
+        def handle_exit(signum, frame):
+            logger.info(
+                f"[TESTING] Caught signal {signum}, rolling back transaction and exiting."
+            )
+            rollback()
+            raise SystemExit(1)
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, handle_exit)
+
+        try:
+            main_loop(conn)
+        finally:
+            rollback()
+
+
+def main():
+    global TESTING, MAX_CYCLES
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--testing", action="store_true")
+    parser.add_argument("--cycles", type=int, default=5)
+    args = parser.parse_args()
+    TESTING = args.testing
+    MAX_CYCLES = args.cycles
+
+    if TESTING:
+        logger.info("[TESTING] Starting in testing/dry-run mode!")
+        run_with_testing_transaction()
+    else:
+        with connect_with_retry(DB_PARAMS) as conn:
+            main_loop(conn)
 
 
 if __name__ == "__main__":
