@@ -127,7 +127,6 @@ def merge_segments_with_same_label(conn, segment_ids):
             (segment_ids,),
         )
         segs = cur.fetchall()
-        from collections import defaultdict
 
         groups = defaultdict(list)
         for seg in segs:
@@ -213,58 +212,64 @@ def pick_segments_for_thinning(conn, max_segments=1000):
     Returns a list of segments (dicts) for zeroing, in order.
     Does not touch disk or DB.
     """
+
+    def not_in_clause(ids, field="s.id"):
+        if not ids:
+            return "", []
+        placeholders = ",".join(["%s"] * len(ids))
+        return f"AND {field} NOT IN ({placeholders})", list(ids)
+
     picked_ids = set()
     picked_segments = []
+
     while len(picked_segments) < max_segments:
-        # Find week with most remaining data
+        # 1. Find week with most remaining data
+        clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            sql = f"""
                 SELECT EXTRACT(WEEK FROM f.created_at)::int AS week_num,
                        SUM(s.end_frame - s.start_frame) AS total_frames
                 FROM sensos.audio_segments s
                 JOIN sensos.audio_files f ON s.file_id = f.id
-                WHERE s.zeroed IS NOT TRUE AND s.id NOT IN %s
+                WHERE s.zeroed IS NOT TRUE {clause}
                 GROUP BY week_num
                 ORDER BY total_frames DESC
                 LIMIT 1
-            """,
-                (tuple(picked_ids) if picked_ids else tuple([-1]),),
-            )
+            """
+            cur.execute(sql, params)
             row = cur.fetchone()
             if not row or not row["week_num"]:
                 break
             week_num = int(row["week_num"])
 
-        # Find top label in that week
+        # 2. Find top label in that week
+        clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            sql = f"""
                 SELECT b.label, COUNT(*) AS cnt
                 FROM sensos.audio_segments s
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 JOIN sensos.birdnet_scores b ON s.id = b.segment_id
                 WHERE s.zeroed IS NOT TRUE
                   AND EXTRACT(WEEK FROM f.created_at)::int = %s
-                  AND s.id NOT IN %s
+                  {clause}
                   AND b.label = (
                         SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1
                   )
                 GROUP BY b.label
                 ORDER BY cnt DESC
                 LIMIT 1
-            """,
-                (week_num, tuple(picked_ids) if picked_ids else tuple([-1])),
-            )
+            """
+            cur.execute(sql, [week_num] + params)
             row = cur.fetchone()
             if not row:
                 break
             label = row["label"]
 
-        # Pick lowest score segment for that label/week
+        # 3. Pick lowest score segment for that label/week
+        clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            sql = f"""
                 SELECT s.id, s.file_id, s.channel, s.start_frame, s.end_frame,
                        f.file_path,
                        (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_label,
@@ -273,13 +278,12 @@ def pick_segments_for_thinning(conn, max_segments=1000):
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 WHERE s.zeroed IS NOT TRUE
                   AND EXTRACT(WEEK FROM f.created_at)::int = %s
-                  AND s.id NOT IN %s
+                  {clause}
                   AND (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) = %s
                 ORDER BY top_score ASC
                 LIMIT 1
-            """,
-                (week_num, tuple(picked_ids) if picked_ids else tuple([-1]), label),
-            )
+            """
+            cur.execute(sql, [week_num] + params + [label])
             seg = cur.fetchone()
             if not seg:
                 break

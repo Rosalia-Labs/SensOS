@@ -32,10 +32,10 @@ def setup_schema(conn):
             """
             DROP SCHEMA IF EXISTS sensos CASCADE;
             CREATE SCHEMA IF NOT EXISTS sensos;
-
             CREATE TABLE IF NOT EXISTS sensos.audio_files (
                 id SERIAL PRIMARY KEY,
                 file_path TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),  
                 deleted BOOLEAN DEFAULT FALSE,
                 deleted_at TIMESTAMP
             );
