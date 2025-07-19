@@ -6,6 +6,7 @@ import shutil
 import logging
 import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import soundfile as sf
@@ -80,61 +81,97 @@ def already_in_db(cursor, rel_path: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def move_and_cleanup(
+    path: Path,
+    destination_root: Path,
+    reason: str,
+    new_name: Optional[str] = None,
+    cur=None,
+):
+    """
+    Move a file from cataloged/ to a new location (e.g., queued/, other/), optionally delete DB entry.
+    """
+    rel_path = path.relative_to(CATALOGED)
+    dest_name = new_name if new_name else path.name
+    dest_path = destination_root / rel_path.parent / dest_name
+
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(dest_path))
+        logging.warning(
+            f"Moved file to {destination_root.name}/: {rel_path} — {reason}"
+        )
+
+        if cur:
+            rel_path_str = (ROOT / "cataloged" / rel_path).as_posix()
+            cur.execute(
+                "DELETE FROM sensos.audio_files WHERE file_path = %s", (rel_path_str,)
+            )
+            logging.info(f"Deleted DB entry for moved file: {rel_path_str}")
+        return dest_path
+    except Exception as e:
+        logging.error(f"Failed to move file {path} to {dest_path}: {e}")
+        return None
+
+
 def check_catalog(cur):
-    restored = 0
-    moved_back = 0
+    seen_paths = set()
 
     for path in CATALOGED.rglob("*"):
         if not path.is_file():
             continue
 
-        if path.suffix.lower() not in EXTENSIONS:
-            rel_path = path.relative_to(ROOT)
-            dest_path = OTHER / "cataloged" / rel_path
-            try:
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(path), str(dest_path))
-                logging.warning(f"Moved unknown file type from cataloged/: {rel_path}")
-            except Exception as e:
-                logging.error(
-                    f"Failed to move unknown file from cataloged/: {rel_path} — {e}"
-                )
-            continue
-
-        if path.suffix.lower() != ".wav":
-            # Move it back to queued for reprocessing
-            dest_path = QUEUED / path.relative_to(CATALOGED)
-            try:
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(path), str(dest_path))
-                logging.warning(f"Moved non-WAV file back to queued: {path}")
-                moved_back += 1
-            except Exception as e:
-                logging.error(f"Failed to move {path} to queued/: {e}")
-            continue
-
         rel_path = path.relative_to(ROOT).as_posix()
-        cur.execute(
-            "SELECT 1 FROM sensos.audio_files WHERE file_path = %s", (rel_path,)
-        )
-        if cur.fetchone():
-            continue
+        seen_paths.add(rel_path)
 
         try:
+            try:
+                info = sf.info(path)
+            except Exception as e:
+                move_and_cleanup(
+                    path, OTHER / "cataloged", f"Unreadable by soundfile: {e}", cur=cur
+                )
+                continue
+
+            actual_ext = {
+                "FLAC": ".flac",
+                "WAV": ".wav",
+                "OGG": ".ogg",
+                "MP3": ".mp3",
+            }.get(info.format.upper())
+
+            if actual_ext is None:
+                move_and_cleanup(
+                    path, OTHER / "cataloged", "Unrecognized file extension", cur=cur
+                )
+                continue
+
             cur.execute(
-                "INSERT INTO sensos.audio_files (file_path) VALUES (%s);",
-                (rel_path,),
+                "SELECT 1 FROM sensos.audio_files WHERE file_path = %s", (rel_path,)
             )
-            restored += 1
-            logging.warning(f"Restored missing cataloged file to DB: {rel_path}")
+            in_db = cur.fetchone() is not None
+
+            if path.suffix.lower() != actual_ext or not in_db:
+                move_and_cleanup(
+                    path,
+                    QUEUED,
+                    "Extension mismatch or missing DB entry",
+                    new_name=path.stem + actual_ext,
+                    cur=cur,
+                )
+
         except Exception as e:
-            logging.error(f"Failed to restore {rel_path}: {e}")
+            logging.error(f"Error handling file {path}: {e}")
             cur.connection.rollback()
 
-    if restored or moved_back:
-        logging.info(
-            f"Restored {restored} orphaned .wav files; moved {moved_back} non-WAV files back to queued/"
-        )
+    cur.execute("SELECT file_path FROM sensos.audio_files WHERE deleted = FALSE")
+    for (db_path,) in cur:
+        if db_path not in seen_paths:
+            cur.execute(
+                "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE file_path = %s",
+                (db_path,),
+            )
+            logging.warning(f"Marked missing file as deleted in DB: {db_path}")
 
 
 def process_files(cur) -> int:
