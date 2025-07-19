@@ -56,7 +56,7 @@ def seed_data(conn):
                 "INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame) VALUES (1, 0, %s, %s) RETURNING id",
                 (i * 100, (i + 1) * 100),
             )
-            seg_id = cur.fetchone()[0]
+            seg_id = cur.fetchone()["id"]
             # Assign BirdNET scores: 0.05, 0.2, 0.09, 0.15, 0.07
             score = [0.05, 0.2, 0.09, 0.15, 0.07][i]
             cur.execute(

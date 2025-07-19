@@ -61,11 +61,7 @@ def is_file_fully_zeroed(conn: psycopg.Connection, file_id: int) -> bool:
             (file_id,),
         )
         result = cur.fetchone()
-        return (
-            result
-            and (result[0] if isinstance(result, tuple) else result["all_zeroed"])
-            is True
-        )
+        return result["all_zeroed"]
 
 
 def mark_file_deleted(conn: psycopg.Connection, file_id: int) -> None:
@@ -99,7 +95,7 @@ def has_new_segments(conn) -> bool:
         cur.execute(
             "SELECT EXISTS (SELECT 1 FROM sensos.audio_segments WHERE processed = FALSE)"
         )
-        return cur.fetchone()[0]
+        return cur.fetchone()["exists"]
 
 
 def mark_new_segments_processed(conn):
@@ -115,7 +111,7 @@ def get_unprocessed_segment_ids(conn) -> list:
     """Return a list of segment IDs that are unprocessed (processed=FALSE)."""
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM sensos.audio_segments WHERE processed = FALSE")
-        return [row[0] for row in cur.fetchall()]
+        return [row["id"] for row in cur.fetchall()]
 
 
 def mark_segments_processed(conn, segment_ids):
