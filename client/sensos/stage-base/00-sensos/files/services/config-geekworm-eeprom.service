@@ -1,9 +1,0 @@
-[Unit]
-Description=Apply Geekworm UPS Configuration on First Boot
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/config-geekworm-ups.sh || true
-
-[Install]
-WantedBy=multi-user.target

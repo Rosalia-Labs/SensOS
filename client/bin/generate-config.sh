@@ -18,7 +18,6 @@ DISABLE_FIRST_BOOT_USER_RENAME="1"
 WPA_COUNTRY="US"
 DEPLOY_COMPRESSION="none"
 ENABLE_HOTSPOT="0"
-ENABLE_GEEKWORM_EEPROM="0"
 IMAGE_SIZE="8192"
 
 # Parse command-line arguments
@@ -80,10 +79,6 @@ while [[ $# -gt 0 ]]; do
         ENABLE_HOTSPOT="1"
         shift 1
         ;;
-    --enable-geekworm-eeprom)
-        ENABLE_GEEKWORM_EEPROM="1"
-        shift 1
-        ;;
     --image-size)
         IMAGE_SIZE="$2"
         shift 2
@@ -106,7 +101,6 @@ while [[ $# -gt 0 ]]; do
         echo "  --wpa-country <value>                      (default: $WPA_COUNTRY)"
         echo "  --deploy-compression <value>               (default: $DEPLOY_COMPRESSION)"
         echo "  --enable-wifi-ap                           Enable AP (default: disabled)"
-        echo "  --enable-geekworm-eeprom                   Enable EEPROM update (default: disabled)"
         echo "  --image-size <value>                       (default: $IMAGE_SIZE MB)"
         echo "  --help                                     Display this help message"
         exit 0
@@ -138,7 +132,6 @@ DISABLE_FIRST_BOOT_USER_RENAME="$DISABLE_FIRST_BOOT_USER_RENAME"
 WPA_COUNTRY="$WPA_COUNTRY"
 DEPLOY_COMPRESSION="$DEPLOY_COMPRESSION"
 ENABLE_HOTSPOT="$ENABLE_HOTSPOT"
-ENABLE_GEEKWORM_EEPROM="$ENABLE_GEEKWORM_EEPROM"
 IMG_SIZE="$((IMAGE_SIZE * 1048576))"
 EOF
 
