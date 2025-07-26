@@ -20,7 +20,7 @@ DB_PARAMS = (
 AUDIO_BASE_PATH = Path("/audio_recordings")
 TOP_N = int(os.environ.get("N_EXAMPLES", 3))  # top N per label
 TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", 100))  # total max output
-THRESHOLD = float(os.environ.get("SCORE_THRESHOLD", 0))
+# THRESHOLD = float(os.environ.get("SCORE_THRESHOLD", 0))
 
 # Output to a timestamped directory
 OUTPUT_BASE = Path("/audio_recordings/examples")
@@ -55,6 +55,7 @@ def extract_and_write(abs_path, start_frame, end_frame, channel, out_path, sampl
 def main():
     with psycopg.connect(DB_PARAMS) as conn:
         with conn.cursor() as cur:
+            # Select top N segments per label, rank globally by likely then score, limit to TOTAL_LIMIT
             cur.execute(
                 """
                 SELECT label, segment_id, file_id, channel, start_frame, end_frame, score, likely
@@ -78,14 +79,13 @@ def main():
                         ) AS rn_within_label
                     FROM sensos.birdnet_scores b
                     JOIN sensos.audio_segments s ON b.segment_id = s.id
-                    WHERE b.score >= %s
-                    AND s.zeroed IS NOT TRUE
+                    WHERE s.zeroed IS NOT TRUE
                 ) sub
                 WHERE rn_within_window = 1 AND rn_within_label <= %s
-                ORDER BY score DESC
+                ORDER BY likely DESC, score DESC
                 LIMIT %s
                 """,
-                (THRESHOLD, TOP_N, TOTAL_LIMIT),
+                (TOP_N, TOTAL_LIMIT),
             )
             segments = cur.fetchall()
 
