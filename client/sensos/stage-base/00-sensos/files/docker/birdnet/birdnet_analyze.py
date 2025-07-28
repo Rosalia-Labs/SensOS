@@ -101,75 +101,153 @@ def initialize_schema() -> None:
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
             cur.execute("CREATE SCHEMA IF NOT EXISTS sensos;")
+
+            # 1. audio_segments
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.audio_segments (
-                id SERIAL PRIMARY KEY,
-                file_id INTEGER NOT NULL REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
-                channel INT NOT NULL,
-                start_frame BIGINT NOT NULL,
-                end_frame BIGINT NOT NULL CHECK (end_frame > start_frame),
-                zeroed BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                processed BOOLEAN NOT NULL DEFAULT FALSE,
-                UNIQUE (file_id, channel, start_frame)
-            );"""
+                """
+                CREATE TABLE IF NOT EXISTS sensos.audio_segments (
+                    id SERIAL PRIMARY KEY
+                );
+            """
             )
             cur.execute(
-                """CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
+                """
+                ALTER TABLE sensos.audio_segments
+                    ADD COLUMN IF NOT EXISTS file_id INTEGER REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
+                    ADD COLUMN IF NOT EXISTS channel INT,
+                    ADD COLUMN IF NOT EXISTS start_frame BIGINT,
+                    ADD COLUMN IF NOT EXISTS end_frame BIGINT CHECK (end_frame > start_frame),
+                    ADD COLUMN IF NOT EXISTS zeroed BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW(),
+                    ADD COLUMN IF NOT EXISTS processed BOOLEAN DEFAULT FALSE;
+            """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS audio_segments_unique_idx
+                ON sensos.audio_segments(file_id, channel, start_frame);
+            """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS audio_segments_file_id_index
                 ON sensos.audio_segments(file_id);
+            """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS audio_segments_file_start_index
                 ON sensos.audio_segments(file_id, start_frame);
             """
             )
+
+            # 2. sound_statistics
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.sound_statistics (
-                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                peak_amplitude FLOAT,
-                rms FLOAT,
-                snr FLOAT
-            );"""
+                """
+                CREATE TABLE IF NOT EXISTS sensos.sound_statistics (
+                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE
+                );
+            """
             )
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.full_spectrum (
-                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                spectrum JSONB
-            );"""
+                """
+                ALTER TABLE sensos.sound_statistics
+                    ADD COLUMN IF NOT EXISTS peak_amplitude FLOAT,
+                    ADD COLUMN IF NOT EXISTS rms FLOAT,
+                    ADD COLUMN IF NOT EXISTS snr FLOAT;
+            """
+            )
+
+            # 3. full_spectrum
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.full_spectrum (
+                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE
+                );
+            """
             )
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.bioacoustic_spectrum (
-                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                spectrum JSONB
-            );"""
+                """
+                ALTER TABLE sensos.full_spectrum
+                    ADD COLUMN IF NOT EXISTS spectrum JSONB;
+            """
+            )
+
+            # 4. bioacoustic_spectrum
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.bioacoustic_spectrum (
+                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE
+                );
+            """
             )
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
-                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                vector vector(1024)
-            );"""
+                """
+                ALTER TABLE sensos.bioacoustic_spectrum
+                    ADD COLUMN IF NOT EXISTS spectrum JSONB;
+            """
+            )
+
+            # 5. birdnet_embeddings
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.birdnet_embeddings (
+                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE
+                );
+            """
             )
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
-                segment_id INTEGER REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                label TEXT NOT NULL,
-                score FLOAT NOT NULL,
-                likely FLOAT,
-                PRIMARY KEY (segment_id, label)
-            );"""
+                """
+                ALTER TABLE sensos.birdnet_embeddings
+                    ADD COLUMN IF NOT EXISTS vector vector(1024);
+            """
+            )
+
+            # 6. birdnet_scores
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.birdnet_scores (
+                    segment_id INTEGER REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
+                    label TEXT NOT NULL,
+                    score FLOAT NOT NULL,
+                    likely FLOAT,
+                    PRIMARY KEY (segment_id, label)
+                );
+            """
+            )
+
+            # 7. score_statistics
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.score_statistics (
+                    segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE
+                );
+            """
             )
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.score_statistics (
-                segment_id INTEGER PRIMARY KEY REFERENCES sensos.audio_segments(id) ON DELETE CASCADE,
-                hill_number FLOAT,
-                simpson_index FLOAT
-            );"""
+                """
+                ALTER TABLE sensos.score_statistics
+                    ADD COLUMN IF NOT EXISTS hill_number FLOAT,
+                    ADD COLUMN IF NOT EXISTS simpson_index FLOAT;
+            """
+            )
+
+            # 8. birdnet_processed_files
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sensos.birdnet_processed_files (
+                    file_id INTEGER PRIMARY KEY REFERENCES sensos.audio_files(id) ON DELETE CASCADE
+                );
+            """
             )
             cur.execute(
-                """CREATE TABLE IF NOT EXISTS sensos.birdnet_processed_files (
-                file_id INTEGER PRIMARY KEY REFERENCES sensos.audio_files(id) ON DELETE CASCADE,
-                segment_count INTEGER NOT NULL CHECK (segment_count >= 0),
-                processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );"""
+                """
+                ALTER TABLE sensos.birdnet_processed_files
+                    ADD COLUMN IF NOT EXISTS segment_count INTEGER CHECK (segment_count >= 0),
+                    ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ DEFAULT NOW();
+            """
             )
+
             conn.commit()
             logger.info("✅ Schema initialized.")
 
