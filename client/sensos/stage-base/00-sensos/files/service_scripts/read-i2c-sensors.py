@@ -8,7 +8,6 @@ import sqlite3
 import datetime
 from pathlib import Path
 
-
 sys.path.append("/sensos/lib")
 from utils import read_kv_config, setup_logging, set_permissions_and_owner, create_dir
 
@@ -18,7 +17,6 @@ if not config:
     sys.exit(1)
 
 DB_PATH = Path("/sensos/data/microenv/i2c_readings.db")
-
 create_dir(DB_PATH.parent, "sensos-admin", "sensos-data", 0o2775)
 
 MAX_ATTEMPTS = 3
@@ -44,16 +42,12 @@ def ensure_schema(conn):
 
 def get_interval(key: str) -> int | None:
     val_str = config.get(key, "").strip()
-
-    # Per-sensor value takes priority
     if val_str:
         try:
             val = int(val_str)
             return val if val > 0 else None
         except ValueError:
             return None
-
-    # No per-sensor setting; check INTERVAL_SEC fallback
     fallback_str = config.get("INTERVAL_SEC", "").strip()
     if fallback_str:
         try:
@@ -61,21 +55,16 @@ def get_interval(key: str) -> int | None:
             return val if val > 0 else None
         except ValueError:
             return None
-
-    # Neither per-sensor nor global fallback present
     return None
 
 
-def read_bme280(addr_str: str = None):
+# ---- Sensor Readers ---- #
+def read_bme280(i2c, addr_str: str = None):
     try:
-        import board
-        import busio
         from adafruit_bme280.basic import Adafruit_BME280_I2C
 
         addr = int(addr_str, 16)
-        i2c = busio.I2C(board.SCL, board.SDA)
         sensor = Adafruit_BME280_I2C(i2c, address=addr)
-
         return {
             "temperature_c": round(sensor.temperature, 2),
             "humidity_percent": round(sensor.humidity, 2),
@@ -86,18 +75,14 @@ def read_bme280(addr_str: str = None):
         return None
 
 
-def read_ads1015(addr_str: str = None):
+def read_ads1015(i2c, addr_str: str = None):
     try:
-        import board
-        import busio
         import adafruit_ads1x15.ads1015 as ADS
         from adafruit_ads1x15.analog_in import AnalogIn
 
-        i2c = busio.I2C(board.SCL, board.SDA)
         ads = ADS.ADS1015(i2c)
-
         return {
-            "A0": round(AnalogIn(ads, ADS.P0).voltage, 3),
+            "A0": round(AnalogIn(ads, ADS.P0).volage, 3),
             "A1": round(AnalogIn(ads, ADS.P1).voltage, 3),
             "A2": round(AnalogIn(ads, ADS.P2).voltage, 3),
             "A3": round(AnalogIn(ads, ADS.P3).voltage, 3),
@@ -107,18 +92,13 @@ def read_ads1015(addr_str: str = None):
         return None
 
 
-def read_scd30(addr_str: str = None):
+def read_scd30(i2c, addr_str: str = None):
     try:
-        import board
-        import busio
         import adafruit_scd30
 
-        i2c = busio.I2C(board.SCL, board.SDA)
         sensor = adafruit_scd30.SCD30(i2c)
-
         if not sensor.data_available:
             return None
-
         return {
             "co2_ppm": round(sensor.CO2, 1),
             "temperature_c": round(sensor.temperature, 2),
@@ -129,20 +109,15 @@ def read_scd30(addr_str: str = None):
         return None
 
 
-def read_scd4x(addr_str: str = None):
+def read_scd4x(i2c, addr_str: str = None):
     try:
-        import board
-        import busio
         import adafruit_scd4x
 
-        i2c = busio.I2C(board.SCL, board.SDA)
         scd = adafruit_scd4x.SCD4X(i2c)
         scd.start_periodic_measurement()
         time.sleep(5)
-
         if not scd.data_ready:
             return None
-
         return {
             "co2_ppm": round(scd.CO2, 1),
             "temperature_c": round(scd.temperature, 2),
@@ -159,30 +134,22 @@ def read_i2c_gps(addr_str: str = None):
         import pynmea2
 
         I2C_ADDR = int(addr_str, 16)
-        bus = smbus2.SMBus(1)
-
-        available = bus.read_byte_data(I2C_ADDR, 0xFD)
-        if available == 0:
-            return {"fix": 0}
-
-        raw = []
-        for _ in range(available):
-            raw.append(chr(bus.read_byte_data(I2C_ADDR, 0xFF)))
+        with smbus2.SMBus(1) as bus:  # <-- context manager closes FD
+            available = bus.read_byte_data(I2C_ADDR, 0xFD)
+            if available == 0:
+                return {"fix": 0}
+            raw = [chr(bus.read_byte_data(I2C_ADDR, 0xFF)) for _ in range(available)]
         nmea = "".join(raw)
-
         for line in nmea.splitlines():
             if line.startswith("$GPGGA") or line.startswith("$GPRMC"):
                 try:
                     msg = pynmea2.parse(line)
-
                     fix_quality = getattr(msg, "gps_qual", None)
                     fix = (
                         int(fix_quality) if fix_quality and fix_quality.isdigit() else 0
                     )
-
                     if fix == 0:
                         return {"fix": 0}
-
                     return {
                         "latitude": getattr(msg, "latitude", None),
                         "longitude": getattr(msg, "longitude", None),
@@ -202,6 +169,7 @@ def read_i2c_gps(addr_str: str = None):
         return None
 
 
+# ---- Storage ---- #
 def flatten_sensor_data(sensor_data, device_address, sensor_type, timestamp):
     if not sensor_data:
         return []
@@ -227,11 +195,10 @@ def store_readings(readings):
         print(f"❌ Failed to store readings: {e}", file=sys.stderr)
 
 
+# ---- Main Loop ---- #
 def main():
     setup_logging("read_i2c_sensors.log")
-
     with sqlite3.connect(DB_PATH) as conn:
-        # conn.execute("PRAGMA journal_mode=WAL;")
         ensure_schema(conn)
 
     sensors = [
@@ -244,8 +211,6 @@ def main():
     ]
 
     polling_queue = []
-
-    # Each heap entry: (next_time, sensor_dict)
     for key, addr, sensor_type, read_func in sensors:
         base_interval = get_interval(f"{key}_INTERVAL_SEC")
         if base_interval is not None:
@@ -272,16 +237,21 @@ def main():
     while polling_queue:
         now = time.time()
         next_time, sensor = heapq.heappop(polling_queue)
-        wait = max(0, next_time - now)
-        time.sleep(wait)
-
+        time.sleep(max(0, next_time - now))
         timestamp = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
         print(f"⏱️ Polling {sensor['sensor_type']} at {sensor['addr']}...")
 
         data = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                data = sensor["read_func"](sensor["addr"])
+                # Open bus once per cycle for Adafruit sensors
+                if sensor["sensor_type"] in ["BME280", "ADS1015", "SCD30", "SCD4X"]:
+                    import board, busio
+
+                    with busio.I2C(board.SCL, board.SDA) as i2c:
+                        data = sensor["read_func"](i2c, sensor["addr"])
+                else:  # GPS uses smbus2 internally (already wrapped)
+                    data = sensor["read_func"](sensor["addr"])
                 if data:
                     break
                 else:
@@ -301,7 +271,6 @@ def main():
                 data, sensor["addr"], sensor["sensor_type"], timestamp
             )
             store_readings(readings)
-            # Reset interval after success
             sensor["current_interval"] = sensor["base_interval"]
         else:
             print(
