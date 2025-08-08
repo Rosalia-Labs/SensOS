@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import os
 import sys
 import time
 import heapq
@@ -28,7 +27,7 @@ BACKOFF_MULTIPLIER = 2
 # -------------------------
 _i2c = None
 _cached = {
-    "bme280": {},  # address(str/int) -> driver
+    "bme280": {},  # address(int) -> driver
     "ads1015": None,
     "scd30": None,
     "scd4x": {"driver": None, "warmed": False},
@@ -43,15 +42,12 @@ def get_i2c(force_reset: bool = False):
             _i2c.deinit()
             _i2c = None
     except Exception:
-        # best-effort deinit
         _i2c = None
 
     if _i2c is None:
-        import board
-        import busio
+        import board, busio
 
         _i2c = busio.I2C(board.SCL, board.SDA)
-
     return _i2c
 
 
@@ -65,7 +61,6 @@ def _register_i2c_cleanup_once():
         except Exception:
             pass
 
-    # Only register once
     if not getattr(_register_i2c_cleanup_once, "_done", False):
         atexit.register(_cleanup)
         _register_i2c_cleanup_once._done = True
@@ -82,7 +77,6 @@ def safe_sensor_read(read_func, *args, **kwargs):
     try:
         return read_func(*args, **kwargs)
     except OSError as e:
-        # Linux I2C often raises Errno 121 (Remote I/O) or 5 (I/O error)
         err = getattr(e, "errno", None)
         msg = str(e).lower()
         if err in (121, 5) or "remote i/o" in msg or "input/output error" in msg:
@@ -133,7 +127,6 @@ def get_interval(key: str) -> Optional[int]:
             return val if val > 0 else None
         except ValueError:
             return None
-
     return None
 
 
@@ -150,7 +143,6 @@ def read_bme280(addr_str: str = None):
         if drv is None:
             drv = Adafruit_BME280_I2C(i2c, address=addr)
             _cached["bme280"][addr] = drv
-
         return {
             "temperature_c": round(drv.temperature, 2),
             "humidity_percent": round(drv.humidity, 2),
@@ -161,21 +153,19 @@ def read_bme280(addr_str: str = None):
         return None
 
 
-def read_ads1015(i2c, addr_str: str = None):
+def read_ads1015(addr_str: str = None):
     try:
         import adafruit_ads1x15.ads1015 as ADS
         from adafruit_ads1x15.analog_in import AnalogIn
 
         i2c = get_i2c()
-
         ads = _cached["ads1015"]
         if ads is None:
+            # If you ever want non-0x48 addrs, pass "address=int(addr_str,16)"
             ads = ADS.ADS1015(i2c)
             _cached["ads1015"] = ads
-
-        # Channels are light enough to recreate per-read
         return {
-            "A0": round(AnalogIn(ads, ADS.P0).volage, 3),
+            "A0": round(AnalogIn(ads, ADS.P0).voltage, 3),  # <-- fixed typo
             "A1": round(AnalogIn(ads, ADS.P1).voltage, 3),
             "A2": round(AnalogIn(ads, ADS.P2).voltage, 3),
             "A3": round(AnalogIn(ads, ADS.P3).voltage, 3),
@@ -185,17 +175,15 @@ def read_ads1015(i2c, addr_str: str = None):
         return None
 
 
-def read_scd30(i2c, addr_str: str = None):
+def read_scd30(addr_str: str = None):
     try:
         import adafruit_scd30
 
         i2c = get_i2c()
-
         scd30 = _cached["scd30"]
         if scd30 is None:
             scd30 = adafruit_scd30.SCD30(i2c)
             _cached["scd30"] = scd30
-
         if not scd30.data_available:
             return None
         return {
@@ -208,22 +196,19 @@ def read_scd30(i2c, addr_str: str = None):
         return None
 
 
-def read_scd4x(i2c, addr_str: str = None):
+def read_scd4x(addr_str: str = None):
     try:
         import adafruit_scd4x
 
         i2c = get_i2c()
-
         state = _cached["scd4x"]
         scd = state["driver"]
         if scd is None:
             scd = adafruit_scd4x.SCD4X(i2c)
             scd.start_periodic_measurement()
             state["driver"] = scd
-            # initial warmup only once
-            time.sleep(5)
+            time.sleep(5)  # initial warmup once
             state["warmed"] = True
-
         if not scd.data_ready:
             return None
         return {
@@ -238,21 +223,17 @@ def read_scd4x(i2c, addr_str: str = None):
 
 def read_i2c_gps(addr_str: str = None):
     try:
-        import smbus2
-        import pynmea2
+        import smbus2, pynmea2
 
         I2C_ADDR = int(addr_str, 16)
-        # Ensure the SMBus file descriptor is always closed
-        with smbus2.SMBus(1) as bus:
+        with smbus2.SMBus(1) as bus:  # ensure FD closes
             available = bus.read_byte_data(I2C_ADDR, 0xFD)
             if available == 0:
                 return {"fix": 0}
-
             raw_chars = [
                 chr(bus.read_byte_data(I2C_ADDR, 0xFF)) for _ in range(available)
             ]
         nmea = "".join(raw_chars)
-
         for line in nmea.splitlines():
             if line.startswith("$GPGGA") or line.startswith("$GPRMC"):
                 try:
@@ -278,7 +259,6 @@ def read_i2c_gps(addr_str: str = None):
                     }
                 except pynmea2.ParseError:
                     continue
-
         return {"fix": 0}
     except Exception as e:
         print(f"⚠️ Error reading I2C GPS: {e}", file=sys.stderr)
@@ -296,7 +276,6 @@ def flatten_sensor_data(sensor_data, device_address, sensor_type, timestamp):
         try:
             flat.append((timestamp, device_address, sensor_type, key, float(value)))
         except (TypeError, ValueError):
-            # skip non-numeric values silently
             continue
     return flat
 
@@ -325,7 +304,6 @@ def store_readings(readings):
 def main():
     setup_logging("read_i2c_sensors.log")
     with sqlite3.connect(DB_PATH) as conn:
-        # If you ever add concurrent readers, uncomment WAL:
         # conn.execute("PRAGMA journal_mode=WAL;")
         ensure_schema(conn)
 
@@ -338,7 +316,6 @@ def main():
         ("I2C_GPS", "0x10", "I2C_GPS", read_i2c_gps),
     ]
 
-    # Build priority queue: entries are (next_time, sensor_dict)
     polling_queue = []
     for key, addr, sensor_type, read_func in sensors:
         base_interval = get_interval(f"{key}_INTERVAL_SEC")
