@@ -1,8 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # CLI option registration and parsing
 declare -A __cli_options_help
 declare -A __cli_options_defaults
+declare -A __cli_options_is_bool   # inferred from default being true/false
 
 register_option() {
     local opt="$1"
@@ -14,7 +15,13 @@ register_option() {
     __cli_options_help["$opt"]="$help"
     __cli_options_defaults["$safe_varname"]="$default"
 
-    # Only assign default if not already set
+    # Infer boolean if default clearly is 'true' or 'false'
+    case "$default" in
+        true|false) __cli_options_is_bool["$opt"]=1 ;;
+        *)          __cli_options_is_bool["$opt"]=0 ;;
+    esac
+
+    # Only assign default if not already set (preserve env/previous)
     if [[ -z "${!safe_varname+x}" ]]; then
         declare -g "$safe_varname"
         printf -v "$safe_varname" '%s' "$default"
@@ -34,24 +41,59 @@ parse_switches() {
             remaining_args=("$@")
             break
         fi
+
         case "$1" in
         --help)
             show_usage "$script_name"
             exit 0
             ;;
-        --*=*) # --key=value
-            opt="${1%%=*}"
-            val="${1#*=}"
+
+        # --no-foo (boolean negation) — only valid for registered boolean --foo
+        --no-*)
+            opt="--${1#--no-}"             # map to positive name
+            if [[ -v __cli_options_help["$opt"] && ${__cli_options_is_bool["$opt"]:-0} -eq 1 ]]; then
+                varname="${opt#--}"
+                safe_varname="${varname//-/_}"
+                printf -v "$safe_varname" '%s' "false"
+            else
+                echo "[ERROR] Unknown or non-boolean negated option: $1"
+                show_usage "$script_name"
+                exit 1
+            fi
+            shift
+            continue
             ;;
-        --*) # --key value or flag
+
+        # --key=value  (value may be empty: --key=)
+        --*=*)
+            opt="${1%%=*}"
+            val="${1#*=}"                   # may be empty
+            ;;
+
+        # --key value  OR  --flag   (boolean flags -> true)
+        --*)
             opt="$1"
             if [[ $# -gt 1 && "$2" != --* ]]; then
                 val="$2"
                 shift
             else
-                val="true"
+                # if registered as boolean, set true; otherwise error (explicit value required)
+                if [[ -v __cli_options_help["$opt"] ]]; then
+                    if [[ ${__cli_options_is_bool["$opt"]:-0} -eq 1 ]]; then
+                        val="true"
+                    else
+                        echo "[ERROR] Option '$opt' expects a value. Use '$opt=<value>' or '$opt <value>'."
+                        show_usage "$script_name"
+                        exit 1
+                    fi
+                else
+                    echo "[ERROR] Unknown option: $opt"
+                    show_usage "$script_name"
+                    exit 1
+                fi
             fi
             ;;
+
         *)
             echo "[ERROR] Unknown argument: $1"
             show_usage "$script_name"
@@ -80,12 +122,25 @@ show_usage() {
     echo "Usage: $script_name [options]"
     echo
     echo "Options:"
-    for opt in "${!__cli_options_help[@]}"; do
-        local varname="${opt#--}"
-        local safe_varname="${varname//-/_}"
-        local default="${__cli_options_defaults[$safe_varname]}"
-        local help="${__cli_options_help[$opt]}"
-        printf "  %-25s %-40s %s\n" "$opt [value]" "$help" "(default: $default)"
+
+    # stable, alpha-sorted by option name
+    local -a keys=("${!__cli_options_help[@]}")
+    IFS=$'\n' keys=($(sort <<<"${keys[*]}")); unset IFS
+
+    local opt varname safe_varname default help hint
+    for opt in "${keys[@]}"; do
+        varname="${opt#--}"
+        safe_varname="${varname//-/_}"
+        default="${__cli_options_defaults[$safe_varname]}"
+        help="${__cli_options_help[$opt]}"
+
+        # show bool negation hint for booleans
+        hint=""
+        if [[ ${__cli_options_is_bool["$opt"]:-0} -eq 1 ]]; then
+            hint=" (boolean; use --no-${varname} to negate)"
+        fi
+        printf "  %-24s %-50s %s\n" "$opt [value]" "$help$hint" "(default: $default)"
     done
-    echo "  --help                   Show this help message"
+
+    echo "  --help                  Show this help message"
 }

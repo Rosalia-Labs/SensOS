@@ -1,0 +1,16 @@
+[Unit]
+Description=Cache system info into /sensos/data at boot
+RequiresMountsFor=/sensos/data
+
+[Service]
+User=sensos-runner
+SupplementaryGroups=sensos-data
+ExecStart=/usr/local/bin/cache-sys-info.sh
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=/sensos/data
+
+[Install]
+WantedBy=multi-user.target

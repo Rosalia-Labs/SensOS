@@ -284,20 +284,6 @@ if [[ -n "$(sudo ls -A "$DATA_MOUNT")" ]]; then
     esac
 fi
 
-INFO_FILE="$DATA_MOUNT/device-info.txt"
-echo "Creating device info at $INFO_FILE..."
-{
-    echo "Device Hostname: $(hostname)"
-    echo "Device Machine ID: $(cat /etc/machine-id)"
-    [ -f /proc/cpuinfo ] && echo "CPU Serial: $(awk '/Serial/ {print $3}' /proc/cpuinfo)"
-    echo "Created At: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    if [ -d /sensos/etc ]; then
-        for cfg in /sensos/etc/*; do
-            [ -f "$cfg" ] && echo "--- $cfg ---" && cat "$cfg"
-        done
-    fi
-} | sudo tee "$INFO_FILE" >/dev/null
-
 if [[ "$no_fstab" == "true" ]]; then
     echo "⏭️  Skipping fstab update (flag --no-fstab was set)."
 else
@@ -348,6 +334,10 @@ else
         fi
     fi
 fi
+
+# Write identifying info onto the mounted storage
+echo "Creating device info on the mounted storage..."
+sudo /sensos/service_scripts/cache-sys-info.sh
 
 # Make sure proper permissions
 sudo chown -R sensos-admin:sensos-data "$DATA_MOUNT"
