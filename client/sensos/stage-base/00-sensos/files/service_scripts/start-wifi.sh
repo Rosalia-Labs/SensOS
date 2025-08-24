@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
 
 CONFIG_FILE="/sensos/etc/wifi.conf"
 LOG_DIR="/sensos/log"

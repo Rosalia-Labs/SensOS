@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 # cache-sys-info.sh
 # Writes identifying information into /sensos/data/device-info.txt (by default).
 # Uses /sensos/lib/parse-switches.sh for CLI parsing.

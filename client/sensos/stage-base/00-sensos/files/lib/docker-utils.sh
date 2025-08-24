@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
 
 load_images_from_disk() {
     local base_dir="${1:-/sensos/docker}"

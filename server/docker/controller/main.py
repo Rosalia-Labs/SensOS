@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 # main.py
 from fastapi import FastAPI
 from api import router as api_router

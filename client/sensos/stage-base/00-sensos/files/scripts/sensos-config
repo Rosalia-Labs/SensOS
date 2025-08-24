@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
 
 # --- You may need to adjust this path
 CONFIG_SCRIPT="/usr/local/bin/config-network.py"

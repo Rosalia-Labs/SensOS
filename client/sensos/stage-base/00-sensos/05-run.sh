@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 # Hardware enablement: Ensure I2C, 1-wire, and SPI are configured for the Pi
 
 on_chroot <<EOF

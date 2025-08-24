@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 set -euo pipefail
 
 EXPECTED_BOOT_UART="BOOT_UART=1"

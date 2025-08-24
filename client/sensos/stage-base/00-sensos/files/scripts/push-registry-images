@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 # registry-update.sh
 # This script builds Docker images from subdirectories and pushes them to the sensos registry
 # if they are updated. It accepts command-line options to override default registry connection parameters.

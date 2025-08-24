@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
 
 on_chroot <<EOF
 ln -sf /sensos/etc/chrony.conf /etc/chrony/chrony.conf

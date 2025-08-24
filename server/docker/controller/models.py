@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional

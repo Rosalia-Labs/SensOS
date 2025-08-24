@@ -1,4 +1,6 @@
 #!/bin/bash -e
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
 
 echo "Starting SensOS setup..."
 

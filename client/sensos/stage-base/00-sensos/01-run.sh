@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 on_chroot <<EOF
 set -e
 export DEBIAN_FRONTEND=noninteractive

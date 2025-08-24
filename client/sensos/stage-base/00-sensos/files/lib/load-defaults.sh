@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 # /sensos/lib/load-defaults.sh
 # Usage: load_defaults /path/to/defaults.conf script-name-without-.sh
 

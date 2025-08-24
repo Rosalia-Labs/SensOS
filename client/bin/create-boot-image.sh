@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 set -e
 
 SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../sensos" && pwd)"

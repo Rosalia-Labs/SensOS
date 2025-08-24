@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 # start-arecord.sh: Launch continuous arecord segments using settings from $SENSOS_USER's home directory.
 #
 # This script expects that:

@@ -7,13 +7,7 @@ set -euo pipefail
 # Usage:
 #   ./check-spdx-headers.sh
 #   ./check-spdx-headers.sh --add-if-missing
-#   ./check-spdx-headers.sh --add-if-missing --license MIT --owner "Your LLC" --year 2025
-#
-# Notes:
-# - Operates only on files tracked by git (respects .gitignore, avoids secrets/artifacts).
-# - Skips pi-gen/ (submodule).
-# - Targets: *.py, *.sh, any executable text file, or any file with a shebang.
-# - Preserves shebang and Python encoding lines; no duplicate insertion.
+#   ./check-spdx-headers.sh --add-if-missing --license MIT --owner "Rosalia Labs LLC" --year 2025
 
 LICENSE_ID="MIT"
 OWNER="Rosalia Labs LLC"
@@ -33,10 +27,9 @@ done
 
 command -v git >/dev/null || { echo "error: git not found" >&2; exit 2; }
 
-# Collect only tracked files (null-delimited), skip pi-gen/
-mapfile -d '' FILES < <(git ls-files -z | grep -zv '^pi-gen/')
-
-python3 - "$DO_ADD" "$LICENSE_ID" "$OWNER" "$YEAR" <<'PY'
+# FD 3 will carry a NUL-delimited list of tracked files excluding pi-gen/
+# (Respects .gitignore automatically because we use git ls-files)
+python3 - "$DO_ADD" "$LICENSE_ID" "$OWNER" "$YEAR" 3< <(git ls-files -z | grep -zv '^pi-gen/') <<'PY'
 import sys, os, stat, re, pathlib
 
 DO_ADD  = int(sys.argv[1])
@@ -75,16 +68,22 @@ def insert_header(text: str) -> str:
         insert += "\n"
     return "".join(lines[:i] + [insert] + lines[i:])
 
+# Read NUL-delimited file list from FD 3
+with os.fdopen(3, 'rb') as f:
+    raw_list = f.read().split(b'\0')
+
 missing = []
-data = sys.stdin.buffer.read().split(b"\0")
-for raw in data:
-    if not raw: continue
+for raw in raw_list:
+    if not raw:
+        continue
     p = pathlib.Path(raw.decode())
+    if not p.is_file():
+        continue
     try:
         b = p.read_bytes()
     except Exception:
         continue
-    if b"\x00" in b[:1024]:  # skip binary
+    if b"\x00" in b[:1024]:   # skip obvious binaries
         continue
     try:
         text = b.decode("utf-8")
@@ -93,7 +92,6 @@ for raw in data:
 
     if not is_target_file(p, text):
         continue
-
     if spdx_re.search(text):
         continue
 
@@ -113,4 +111,4 @@ if not DO_ADD:
         sys.exit(1)
     else:
         print("All checked files have SPDX headers.")
-PY <<<"$(printf '%s\0' "${FILES[@]}")"
+PY

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 import librosa
 import numpy as np
 import tflite_runtime.interpreter as tflite

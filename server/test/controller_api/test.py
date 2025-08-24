@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 import pytest
 from fastapi import HTTPException, status
 from fastapi.security import HTTPBasicCredentials

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 def get_richest_week(conn):
     """
     Returns the start date of the week (as a datetime) with the most non-zeroed segments,

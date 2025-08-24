@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
 set -euo pipefail
 
 CONFIG_FILE="/sensos/etc/access_point.conf"
