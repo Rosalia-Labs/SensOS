@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use SensOS in your work, please cite it using the following metadata."
+title: "SensOS: An OS overlay for orchestrating Raspberry Pi computers"
+version: 0.3.2
+date-released: 2025-08-24
+authors:
+  - family-names: "Keitt"
+    given-names: "Timothy"
+    affiliation: "Rosalia Labs, LLC"
+    orcid: "https://orcid.org/0000-0002-4587-1083"
+repository-code: "https://github.com/<your-org-or-username>/sensos"
+license: "MIT"
+type: software
+abstract: >
+  SensOS is an operating system overlay that extends Raspberry Pi OS with
+  orchestration and deployment tools. Originally developed by Rosalia Labs, LLC
+  for environmental sensing and biodiversity monitoring, SensOS supports
+  scalable and reproducible deployments of Raspberry Pi computers in field and
+  research contexts.
