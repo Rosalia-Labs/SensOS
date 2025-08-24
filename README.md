@@ -44,7 +44,7 @@ cd SensOS
 git submodule update --init --recursive
 ```
 
-Once cloned, you can use the included scripts (e.g. `./bin/generate-config.sh`) to generate a configuration and build a bootable Raspberry Pi image.
+Once cloned, you can use the included scripts (e.g. `./client/bin/generate-config.sh`) to generate a configuration and build a bootable Raspberry Pi image.
 
 ---
 
