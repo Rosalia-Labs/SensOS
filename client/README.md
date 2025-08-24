@@ -26,7 +26,6 @@ Options:
   --wpa-country <value>                      (default: US)
   --deploy-compression <value>               (default: none)
   --enable-wifi-ap                           Enable AP (default: disabled)
-  --enable-geekworm-eeprom                   Enable EEPROM update (default: disabled)
   --image-size <value>                       (default: 8192 MB)
   --help                                     Display this help message
 ```
