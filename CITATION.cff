@@ -8,7 +8,7 @@ authors:
     given-names: "Timothy"
     affiliation: "Rosalia Labs, LLC"
     orcid: "https://orcid.org/0000-0002-4587-1083"
-repository-code: "https://github.com/<your-org-or-username>/sensos"
+repository-code: "https://github.com/rosalia-labs/sensos"
 license: "MIT"
 type: software
 abstract: >
