@@ -1,7 +1,9 @@
 # SensOS
 
 **SensOS** is an operating system overlay designed to orchestrate fleets of Raspberry Pi computers.  
-It was originally developed by [Rosalia Labs, LLC](https://rosalialabs.com) to support applications in environmental sensing and biodiversity monitoring, where robust, scalable deployments of low-power computing are essential.
+It is developed by [Rosalia Labs, LLC](https://rosalialabs.com) to support applications in environmental sensing and biodiversity monitoring, where robust, scalable deployments of low-power computing are essential.
+
+SensOS works for building custom Raspberry Pi OS images today, but it’s still early — we’re expanding features and documentation.
 
 If SensOS informs your work, please cite the project and acknowledge contributors.
 
@@ -41,4 +43,3 @@ If you are interested in contributing, please open an issue or submit a pull req
 
 This code is copyright © Rosalia Labs, LLC.  
 Distributed under the terms described in the [LICENSE](./LICENSE) file.
-
