@@ -1,4 +1,3 @@
-```markdown
 # SensOS
 
 **SensOS** is an operating system overlay designed to orchestrate fleets of Raspberry Pi computers.  
@@ -64,4 +63,3 @@ If you are interested in contributing, please open an issue or submit a pull req
 
 This code is copyright © Rosalia Labs, LLC.  
 Distributed under the terms described in the [LICENSE](./LICENSE) file.
-```
