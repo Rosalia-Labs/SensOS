@@ -1,5 +1,3 @@
-Here you go — fully closed fences:
-
 ```markdown
 # SensOS
 
