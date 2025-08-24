@@ -1,3 +1,6 @@
+Here you go — fully closed fences:
+
+```markdown
 # SensOS
 
 **SensOS** is an operating system overlay designed to orchestrate fleets of Raspberry Pi computers.  
@@ -6,6 +9,8 @@ It is developed by [Rosalia Labs, LLC](https://rosalialabs.com) to support appli
 SensOS works for building custom Raspberry Pi OS images today, but it’s still early — we’re expanding features and documentation.
 
 If SensOS informs your work, please cite the project and acknowledge contributors.
+
+---
 
 ## Purpose
 
@@ -17,6 +22,8 @@ SensOS extends the [Raspberry Pi OS build framework](https://github.com/RPi-Dist
 
 Although created for environmental monitoring, SensOS is a general-purpose system overlay and may be useful in other distributed or embedded computing contexts.
 
+---
+
 ## Goals
 
 - **Reliable orchestration** of Raspberry Pi devices at scale
@@ -24,10 +31,24 @@ Although created for environmental monitoring, SensOS is a general-purpose syste
 - **Extensibility** for custom sensing and data workflows
 - **Accessibility** for researchers, practitioners, and developers
 
+---
+
 ## Getting Started
 
-The simplest way to begin is by reviewing the documentation and following the workflow for generating a bootable image.  
-Step-by-step guides and usage examples are provided in the [project wiki](./wiki) (or documentation site, if separate).
+Clone the repository and initialize its submodules (SensOS depends on [`pi-gen`](https://github.com/RPi-Distro/pi-gen), included here as a submodule and pinned to a tagged release):
+
+```bash
+# Clone including submodules
+git clone --recurse-submodules https://github.com/Rosalia-Labs/SensOS.git
+cd SensOS
+
+# If you cloned without --recurse-submodules, run:
+git submodule update --init --recursive
+```
+
+Once cloned, you can use the included scripts (e.g. `./bin/generate-config.sh`) to generate a configuration and build a bootable Raspberry Pi image.
+
+---
 
 ## Contributing
 
@@ -39,7 +60,10 @@ SensOS is open to contributions. We welcome:
 
 If you are interested in contributing, please open an issue or submit a pull request. For major changes, we encourage discussing ideas in advance to ensure alignment.
 
+---
+
 ## License
 
 This code is copyright © Rosalia Labs, LLC.  
 Distributed under the terms described in the [LICENSE](./LICENSE) file.
+```
