@@ -18,6 +18,18 @@ Unacceptable behavior includes:
 - Trolling or deliberately disruptive comments
 - Public or private harassment of any kind
 
+## Intellectual Honesty & Attribution
+
+We value open collaboration and respectful reuse. To keep SensOS a professional community:
+
+- **Credit where due.** Cite SensOS and individual contributors when using code, configurations, or design patterns derived from this project.
+- **No passing off.** Do not present unmerged concepts, documentation, or experimental branches from this repo as your own work elsewhere.
+- **Respect the license.** Reuse must comply with the LICENSE, including preservation of copyright notices and attribution.
+- **Ask for clarity.** If you’re unsure whether reuse is appropriate (especially for non‑code assets like docs, diagrams, deployment playbooks), open an issue to discuss first.
+- **Disclose conflicts.** If you plan to use SensOS ideas in a separate or competing project, disclose that intent when contributing or opening issues.
+
+Behavior that undermines these norms may result in limited participation or other appropriate actions by the maintainers.
+
 ## Enforcement
 
 Instances of unacceptable behavior may be reported to the maintainers at **info@rosalialabs.com**.  
@@ -26,3 +38,4 @@ All reports will be reviewed and addressed appropriately.
 ## Attribution
 
 This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org/), version 2.1.
+
