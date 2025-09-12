@@ -20,39 +20,97 @@ get_default() {
     echo "${default_vars[$varname]:-$fallback}"
 }
 
+# Flags
 register_option --service service "Modem service name (required, e.g. 1nce)" "$(get_default service)"
-register_option --iface iface "Modem network interface" "$(get_default iface wwan0)"
-register_option --internal-name internal_name "Internal modem name" "$(get_default internal_name cdc-wdm0)"
+register_option --device device "Modem device name for NetworkManager (e.g. cdc-wdm0, mbim0) — optional; auto-detected if omitted" "$(get_default device)"
 register_option --enable-service enable_service "Enable sensos-modem.service" "$(get_default enable_service true)"
 register_option --start-service start_service "Start sensos-modem.service" "$(get_default start_service false)"
 
 # Parse CLI
 parse_switches "$script_name" "$@"
 
-# Validate required argument
+# Validate required args
 if [[ -z "$service" ]]; then
     echo "ERROR: --service must be specified."
     exit 1
 fi
 
+# Normalize service (case-insensitive)
+service_norm="$(echo "$service" | tr '[:upper:]' '[:lower:]')"
+
 # Map service to APN
-case "$service" in
-1nce) apn="iot.1nce.net" ;;
-Soracom) apn="soracom.io" ;;
-*)
-    echo "ERROR: Unsupported service '$service'"
-    exit 1
-    ;;
+case "$service_norm" in
+    1nce)    apn="iot.1nce.net" ;;
+    soracom) apn="soracom.io" ;;
+    *)
+        echo "ERROR: Unsupported service '$service' (known: 1nce, Soracom)"
+        exit 1
+        ;;
 esac
+
+# Try to get DEVICE if not provided:
+choose_device() {
+    local reuse=""
+    # 1) Reuse existing config if available
+    if [[ -z "$device" && -f "$config_file" ]]; then
+        reuse="$(awk -F= '/^DEVICE[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2}' "$config_file" || true)"
+        if [[ -n "$reuse" ]]; then
+            echo "$reuse"
+            return 0
+        fi
+    fi
+
+    # 2) Auto-detect via nmcli
+    if ! command -v nmcli >/dev/null 2>&1; then
+        echo ""
+        return 0
+    fi
+
+    # Get devices of types that represent mobile broadband
+    # (NetworkManager commonly uses 'gsm'; 'wwan' and 'cdma' included for safety)
+    mapfile -t candidates < <(nmcli -t -f DEVICE,TYPE device | awk -F: '$2=="gsm"||$2=="wwan"||$2=="cdma"{print $1}')
+
+    if (( ${#candidates[@]} == 1 )); then
+        echo "${candidates[0]}"
+        return 0
+    elif (( ${#candidates[@]} > 1 )); then
+        echo "MULTIPLE"  # signal to caller
+        printf '%s\n' "${candidates[@]}" >&2
+        return 0
+    fi
+
+    # None found
+    echo ""
+}
+
+if [[ -z "$device" ]]; then
+    detected="$(choose_device || true)"
+    if [[ "$detected" == "MULTIPLE" ]]; then
+        echo "ERROR: Multiple modem devices detected. Please rerun with one of:"
+        # candidates were already printed to stderr by choose_device
+        exit 1
+    elif [[ -n "$detected" ]]; then
+        device="$detected"
+        echo "Auto-detected modem device: $device"
+    else
+        cat >&2 <<'EOF'
+ERROR: Could not auto-detect a modem device.
+Hints:
+  - Ensure the modem is present and recognized:   nmcli device
+  - Look for TYPE "gsm"/"wwan"/"cdma" and use its DEVICE, e.g.: --device cdc-wdm0
+  - If using ModemManager, confirm with:          mmcli -L
+EOF
+        exit 1
+    fi
+fi
 
 # Ensure output directory exists
 mkdir -p "$config_dir"
 
-# Write config file
+# Write device-only config
 cat >"$config_file" <<EOF
 SERVICE=$service
-IFACE=$iface
-INTERNAL_NAME=$internal_name
+DEVICE=$device
 APN=$apn
 EOF
 
