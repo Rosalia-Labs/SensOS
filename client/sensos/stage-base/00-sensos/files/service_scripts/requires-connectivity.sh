@@ -21,7 +21,7 @@ if [[ -f "$MODEM_CONF" ]]; then
     while IFS='=' read -r key value; do
         key="${key// /}"
         value="${value// /}"
-        [[ "$key" == "IFACE" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
+        [[ "$key" == "INTERNAL_NAME" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
     done <"$MODEM_CONF"
 fi
 
