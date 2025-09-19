@@ -3,6 +3,7 @@
 # Copyright (c) 2025 Rosalia Labs LLC
 
 CONFIG_FILE="/sensos/etc/modem.conf"
+NETWORK_CONF="/sensos/etc/network.conf"
 LOG_DIR="/sensos/log"
 LOG_FILE="$LOG_DIR/modem.log"
 
@@ -44,14 +45,24 @@ restart_lte() {
     }
 }
 
-# Main loop to monitor and restart LTE connection
 while true; do
-    STATUS=$(nmcli device status | grep "$IFACE" | awk '{print $3}')
+    CONNECTIVITY_MODE="always"
+    if [[ -f "$NETWORK_CONF" ]]; then
+        source "$NETWORK_CONF"
+    fi
 
-    if [[ "$STATUS" == "connected" ]]; then
-        echo "LTE connection is up." | tee -a "$LOG_FILE"
+    STATUS=$(nmcli -t -f DEVICE,STATE device status | awk -F: -v d="$IFACE" '$1==d{print $2}')
+
+    if [[ "$CONNECTIVITY_MODE" == "always" ]]; then
+        if [[ "$STATUS" == "connected" ]]; then
+            echo "LTE connection is up." | tee -a "$LOG_FILE"
+        else
+            restart_lte
+        fi
     else
-        restart_lte
+        echo "CONNECTIVITY_MODE=$CONNECTIVITY_MODE → bringing LTE down." | tee -a "$LOG_FILE"
+        sudo nmcli con down "lte" >/dev/null 2>&1 || true
+        sudo nmcli dev disconnect "$IFACE" >/dev/null 2>&1 || true
     fi
 
     sleep 300

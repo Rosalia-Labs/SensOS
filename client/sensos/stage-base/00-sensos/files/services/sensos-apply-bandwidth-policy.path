@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch /sensos/etc/network.conf and apply policy
+
+[Path]
+PathChanged=/sensos/etc/network.conf
+
+[Install]
+WantedBy=multi-user.target

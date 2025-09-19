@@ -525,10 +525,15 @@ def configure_wireguard(args, api_password):
         sys.exit(1)
 
     if args.wg_endpoint:
-        print(
-            f"⚠️ Overriding WireGuard endpoint IP: {wg_public_ip} → {args.wg_endpoint}"
-        )
-        wg_public_ip = args.wg_endpoint
+        override = args.wg_endpoint
+        ip_only = override
+        if ":" in override:
+            ip_only, port_str = override.split(":", 1)
+            if port_str.isdigit():
+                print(f"⚠️ Overriding WireGuard port: {wg_port} → {port_str}")
+                wg_port = int(port_str)
+        print(f"⚠️ Overriding WireGuard endpoint IP: {wg_public_ip} → {ip_only}")
+        wg_public_ip = ip_only
 
     write_wireguard_config(
         wg_ip,
@@ -540,7 +545,7 @@ def configure_wireguard(args, api_password):
     )
 
     change_hostname(hostname)
-    return wg_ip, wg_public_ip
+    return wg_ip, wg_public_ip, wg_port
 
 
 def configure_ssh(args, api_password, wg_ip):
@@ -555,7 +560,7 @@ def configure_ssh(args, api_password, wg_ip):
         sys.exit(1)
 
 
-def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
+def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip, wg_port):
     settings_dir = "/sensos/etc"
     settings_file = os.path.join(settings_dir, "network.conf")
     create_dir(settings_dir, owner="sensos-admin", mode=0o755)
@@ -568,6 +573,7 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip):
         f"SERVER_PORT={args.port}\n"
         f"NETWORK_NAME={args.network}\n"
         f"WG_ENDPOINT_IP={endpoint_ip}\n"
+        f"WG_ENDPOINT_PORT={wg_port}\n"
         f"SSH_TUNNEL_IP={ssh_tunnel_ip}\n"
         f"SSH_TUNNEL_PORT={args.ssh_tunnel_port}\n"
         f"CONNECTIVITY_MODE={args.connectivity_mode}\n"
@@ -641,7 +647,7 @@ def main():
         print("❌ Critical error: API password not obtained. Aborting configuration.")
         sys.exit(1)
 
-    client_wg_ip, wg_public_ip = configure_wireguard(args, api_password)
+    client_wg_ip, wg_public_ip, wg_port = configure_wireguard(args, api_password)
     if not client_wg_ip:
         print("❌ WireGuard configuration failed. Aborting.")
         sys.exit(1)
@@ -653,7 +659,7 @@ def main():
 
     endpoint_ip = args.wg_endpoint or wg_public_ip
     endpoint_ip = endpoint_ip.split(":")[0] if ":" in endpoint_ip else endpoint_ip
-    write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip)
+    write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip, wg_port)
     configure_ssh(args, api_password, client_wg_ip)
 
     enable_ssh(disable_passwords=args.disable_ssh_passwords)
