@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# start-docker — start the analytics stack via docker compose
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DOCKER_DIR="$PROJECT_ROOT/docker"
+ENV_FILE="$DOCKER_DIR/.env"
+COMPOSE_FILE="$DOCKER_DIR/docker-compose.yml"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Error: $ENV_FILE not found."
+  echo "Run bin/config-docker first to generate it."
+  exit 1
+fi
+
+cd "$DOCKER_DIR"
+
+echo "Starting docker compose with:"
+echo "  ENV_FILE:    $ENV_FILE"
+echo "  COMPOSE_FILE:$COMPOSE_FILE"
+echo
+
+# Start in detached mode; remove --detach to see logs in foreground
+docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up --build -d
+
+echo
+echo "✓ Docker stack started."
+echo "Check running containers with: docker ps"
+echo "View logs with: docker compose logs -f"

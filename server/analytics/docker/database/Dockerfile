@@ -1,4 +1,4 @@
-FROM postgres:17-trixie
+FROM postgres:17-bookworm
 
 WORKDIR /app
 
