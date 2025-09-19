@@ -17,11 +17,13 @@ NEEDS_TEARDOWN=0
 
 CANDIDATE_DEVS=()
 
+[[ -f "$MODEM_CONF" ]] && source "$MODEM_CONF"
+
 if [[ -f "$MODEM_CONF" ]]; then
     while IFS='=' read -r key value; do
         key="${key// /}"
         value="${value// /}"
-        [[ "$key" == "IFACE" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
+        [[ "$key" == "INTERNAL_NAME" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
     done <"$MODEM_CONF"
 fi
 
@@ -46,10 +48,19 @@ setup() {
     sudo nmcli networking on
 
     for dev in $(for_each_managed_dev); do
-        echo "[INFO] Connecting $dev..."
-        sudo nmcli device connect "$dev" || true
+        if [[ -n "$APN" && -n "$INTERNAL_NAME" && "$dev" == "$INTERNAL_NAME" ]]; then
+            echo "[INFO] Bringing LTE up via NM profile (APN=$APN)…"
+            if ! nmcli -t -f NAME,TYPE c show | awk -F: '$2=="gsm"{print $1}' | grep -qx "lte"; then
+                sudo nmcli c add type gsm ifname "*" con-name "lte" \
+                    connection.interface-name "$INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
+            fi
+            sudo nmcli c up "lte" || echo "[WARN] nmcli c up lte failed"
+        else
+            echo "[INFO] Connecting $dev…"
+            sudo nmcli device connect "$dev" || true
+        fi
     done
-
+    
     for i in {1..5}; do
         status="$(nmcli networking connectivity)"
         if [[ "$status" == "full" ]]; then
