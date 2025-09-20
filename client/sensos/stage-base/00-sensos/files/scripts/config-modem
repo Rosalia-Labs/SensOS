@@ -1,12 +1,28 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Rosalia Labs LLC
+# Copyright (c) 2025 Rosalia Labs
 
-set -e
+# config-modem
+# - Creates/updates a NetworkManager GSM profile for the given provider
+# - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
+# - If BANDWIDTH_POLICY=restricted, locks the modem device to WG (UDP WG_ENDPOINT_PORT) + DHCP + ESTABLISHED/RELATED
+# - Optional bandwidth caps via tc (egress/ingress)
+#
+# /sensos/etc/network.conf provides (among others):
+#   SERVER_WG_IP, CLIENT_WG_IP, SERVER_PORT, NETWORK_NAME,
+#   WG_ENDPOINT_IP, WG_ENDPOINT_PORT, SSH_TUNNEL_IP, SSH_TUNNEL_PORT,
+#   CONNECTIVITY_MODE, BANDWIDTH_POLICY
+
+set -euo pipefail
 
 script_name=$(basename "$0")
-config_dir="/sensos/etc"
-config_file="$config_dir/modem.conf"
+network_conf="/sensos/etc/network.conf"
+
+# ----------------------- deps -----------------------
+if ! command -v nmcli >/dev/null 2>&1; then
+  echo "ERROR: nmcli not found. Install NetworkManager." >&2
+  exit 1
+fi
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
@@ -15,57 +31,178 @@ declare -A default_vars
 load_defaults "$script_name" default_vars
 
 get_default() {
-    local varname="$1"
-    local fallback="$2"
-    echo "${default_vars[$varname]:-$fallback}"
+  local varname="$1"
+  local fallback="${2-}"
+  echo "${default_vars[$varname]:-$fallback}"
 }
 
-register_option --service service "Modem service name (required, e.g. 1nce)" "$(get_default service)"
-register_option --iface iface "Modem network interface" "$(get_default iface wwan0)"
-register_option --internal-name internal_name "Internal modem name" "$(get_default internal_name cdc-wdm0)"
-register_option --enable-service enable_service "Enable sensos-modem.service" "$(get_default enable_service true)"
-register_option --start-service start_service "Start sensos-modem.service" "$(get_default start_service false)"
+# ----------------------- options -----------------------
+register_option --service service "Cellular provider (e.g. 1nce, Soracom)" "$(get_default service)"
+register_option --device device "NetworkManager device (e.g. wwan0)" "$(get_default device wwan0)"
+register_option --start start_now "Immediately bring modem online after config" "$(get_default start_now false)"
 
-# Parse CLI
+# Optional bandwidth limits (kbit)
+register_option --limit-up-kbit limit_up_kbit "Egress cap in kbit (optional)" "$(get_default limit_up_kbit)"
+register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" "$(get_default limit_down_kbit)"
+
 parse_switches "$script_name" "$@"
 
-# Validate required argument
-if [[ -z "$service" ]]; then
-    echo "ERROR: --service must be specified."
-    exit 1
+if [[ -z "${service:-}" ]]; then
+  echo "ERROR: --service must be specified." >&2
+  exit 1
 fi
 
-# Map service to APN
+# ----------------------- config -----------------------
+if [[ ! -f "$network_conf" ]]; then
+  echo "ERROR: Required config $network_conf is missing." >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$network_conf"
+
+CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
+BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-}"
+WG_ENDPOINT_PORT="${WG_ENDPOINT_PORT:-}"
+
+# If policy is restricted but no WG port is defined, fail (do NOT guess)
+if [[ "${BANDWIDTH_POLICY,,}" == "restricted" && -z "$WG_ENDPOINT_PORT" ]]; then
+  echo "ERROR: BANDWIDTH_POLICY=restricted but WG_ENDPOINT_PORT is not set in $network_conf." >&2
+  exit 1
+fi
+
+# ----------------------- provider → APN -----------------------
 case "$service" in
-1nce) apn="iot.1nce.net" ;;
-Soracom) apn="soracom.io" ;;
-*)
-    echo "ERROR: Unsupported service '$service'"
+  1nce)    apn="iot.1nce.net" ;;
+  Soracom) apn="soracom.io" ;;
+  *)
+    echo "ERROR: Unsupported service '$service'." >&2
     exit 1
     ;;
 esac
 
-# Ensure output directory exists
-mkdir -p "$config_dir"
+nm_con_name="sensos-$service"
 
-# Write config file
-cat >"$config_file" <<EOF
-SERVICE=$service
-IFACE=$iface
-INTERNAL_NAME=$internal_name
-APN=$apn
-EOF
-
-echo "Modem configuration saved to $config_file"
-
-if [[ "$enable_service" == "true" ]]; then
-    echo "Enabling sensos-modem.service..."
-    sudo systemctl daemon-reload
-    sudo systemctl enable sensos-modem.service
+# ----------------------- NM connection -----------------------
+if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
+  echo "Updating connection '$nm_con_name' for device '$device'..."
+  nmcli con mod "$nm_con_name" gsm.apn "$apn" || true
+  nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
+  nmcli con mod "$nm_con_name" connection.interface-name "$device" || true
+else
+  echo "Creating connection '$nm_con_name' on device '$device'..."
+  nmcli con add type gsm ifname "$device" con-name "$nm_con_name" apn "$apn"
 fi
 
-if [[ "$start_service" == "true" ]]; then
-    echo "Starting sensos-modem.service..."
-    sudo systemctl daemon-reload
-    sudo systemctl restart sensos-modem.service
+nmcli con mod "$nm_con_name" ipv4.method auto || true
+nmcli con mod "$nm_con_name" ipv6.method ignore || true
+
+if [[ "$CONNECTIVITY_MODE" == "always" ]]; then
+  nmcli con mod "$nm_con_name" connection.autoconnect yes
+  echo "Autoconnect enabled (CONNECTIVITY_MODE=always)."
+else
+  nmcli con mod "$nm_con_name" connection.autoconnect no
+  echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
 fi
+
+# ----------------------- tc limits -----------------------
+apply_tc_limits() {
+  local dev="$1" up_kbit="${2:-}" down_kbit="${3:-}"
+
+  if [[ -n "${up_kbit}" ]]; then
+    echo "Applying egress cap ${up_kbit} kbit on ${dev}..."
+    tc qdisc del dev "$dev" root 2>/dev/null || true
+    tc qdisc add dev "$dev" root tbf rate "${up_kbit}kbit" burst 32kbit latency 400ms
+  fi
+
+  if [[ -n "${down_kbit}" ]]; then
+    echo "Applying ingress cap ${down_kbit} kbit on ${dev}..."
+    tc qdisc del dev "$dev" handle ffff: ingress 2>/dev/null || true
+    tc qdisc add dev "$dev" handle ffff: ingress
+    tc filter add dev "$dev" parent ffff: protocol all u32 \
+      match u32 0 0 police rate "${down_kbit}kbit" burst 32k drop flowid :1
+  fi
+}
+
+if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
+  apply_tc_limits "$device" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
+fi
+
+# ----------------------- lockdown (restricted policy) -----------------------
+apply_lockdown_rules() {
+  local dev="$1"
+  local wg_port="$2"  # single number
+
+  if ! command -v iptables >/dev/null 2>&1; then
+    echo "WARNING: iptables not found; cannot enforce lockdown on ${dev}." >&2
+    return 0
+  fi
+
+  local CHAIN_IN="SENSOS_LOCKDOWN_${dev}_IN"
+  local CHAIN_OUT="SENSOS_LOCKDOWN_${dev}_OUT"
+  local CHAIN_FWD="SENSOS_LOCKDOWN_${dev}_FWD"
+
+  # Create or flush dedicated chains (idempotent)
+  iptables -w -L "$CHAIN_IN"  -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_IN"  || iptables -w -N "$CHAIN_IN"
+  iptables -w -L "$CHAIN_OUT" -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_OUT" || iptables -w -N "$CHAIN_OUT"
+  iptables -w -L "$CHAIN_FWD" -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_FWD" || iptables -w -N "$CHAIN_FWD"
+
+  # ==================== INPUT (packets arriving on $dev to the host) ====================
+  # Allow established/related return traffic (covers DNS replies, WG replies, ICMP replies, etc.)
+  iptables -w -A "$CHAIN_IN"  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # DHCP server -> client (OFFER/ACK)
+  iptables -w -A "$CHAIN_IN"  -p udp --sport 67 --dport 68 -j ACCEPT
+  # Default: drop everything else arriving from the modem
+  iptables -w -A "$CHAIN_IN"  -j REJECT
+
+  # Ensure a single jump from INPUT into the chain for this device
+  iptables -w -C INPUT  -i "$dev" -j "$CHAIN_IN" 2>/dev/null || iptables -w -I INPUT  -i "$dev" -j "$CHAIN_IN"
+
+  # ==================== OUTPUT (packets leaving host via $dev) ====================
+  # Allow established/related (return legs initiated from host)
+  iptables -w -A "$CHAIN_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # DHCP client -> server (DISCOVER/REQUEST)
+  iptables -w -A "$CHAIN_OUT" -p udp --sport 68 --dport 67 -j ACCEPT
+  # WireGuard UDP to server
+  iptables -w -A "$CHAIN_OUT" -p udp --dport "$wg_port" -j ACCEPT
+  # DNS to resolvers outside WG (needed since modem is only internet path)
+  iptables -w -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT
+  iptables -w -A "$CHAIN_OUT" -p tcp --dport 53 -j ACCEPT
+  # NTP for time sync
+  iptables -w -A "$CHAIN_OUT" -p udp --dport 123 -j ACCEPT
+  # ICMP: allow outbound echo-request (replies covered by ESTABLISHED)
+  iptables -w -A "$CHAIN_OUT" -p icmp --icmp-type echo-request -j ACCEPT
+  # Default: drop everything else trying to leave via the modem
+  iptables -w -A "$CHAIN_OUT" -j REJECT
+
+  # Ensure a single jump from OUTPUT into the chain for this device
+  iptables -w -C OUTPUT -o "$dev" -j "$CHAIN_OUT" 2>/dev/null || iptables -w -I OUTPUT -o "$dev" -j "$CHAIN_OUT"
+
+  # ==================== FORWARD (packets forwarded out via $dev) ====================
+  # If something on the box forwards through the modem, only allow WG egress.
+  iptables -w -A "$CHAIN_FWD" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -w -A "$CHAIN_FWD" -p udp --dport "$wg_port" -j ACCEPT
+  iptables -w -A "$CHAIN_FWD" -j REJECT
+
+  # Ensure a single jump from FORWARD into the chain for this device
+  iptables -w -C FORWARD -o "$dev" -j "$CHAIN_FWD" 2>/dev/null || iptables -w -I FORWARD -o "$dev" -j "$CHAIN_FWD"
+
+  echo "Applied lockdown on ${dev} (DHCP, DNS, NTP, ICMP-out, WG:${wg_port}; all else blocked)."
+}
+
+if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
+  apply_lockdown_rules "$device" "$WG_ENDPOINT_PORT"
+fi
+
+# ----------------------- start now? -----------------------
+if [[ "${start_now}" == "true" ]]; then
+  echo "Bringing up modem connection '$nm_con_name'..."
+  if ! nmcli con up "$nm_con_name"; then
+    echo "WARNING: Failed to start modem connection '$nm_con_name'." >&2
+  fi
+fi
+
+echo "Done."
+echo "Manage the modem with:"
+echo "  nmcli con up   '$nm_con_name'"
+echo "  nmcli con down '$nm_con_name'"

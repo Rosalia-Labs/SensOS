@@ -1,7 +1,6 @@
 wireguard
 wireguard-tools
 openresolv
-nftables
 python3-psutil
 python3-requests
 python3-smbus

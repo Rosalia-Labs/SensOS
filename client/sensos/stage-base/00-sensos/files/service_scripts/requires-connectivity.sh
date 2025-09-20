@@ -7,70 +7,91 @@ set -e
 source /sensos/lib/parse-switches.sh
 
 CFG_FILE="/sensos/etc/network.conf"
-MODEM_CONF="/sensos/etc/modem.conf"
-WIFI_CONF="/sensos/etc/wifi.conf"
 
 CONNECTIVITY_MODE=""
 WIREGUARD_IFACE=""
 API_IP=""
 NEEDS_TEARDOWN=0
 
-CANDIDATE_DEVS=()
+# We’ll record which NM connections we explicitly brought up
+BROUGHT_UP_CONNS=()
 
-[[ -f "$MODEM_CONF" ]] && source "$MODEM_CONF"
+# ---------- Helpers ----------
+nm_list_conns_by_type() {
+    # Usage: nm_list_conns_by_type <type>
+    # type: gsm | 802-3-ethernet | wifi | ...
+    nmcli -t -f NAME,TYPE con show | awk -F: -v want="$1" '$2==want{print $1}'
+}
 
-if [[ -f "$MODEM_CONF" ]]; then
-    while IFS='=' read -r key value; do
-        key="${key// /}"
-        value="${value// /}"
-        [[ "$key" == "INTERNAL_NAME" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
-    done <"$MODEM_CONF"
-fi
+nm_is_wifi_ap_mode() {
+    # Returns 0 (true) if the given connection is Wi-Fi AP mode, else 1 (false)
+    local name="$1"
+    local t
+    t="$(nmcli -t -f TYPE con show "$name" 2>/dev/null || true)"
+    [[ "$t" != "wifi" ]] && return 1
+    local mode
+    mode="$(nmcli -g 802-11-wireless.mode con show "$name" 2>/dev/null || true)"
+    [[ "$mode" == "ap" ]]
+}
 
-if [[ -f "$WIFI_CONF" ]]; then
-    while IFS='=' read -r key value; do
-        key="${key// /}"
-        value="${value// /}"
-        [[ "$key" == "IFACE" && -n "$value" ]] && CANDIDATE_DEVS+=("$value")
-    done <"$WIFI_CONF"
-fi
+up_conn_safe() {
+    local name="$1"
+    [[ -z "$name" ]] && return 0
+    # Do not *start* Wi-Fi APs here (avoid accidentally enabling hotspots)
+    if nm_is_wifi_ap_mode "$name"; then
+        echo "[INFO] Skipping Wi-Fi AP connection (not bringing up): $name"
+        return 0
+    fi
+    if nmcli -t -f NAME con show | grep -qx "$name"; then
+        echo "[INFO] Bringing up connection: $name"
+        if nmcli -w 15 con up "$name"; then
+            BROUGHT_UP_CONNS+=("$name")
+        else
+            echo "[WARN] Failed to bring up connection: $name"
+        fi
+    fi
+}
 
-CANDIDATE_DEVS+=("eth0")
-
-for_each_managed_dev() {
-    for dev in "${CANDIDATE_DEVS[@]}"; do
-        echo "$dev"
-    done
+down_conn_safe() {
+    local name="$1"
+    [[ -z "$name" ]] && return 0
+    # NEVER bring down any Wi-Fi AP profile
+    if nm_is_wifi_ap_mode "$name"; then
+        echo "[INFO] Not bringing down Wi-Fi AP connection: $name"
+        return 0
+    fi
+    echo "[INFO] Bringing down connection: $name"
+    nmcli -w 10 con down "$name" || true
 }
 
 setup() {
-    echo "[INFO] Enabling all NM-managed networking..."
-    sudo nmcli networking on
+    echo "[INFO] Enabling NetworkManager networking..."
+    nmcli networking on || true
 
-    for dev in $(for_each_managed_dev); do
-        if [[ -n "$APN" && -n "$INTERNAL_NAME" && "$dev" == "$INTERNAL_NAME" ]]; then
-            echo "[INFO] Bringing LTE up via NM profile (APN=$APN)…"
-            if ! nmcli -t -f NAME,TYPE c show | awk -F: '$2=="gsm"{print $1}' | grep -qx "lte"; then
-                sudo nmcli c add type gsm ifname "*" con-name "lte" \
-                    connection.interface-name "$INTERNAL_NAME" gsm.apn "$APN" ipv4.method auto
-            fi
-            sudo nmcli c up "lte" || echo "[WARN] nmcli c up lte failed"
-        else
-            echo "[INFO] Connecting $dev…"
-            sudo nmcli device connect "$dev" || true
-        fi
-    done
-    
+    # Bring up ALL GSM profiles
+    while read -r gsm; do
+        [[ -n "$gsm" ]] && up_conn_safe "$gsm"
+    done < <(nm_list_conns_by_type gsm)
+
+    # Bring up ALL Ethernet profiles
+    while read -r wired; do
+        [[ -n "$wired" ]] && up_conn_safe "$wired"
+    done < <(nm_list_conns_by_type 802-3-ethernet)
+
+    # Bring up ALL Wi-Fi *station* profiles (skip AP)
+    while read -r wifi; do
+        [[ -n "$wifi" ]] && up_conn_safe "$wifi"
+    done < <(nm_list_conns_by_type wifi)
+
+    # Brief connectivity check
     for i in {1..5}; do
         status="$(nmcli networking connectivity)"
-        if [[ "$status" == "full" ]]; then
-            break
-        fi
+        [[ "$status" == "full" ]] && break
         sleep 2
     done
 
     if [[ "$(nmcli networking connectivity)" != "full" ]]; then
-        echo "[WARN] Did not achieve full networking."
+        echo "[WARN] Did not achieve full networking (nmcli: $(nmcli networking connectivity))."
     fi
 
     echo "[INFO] Bringing up WireGuard interface ($WIREGUARD_IFACE)..."
@@ -81,10 +102,11 @@ cleanup() {
     if [[ $NEEDS_TEARDOWN -eq 1 && "$keep_after" != "true" ]]; then
         echo "[INFO] Stopping WireGuard interface ($WIREGUARD_IFACE)..."
         sudo systemctl stop "wg-quick@${WIREGUARD_IFACE}.service"
-        echo "[INFO] Disconnecting managed interfaces..."
-        for dev in $(for_each_managed_dev); do
-            echo "[INFO] Disconnecting $dev..."
-            sudo nmcli device disconnect "$dev" || true
+
+        echo "[INFO] Bringing down NM connections brought up by this script (excluding Wi-Fi APs)..."
+        # Tear down in reverse order just in case
+        for (( idx=${#BROUGHT_UP_CONNS[@]}-1 ; idx>=0 ; idx-- )); do
+            down_conn_safe "${BROUGHT_UP_CONNS[$idx]}"
         done
     else
         echo "[INFO] Skipping teardown (keep-after is true or teardown not needed)."
@@ -93,19 +115,21 @@ cleanup() {
 
 trap cleanup EXIT
 
+# ---------- Required config ----------
 if [[ ! -f "$CFG_FILE" ]]; then
     echo "[FATAL] $CFG_FILE not found." >&2
     exit 1
 fi
 
+# Read required fields from network.conf
 while IFS='=' read -r key value; do
     key="${key// /}"
     value="${value// /}"
     case "$key" in
-    CONNECTIVITY_MODE) CONNECTIVITY_MODE="${value,,}" ;;
-    CLIENT_WG_IP) CLIENT_WG_IP="$value" ;;
-    SERVER_WG_IP) SERVER_WG_IP="$value" ;;
-    NETWORK_NAME) NETWORK_NAME="$value" ;;
+        CONNECTIVITY_MODE) CONNECTIVITY_MODE="${value,,}" ;;
+        CLIENT_WG_IP)      CLIENT_WG_IP="$value" ;;
+        SERVER_WG_IP)      SERVER_WG_IP="$value" ;;
+        NETWORK_NAME)      NETWORK_NAME="$value" ;;
     esac
 done <"$CFG_FILE"
 
@@ -132,9 +156,10 @@ fi
 WIREGUARD_IFACE="$NETWORK_NAME"
 API_IP="$SERVER_WG_IP"
 
+# ---------- CLI options for the runner ----------
 register_option "--keep-after" "keep_after" "Keep connectivity after running command" "false"
-register_option "--interval" "ping_interval" "Ping interval in seconds" "30"
-register_option "--timeout" "ping_timeout" "API ping timeout in seconds" "3600"
+register_option "--interval"   "ping_interval" "Ping interval in seconds" "30"
+register_option "--timeout"    "ping_timeout"  "API ping timeout in seconds" "3600"
 
 parse_switches "$(basename "$0")" "$@"
 set -- "${REMAINING_ARGS[@]}"
@@ -144,6 +169,7 @@ if [[ $# -eq 0 ]]; then
     exit 1
 fi
 
+# Teardown unless always-on
 if [[ "$CONNECTIVITY_MODE" != "always" ]]; then
     NEEDS_TEARDOWN=1
 fi
@@ -155,7 +181,7 @@ start_time=$(date +%s)
 echo "[INFO] Trying to reach API proxy at $API_IP (timeout ${API_PING_TIMEOUT}s)..."
 
 if ping -c1 -W2 "$API_IP" >/dev/null 2>&1; then
-    echo "[INFO] Ping to $API_IP succeeded without bringing up interfaces."
+    echo "[INFO] Ping to $API_IP succeeded without bringing up connections."
 else
     setup
     while true; do
@@ -172,7 +198,7 @@ else
         fi
 
         echo "[WARN] Still no reply from $API_IP after ${elapsed}s, retrying..."
-        sleep $API_PING_INTERVAL
+        sleep "$API_PING_INTERVAL"
     done
 fi
 
