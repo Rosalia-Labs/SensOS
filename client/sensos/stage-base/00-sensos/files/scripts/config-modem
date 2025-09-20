@@ -7,16 +7,38 @@
 # - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
 # - If BANDWIDTH_POLICY=restricted, locks the modem device to WG (UDP WG_ENDPOINT_PORT) + DHCP + ESTABLISHED/RELATED
 # - Optional bandwidth caps via tc (egress/ingress)
-#
-# /sensos/etc/network.conf provides (among others):
-#   SERVER_WG_IP, CLIENT_WG_IP, SERVER_PORT, NETWORK_NAME,
-#   WG_ENDPOINT_IP, WG_ENDPOINT_PORT, SSH_TUNNEL_IP, SSH_TUNNEL_PORT,
-#   CONNECTIVITY_MODE, BANDWIDTH_POLICY
 
 set -euo pipefail
 
 script_name=$(basename "$0")
 network_conf="/sensos/etc/network.conf"
+
+if [[ $EUID -ne 0 ]]; then
+  echo "This script must be run as root." >&2
+  exit 1
+fi
+
+# ----------------------- early help (avoid parse-switches under set -u) -----------------------
+print_usage() {
+  cat <<EOF
+Usage: $script_name [options]
+
+Options:
+  --service [value]          Cellular provider (e.g. 1nce, Soracom)
+  --device  [value]          NetworkManager control port (e.g. cdc-wdm0 or ttyUSB2) (default: cdc-wdm0)
+  --start   [true|false]     Immediately bring modem online after config (default: false)
+  --limit-up-kbit [value]    Egress cap in kbit (optional)
+  --limit-down-kbit [value]  Ingress cap in kbit (optional)
+  -h, --help                 Show this help and exit
+EOF
+}
+
+for arg in "$@"; do
+  if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+    print_usage
+    exit 0
+  fi
+done
 
 # ----------------------- deps -----------------------
 if ! command -v nmcli >/dev/null 2>&1; then
@@ -38,14 +60,17 @@ get_default() {
 
 # ----------------------- options -----------------------
 register_option --service service "Cellular provider (e.g. 1nce, Soracom)" "$(get_default service)"
-register_option --device device "NetworkManager device (e.g. wwan0)" "$(get_default device wwan0)"
+# default to control port, not data iface
+register_option --device device "NetworkManager device/control port (e.g. cdc-wdm0 or ttyUSB2)" "$(get_default device cdc-wdm0)"
 register_option --start start_now "Immediately bring modem online after config" "$(get_default start_now false)"
-
 # Optional bandwidth limits (kbit)
-register_option --limit-up-kbit limit_up_kbit "Egress cap in kbit (optional)" "$(get_default limit_up_kbit)"
-register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" "$(get_default limit_down_kbit)"
+register_option --limit-up-kbit   limit_up_kbit   "Egress cap in kbit (optional)"   "$(get_default limit_up_kbit "")"
+register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" "$(get_default limit_down_kbit "")"
 
+# Guard parse-switches from nounset issues inside its help path
+set +u
 parse_switches "$script_name" "$@"
+set -u
 
 if [[ -z "${service:-}" ]]; then
   echo "ERROR: --service must be specified." >&2
@@ -65,7 +90,6 @@ CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
 BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-}"
 WG_ENDPOINT_PORT="${WG_ENDPOINT_PORT:-}"
 
-# If policy is restricted but no WG port is defined, fail (do NOT guess)
 if [[ "${BANDWIDTH_POLICY,,}" == "restricted" && -z "$WG_ENDPOINT_PORT" ]]; then
   echo "ERROR: BANDWIDTH_POLICY=restricted but WG_ENDPOINT_PORT is not set in $network_conf." >&2
   exit 1
@@ -73,8 +97,8 @@ fi
 
 # ----------------------- provider → APN -----------------------
 case "$service" in
-  1nce)    apn="iot.1nce.net" ;;
-  Soracom) apn="soracom.io" ;;
+  1nce|1NCE)         apn="iot.1nce.net" ;;
+  Soracom|soracom)   apn="soracom.io" ;;
   *)
     echo "ERROR: Unsupported service '$service'." >&2
     exit 1
@@ -82,6 +106,18 @@ case "$service" in
 esac
 
 nm_con_name="sensos-$service"
+
+# If user passed a data iface like wwan0, nudge to control port
+if [[ "${device}" == wwan* ]]; then
+  echo "NOTE: '$device' looks like a data interface. Using control port 'cdc-wdm0' instead."
+  device="cdc-wdm0"
+fi
+
+# Data iface used for tc/iptables if a control port is used
+data_iface="$device"
+if [[ "$device" == cdc-wdm* || "$device" == ttyUSB* ]]; then
+  data_iface="wwan0"
+fi
 
 # ----------------------- NM connection -----------------------
 if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
@@ -94,7 +130,7 @@ else
   nmcli con add type gsm ifname "$device" con-name "$nm_con_name" apn "$apn"
 fi
 
-nmcli con mod "$nm_con_name" ipv4.method auto || true
+nmcli con mod "$nm_con_name" ipv4.method auto   || true
 nmcli con mod "$nm_con_name" ipv6.method ignore || true
 
 if [[ "$CONNECTIVITY_MODE" == "always" ]]; then
@@ -125,13 +161,13 @@ apply_tc_limits() {
 }
 
 if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
-  apply_tc_limits "$device" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
+  apply_tc_limits "$data_iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
 fi
 
 # ----------------------- lockdown (restricted policy) -----------------------
 apply_lockdown_rules() {
   local dev="$1"
-  local wg_port="$2"  # single number
+  local wg_port="$2"
 
   if ! command -v iptables >/dev/null 2>&1; then
     echo "WARNING: iptables not found; cannot enforce lockdown on ${dev}." >&2
@@ -142,67 +178,55 @@ apply_lockdown_rules() {
   local CHAIN_OUT="SENSOS_LOCKDOWN_${dev}_OUT"
   local CHAIN_FWD="SENSOS_LOCKDOWN_${dev}_FWD"
 
-  # Create or flush dedicated chains (idempotent)
   iptables -w -L "$CHAIN_IN"  -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_IN"  || iptables -w -N "$CHAIN_IN"
   iptables -w -L "$CHAIN_OUT" -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_OUT" || iptables -w -N "$CHAIN_OUT"
   iptables -w -L "$CHAIN_FWD" -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_FWD" || iptables -w -N "$CHAIN_FWD"
 
-  # ==================== INPUT (packets arriving on $dev to the host) ====================
-  # Allow established/related return traffic (covers DNS replies, WG replies, ICMP replies, etc.)
   iptables -w -A "$CHAIN_IN"  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # DHCP server -> client (OFFER/ACK)
   iptables -w -A "$CHAIN_IN"  -p udp --sport 67 --dport 68 -j ACCEPT
-  # Default: drop everything else arriving from the modem
   iptables -w -A "$CHAIN_IN"  -j REJECT
-
-  # Ensure a single jump from INPUT into the chain for this device
   iptables -w -C INPUT  -i "$dev" -j "$CHAIN_IN" 2>/dev/null || iptables -w -I INPUT  -i "$dev" -j "$CHAIN_IN"
 
-  # ==================== OUTPUT (packets leaving host via $dev) ====================
-  # Allow established/related (return legs initiated from host)
   iptables -w -A "$CHAIN_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  # DHCP client -> server (DISCOVER/REQUEST)
   iptables -w -A "$CHAIN_OUT" -p udp --sport 68 --dport 67 -j ACCEPT
-  # WireGuard UDP to server
   iptables -w -A "$CHAIN_OUT" -p udp --dport "$wg_port" -j ACCEPT
-  # DNS to resolvers outside WG (needed since modem is only internet path)
   iptables -w -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT
   iptables -w -A "$CHAIN_OUT" -p tcp --dport 53 -j ACCEPT
-  # NTP for time sync
   iptables -w -A "$CHAIN_OUT" -p udp --dport 123 -j ACCEPT
-  # ICMP: allow outbound echo-request (replies covered by ESTABLISHED)
   iptables -w -A "$CHAIN_OUT" -p icmp --icmp-type echo-request -j ACCEPT
-  # Default: drop everything else trying to leave via the modem
   iptables -w -A "$CHAIN_OUT" -j REJECT
-
-  # Ensure a single jump from OUTPUT into the chain for this device
   iptables -w -C OUTPUT -o "$dev" -j "$CHAIN_OUT" 2>/dev/null || iptables -w -I OUTPUT -o "$dev" -j "$CHAIN_OUT"
 
-  # ==================== FORWARD (packets forwarded out via $dev) ====================
-  # If something on the box forwards through the modem, only allow WG egress.
   iptables -w -A "$CHAIN_FWD" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   iptables -w -A "$CHAIN_FWD" -p udp --dport "$wg_port" -j ACCEPT
   iptables -w -A "$CHAIN_FWD" -j REJECT
-
-  # Ensure a single jump from FORWARD into the chain for this device
   iptables -w -C FORWARD -o "$dev" -j "$CHAIN_FWD" 2>/dev/null || iptables -w -I FORWARD -o "$dev" -j "$CHAIN_FWD"
 
   echo "Applied lockdown on ${dev} (DHCP, DNS, NTP, ICMP-out, WG:${wg_port}; all else blocked)."
 }
 
 if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
-  apply_lockdown_rules "$device" "$WG_ENDPOINT_PORT"
+  apply_lockdown_rules "$data_iface" "$WG_ENDPOINT_PORT"
+fi
+
+if command -v vnstat >/dev/null 2>&1; then
+  if ! vnstat --iflist | grep -qw "$data_iface"; then
+    echo "Registering $data_iface with vnstat..."
+    vnstat --add -i "$data_iface"   # vnstat
+  fi
+else
+  echo "WARNING: vnstat not installed; cannot track usage on $data_iface." >&2
 fi
 
 # ----------------------- start now? -----------------------
 if [[ "${start_now}" == "true" ]]; then
-  echo "Bringing up modem connection '$nm_con_name'..."
-  if ! nmcli con up "$nm_con_name"; then
-    echo "WARNING: Failed to start modem connection '$nm_con_name'." >&2
+  echo "Bringing up modem connection '$nm_con_name' via '$device'..."
+  if ! nmcli -w 45 con up "$nm_con_name" ifname "$device"; then
+    echo "WARNING: Failed to start modem connection '$nm_con_name' (ifname=$device)." >&2
   fi
 fi
 
 echo "Done."
 echo "Manage the modem with:"
-echo "  nmcli con up   '$nm_con_name'"
-echo "  nmcli con down '$nm_con_name'"
+echo "  nmcli con up   $nm_con_name"
+echo "  nmcli con down $nm_con_name"
