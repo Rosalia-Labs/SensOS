@@ -2,11 +2,28 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 
-set -e
+# config-wifi
+# - Creates/updates a NetworkManager Wi-Fi (client) profile for the given SSID
+# - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
+# - Optionally brings the connection up immediately
+# - Writes /sensos/etc/wifi.conf for other tooling to read
+#
+# Notes:
+# - Does NOT modify or bring down any existing AP/hotspot connections
+# - Leaves IPv6 disabled on this profile for simplicity/consistency
+
+set -euo pipefail
 
 script_name=$(basename "$0")
+network_conf="/sensos/etc/network.conf"
 config_dir="/sensos/etc"
-config_file="$config_dir/wifi.conf"
+wifi_conf="$config_dir/wifi.conf"
+
+# ----------------------- deps -----------------------
+if ! command -v nmcli >/dev/null 2>&1; then
+  echo "ERROR: nmcli not found. Install NetworkManager." >&2
+  exit 1
+fi
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
@@ -15,51 +32,98 @@ declare -A default_vars
 load_defaults "$script_name" default_vars
 
 get_default() {
-    local varname="$1"
-    local fallback="$2"
-    echo "${default_vars[$varname]:-$fallback}"
+  local varname="$1"
+  local fallback="${2-}"
+  echo "${default_vars[$varname]:-$fallback}"
 }
 
+# ----------------------- options -----------------------
 register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid)"
-register_option --password password "WiFi Password (required)" "$(get_default password)"
-register_option --iface iface "WiFi Interface" "$(get_default iface wlan0)"
-register_option --enable-service enable_service "Enable sensos-wifi.service" "$(get_default enable_service true)"
-register_option --start-service start_service "Start sensos-wifi.service" "$(get_default start_service false)"
+register_option --password password "WiFi password (required for WPA-PSK)" "$(get_default password)"
+register_option --iface iface "WiFi interface" "$(get_default iface wlan0)"
+register_option --start start_now "Immediately bring Wi-Fi online after config" "$(get_default start_now false)"
+register_option --hidden hidden "Mark SSID as hidden (true/false)" "$(get_default hidden false)"
+# Optional: static profile name for stability across SSID edits
+register_option --name nm_name "NM connection name" "$(get_default nm_name sensos-wifi)"
 
-# Parse CLI
 parse_switches "$script_name" "$@"
 
-# Validate required arguments
-if [[ -z "$ssid" ]]; then
-    echo "ERROR: --ssid must be specified."
-    exit 1
+# ----------------------- validate -----------------------
+if [[ -z "${ssid:-}" ]]; then
+  echo "ERROR: --ssid must be specified." >&2
+  exit 1
 fi
 
-if [[ -z "$password" ]]; then
-    echo "ERROR: --password must be specified."
-    exit 1
+if [[ -z "${password:-}" ]]; then
+  echo "ERROR: --password must be specified (WPA-PSK)." >&2
+  exit 1
 fi
 
-# Ensure output directory exists
+if [[ ! -f "$network_conf" ]]; then
+  echo "ERROR: Required config $network_conf is missing." >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$network_conf"
+
+CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
+
+nm_con_name="${nm_name}"
+
+# ----------------------- persist simple config -----------------------
 mkdir -p "$config_dir"
-
-# Write config file
-cat >"$config_file" <<EOF
+cat >"$wifi_conf" <<EOF
 SSID=$ssid
 PASSWORD=$password
 IFACE=$iface
+HIDDEN=$hidden
 EOF
+echo "WiFi configuration saved to $wifi_conf"
 
-echo "WiFi configuration saved to $config_file"
-
-if [[ "$enable_service" == "true" ]]; then
-    echo "Enabling sensos-wifi.service..."
-    sudo systemctl daemon-reload
-    sudo systemctl enable sensos-wifi.service
+# ----------------------- create/update NM profile -----------------------
+# Never touch AP/hotspot profiles; we only create/update our own client profile.
+if nmcli -t -f NAME,TYPE con show | awk -F: '$2=="wifi" {print $1}' | grep -qx "$nm_con_name"; then
+  echo "Updating connection '$nm_con_name' on '$iface'..."
+  nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
+  nmcli con mod "$nm_con_name" connection.interface-name "$iface" || true
+  nmcli con mod "$nm_con_name" 802-11-wireless.ssid "$ssid" || true
+  nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$([[ "$hidden" == "true" ]] && echo yes || echo no)" || true
+  nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure || true
+  nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk || true
+  nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password" || true
+else
+  echo "Creating connection '$nm_con_name' on '$iface'..."
+  nmcli con add type wifi ifname "$iface" con-name "$nm_con_name" ssid "$ssid"
+  nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure
+  nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$([[ "$hidden" == "true" ]] && echo yes || echo no)"
+  nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk
+  nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password"
 fi
 
-if [[ "$start_service" == "true" ]]; then
-    echo "Starting sensos-wifi.service..."
-    sudo systemctl daemon-reload
-    sudo systemctl restart sensos-wifi.service
+# IP settings: DHCPv4 only (match config-modem style)
+nmcli con mod "$nm_con_name" ipv4.method auto || true
+nmcli con mod "$nm_con_name" ipv6.method ignore || true
+
+# Autoconnect behavior follows CONNECTIVITY_MODE, same as config-modem
+if [[ "$CONNECTIVITY_MODE" == "always" ]]; then
+  nmcli con mod "$nm_con_name" connection.autoconnect yes
+  echo "Autoconnect enabled (CONNECTIVITY_MODE=always)."
+else
+  nmcli con mod "$nm_con_name" connection.autoconnect no
+  echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
 fi
+
+# ----------------------- start now? -----------------------
+if [[ "${start_now}" == "true" ]]; then
+  echo "Bringing up Wi-Fi connection '$nm_con_name'..."
+  # Important: do NOT bring down any AP/hotspot; just bring our client profile up.
+  if ! nmcli con up "$nm_con_name"; then
+    echo "WARNING: Failed to start Wi-Fi connection '$nm_con_name'." >&2
+  fi
+fi
+
+echo "Done."
+echo "Manage Wi-Fi with:"
+echo "  nmcli con up   '$nm_con_name'"
+echo "  nmcli con down '$nm_con_name'   # (avoid if this profile is used as AP; this one is client-only)"

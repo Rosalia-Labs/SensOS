@@ -24,9 +24,4 @@ on_chroot <<'EOF'
 systemctl enable vnstat.service
 EOF
 
-on_chroot <<'EOF'
-systemctl enable sensos-apply-bandwidth-policy.service
-systemctl enable sensos-apply-bandwidth-policy.path
-EOF
-
 echo "Completed SensOS 06-run.sh"
