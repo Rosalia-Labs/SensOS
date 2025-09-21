@@ -1,23 +1,49 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Rosalia Labs LLC
+# Copyright (c) 2025 Rosalia Labs
 
 # config-wifi
-# - Creates/updates a NetworkManager Wi-Fi (client) profile for the given SSID
+# - Creates/updates a NetworkManager Wi-Fi client profile for the given SSID
 # - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
-# - Optionally brings the connection up immediately
-# - Writes /sensos/etc/wifi.conf for other tooling to read
-#
-# Notes:
-# - Does NOT modify or bring down any existing AP/hotspot connections
-# - Leaves IPv6 disabled on this profile for simplicity/consistency
+# - If BANDWIDTH_POLICY=restricted, locks the Wi-Fi uplink iface to WG (UDP WG_ENDPOINT_PORT) + DHCP + ESTABLISHED/RELATED
+#   and blocks all forwarding out that iface. DNS is NOT allowed on the uplink.
+# - Optional bandwidth caps via tc (egress/ingress)
+# - Persists firewall snapshot per-interface under /sensos/etc/iptables/lockdown-<iface>.rules.v4
 
 set -euo pipefail
 
 script_name=$(basename "$0")
 network_conf="/sensos/etc/network.conf"
-config_dir="/sensos/etc"
-wifi_conf="$config_dir/wifi.conf"
+
+# ----------------------- enforce user / sudo -----------------------
+if [[ "$(id -un)" != "sensos-admin" ]]; then
+  echo "ERROR: this script must be run as sensos-admin." >&2
+  exit 1
+fi
+
+# ----------------------- early help (avoid parse-switches under set -u) -----------------------
+print_usage() {
+  cat <<EOF
+Usage: $script_name [options]
+
+Options:
+  --ssid [value]             WiFi SSID (required)
+  --password [value]         WiFi password (WPA-PSK). Omit for open networks.
+  --iface [value]            WiFi interface (default: wlan0)
+  --start [true|false]       Immediately bring Wi-Fi online after config (default: false)
+  --hidden [true|false]      Mark SSID as hidden (default: false)
+  --limit-up-kbit [value]    Egress cap in kbit (optional)
+  --limit-down-kbit [value]  Ingress cap in kbit (optional)
+  -h, --help                 Show this help and exit
+EOF
+}
+
+for arg in "$@"; do
+  if [[ "$arg" == "--help" || "$arg" == "-h" ]]; then
+    print_usage
+    exit 0
+  fi
+done
 
 # ----------------------- deps -----------------------
 if ! command -v nmcli >/dev/null 2>&1; then
@@ -39,26 +65,26 @@ get_default() {
 
 # ----------------------- options -----------------------
 register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid)"
-register_option --password password "WiFi password (required for WPA-PSK)" "$(get_default password)"
+register_option --password password "WiFi password (required for WPA-PSK; omit for open)" "$(get_default password)"
 register_option --iface iface "WiFi interface" "$(get_default iface wlan0)"
 register_option --start start_now "Immediately bring Wi-Fi online after config" "$(get_default start_now false)"
 register_option --hidden hidden "Mark SSID as hidden (true/false)" "$(get_default hidden false)"
-# Optional: static profile name for stability across SSID edits
-register_option --name nm_name "NM connection name" "$(get_default nm_name sensos-wifi)"
+# Optional bandwidth limits (kbit)
+register_option --limit-up-kbit   limit_up_kbit   "Egress cap in kbit (optional)"   "$(get_default limit_up_kbit "")"
+register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" "$(get_default limit_down_kbit "")"
 
+# Guard parse-switches from nounset issues inside its help path
+set +u
 parse_switches "$script_name" "$@"
+set -u
 
-# ----------------------- validate -----------------------
+# ----------------------- validate required args -----------------------
 if [[ -z "${ssid:-}" ]]; then
   echo "ERROR: --ssid must be specified." >&2
   exit 1
 fi
 
-if [[ -z "${password:-}" ]]; then
-  echo "ERROR: --password must be specified (WPA-PSK)." >&2
-  exit 1
-fi
-
+# ----------------------- config presence -----------------------
 if [[ ! -f "$network_conf" ]]; then
   echo "ERROR: Required config $network_conf is missing." >&2
   exit 1
@@ -68,62 +94,159 @@ fi
 source "$network_conf"
 
 CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
+BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-}"
+WG_ENDPOINT_PORT="${WG_ENDPOINT_PORT:-}"
 
-nm_con_name="${nm_name}"
-
-# ----------------------- persist simple config -----------------------
-mkdir -p "$config_dir"
-cat >"$wifi_conf" <<EOF
-SSID=$ssid
-PASSWORD=$password
-IFACE=$iface
-HIDDEN=$hidden
-EOF
-echo "WiFi configuration saved to $wifi_conf"
-
-# ----------------------- create/update NM profile -----------------------
-# Never touch AP/hotspot profiles; we only create/update our own client profile.
-if nmcli -t -f NAME,TYPE con show | awk -F: '$2=="wifi" {print $1}' | grep -qx "$nm_con_name"; then
-  echo "Updating connection '$nm_con_name' on '$iface'..."
-  nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
-  nmcli con mod "$nm_con_name" connection.interface-name "$iface" || true
-  nmcli con mod "$nm_con_name" 802-11-wireless.ssid "$ssid" || true
-  nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$([[ "$hidden" == "true" ]] && echo yes || echo no)" || true
-  nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure || true
-  nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk || true
-  nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password" || true
-else
-  echo "Creating connection '$nm_con_name' on '$iface'..."
-  nmcli con add type wifi ifname "$iface" con-name "$nm_con_name" ssid "$ssid"
-  nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure
-  nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$([[ "$hidden" == "true" ]] && echo yes || echo no)"
-  nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk
-  nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password"
+if [[ "${BANDWIDTH_POLICY,,}" == "restricted" && -z "$WG_ENDPOINT_PORT" ]]; then
+  echo "ERROR: BANDWIDTH_POLICY=restricted but WG_ENDPOINT_PORT is not set in $network_conf." >&2
+  exit 1
 fi
 
-# IP settings: DHCPv4 only (match config-modem style)
-nmcli con mod "$nm_con_name" ipv4.method auto || true
-nmcli con mod "$nm_con_name" ipv6.method ignore || true
+# ----------------------- NM connection name -----------------------
+nm_con_name="sensos-wifi-${ssid}"
 
-# Autoconnect behavior follows CONNECTIVITY_MODE, same as config-modem
+# ----------------------- create/update Wi-Fi connection -----------------------
+# If connection exists, modify; else create.
+if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
+  echo "Updating Wi-Fi connection '$nm_con_name' on iface '$iface'..."
+  sudo nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
+  sudo nmcli con mod "$nm_con_name" connection.interface-name "$iface" || true
+  sudo nmcli con mod "$nm_con_name" 802-11-wireless.ssid "$ssid" || true
+  sudo nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure || true
+  sudo nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$( [[ "${hidden,,}" == "true" ]] && echo yes || echo no )" || true
+
+  if [[ -n "${password:-}" ]]; then
+    sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk || true
+    sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password" || true
+  else
+    # Open network
+    sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt none || true
+    sudo nmcli con mod "$nm_con_name" -g 802-11-wireless-security.psk >/dev/null 2>&1 || true
+  fi
+else
+  echo "Creating Wi-Fi connection '$nm_con_name' on iface '$iface'..."
+  sudo nmcli con add type wifi ifname "$iface" con-name "$nm_con_name" ssid "$ssid"
+  sudo nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure
+  sudo nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$( [[ "${hidden,,}" == "true" ]] && echo yes || echo no )"
+
+  if [[ -n "${password:-}" ]]; then
+    sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk
+    sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password"
+  else
+    sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt none
+  fi
+fi
+
+# IP config like modem script
+sudo nmcli con mod "$nm_con_name" ipv4.method auto   || true
+sudo nmcli con mod "$nm_con_name" ipv6.method ignore || true
+
+# Autoconnect policy
 if [[ "$CONNECTIVITY_MODE" == "always" ]]; then
-  nmcli con mod "$nm_con_name" connection.autoconnect yes
+  sudo nmcli con mod "$nm_con_name" connection.autoconnect yes
   echo "Autoconnect enabled (CONNECTIVITY_MODE=always)."
 else
-  nmcli con mod "$nm_con_name" connection.autoconnect no
+  sudo nmcli con mod "$nm_con_name" connection.autoconnect no
   echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
+fi
+
+# ----------------------- tc limits -----------------------
+apply_tc_limits() {
+  local dev="$1" up_kbit="${2:-}" down_kbit="${3:-}"
+
+  if [[ -n "${up_kbit}" ]]; then
+    echo "Applying egress cap ${up_kbit} kbit on ${dev}..."
+    sudo tc qdisc del dev "$dev" root 2>/dev/null || true
+    sudo tc qdisc add dev "$dev" root tbf rate "${up_kbit}kbit" burst 32kbit latency 400ms
+  fi
+
+  if [[ -n "${down_kbit}" ]]; then
+    echo "Applying ingress cap ${down_kbit} kbit on ${dev}..."
+    sudo tc qdisc del dev "$dev" handle ffff: ingress 2>/dev/null || true
+    sudo tc qdisc add dev "$dev" handle ffff: ingress
+    sudo tc filter add dev "$dev" parent ffff: protocol all u32 \
+      match u32 0 0 police rate "${down_kbit}kbit" burst 32k drop flowid :1
+  fi
+}
+
+if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
+  apply_tc_limits "$iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
+fi
+
+# ----------------------- lockdown (restricted policy) -----------------------
+apply_lockdown_rules() {
+  local dev="$1"
+  local wg_port="$2"
+
+  if ! command -v iptables >/dev/null 2>&1; then
+    echo "WARNING: iptables not found; cannot enforce lockdown on ${dev}." >&2
+    return 0
+  fi
+
+  local CHAIN_IN="SENSOS_LOCKDOWN_${dev}_IN"
+  local CHAIN_OUT="SENSOS_LOCKDOWN_${dev}_OUT"
+  local CHAIN_FWD="SENSOS_LOCKDOWN_${dev}_FWD"
+
+  sudo iptables -w -L "$CHAIN_IN"  -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_IN"  || sudo iptables -w -N "$CHAIN_IN"
+  sudo iptables -w -L "$CHAIN_OUT" -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_OUT" || sudo iptables -w -N "$CHAIN_OUT"
+  sudo iptables -w -L "$CHAIN_FWD" -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_FWD" || sudo iptables -w -N "$CHAIN_FWD"
+
+  # INPUT (to host via $dev): allow DHCP replies, established/related; reject everything else
+  sudo iptables -w -A "$CHAIN_IN"  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo iptables -w -A "$CHAIN_IN"  -p udp --sport 67 --dport 68 -j ACCEPT
+  sudo iptables -w -A "$CHAIN_IN"  -j REJECT
+  sudo iptables -w -C INPUT  -i "$dev" -j "$CHAIN_IN" 2>/dev/null || sudo iptables -w -I INPUT  -i "$dev" -j "$CHAIN_IN"
+
+  # OUTPUT (from host to $dev): allow DHCP client, WireGuard, NTP, ICMP; reject everything else (NO DNS)
+  sudo iptables -w -A "$CHAIN_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p udp --sport 68 --dport 67 -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p udp --dport "$wg_port" -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p udp --dport 123 -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p icmp --icmp-type echo-request -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -j REJECT
+  sudo iptables -w -C OUTPUT -o "$dev" -j "$CHAIN_OUT" 2>/dev/null || sudo iptables -w -I OUTPUT -o "$dev" -j "$CHAIN_OUT"
+
+  # FORWARD (through $dev): block *all* forwarding out the Wi-Fi uplink iface in restricted mode
+  sudo iptables -w -A "$CHAIN_FWD" -j REJECT
+  sudo iptables -w -C FORWARD -o "$dev" -j "$CHAIN_FWD" 2>/dev/null || sudo iptables -w -I FORWARD -o "$dev" -j "$CHAIN_FWD"
+
+  echo "Applied lockdown on ${dev} (no DNS, no forwarding; host-only: DHCP, WG:${wg_port}, NTP, ICMP)."
+}
+
+if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
+  apply_lockdown_rules "$iface" "$WG_ENDPOINT_PORT"
+fi
+
+# ----------------------- save firewall snapshot -----------------------
+# Save the entire iptables ruleset for later restore at boot (one file per device).
+rules_dir="/sensos/etc/iptables"
+rules_file="${rules_dir}/lockdown-${iface}.rules.v4"
+
+sudo mkdir -p "$rules_dir"
+sudo iptables-save > "$rules_file"
+echo "Saved firewall rules to $rules_file"
+echo "Note: your restore service can glob ${rules_dir}/lockdown-*.rules.v4"
+
+# ----------------------- vnstat registration -----------------------
+if command -v vnstat >/dev/null 2>&1; then
+  if ! vnstat --iflist | grep -qw "$iface"; then
+    echo "Registering $iface with vnstat..."
+    sudo vnstat --add -i "$iface"
+  fi
+else
+  echo "WARNING: vnstat not installed; cannot track usage on $iface." >&2
 fi
 
 # ----------------------- start now? -----------------------
 if [[ "${start_now}" == "true" ]]; then
-  echo "Bringing up Wi-Fi connection '$nm_con_name'..."
-  # Important: do NOT bring down any AP/hotspot; just bring our client profile up.
-  if ! nmcli con up "$nm_con_name"; then
-    echo "WARNING: Failed to start Wi-Fi connection '$nm_con_name'." >&2
+  echo "Bringing up Wi-Fi connection '$nm_con_name' via '$iface'..."
+  # IMPORTANT: never bring down an AP profile; this script only manages client profile '$nm_con_name'
+  if ! sudo nmcli -w 45 con up "$nm_con_name" ifname "$iface"; then
+    echo "WARNING: Failed to start Wi-Fi connection '$nm_con_name' (ifname=$iface)." >&2
   fi
 fi
 
 echo "Done."
 echo "Manage Wi-Fi with:"
-echo "  nmcli con up   '$nm_con_name'"
-echo "  nmcli con down '$nm_con_name'   # (avoid if this profile is used as AP; this one is client-only)"
+echo "  sudo nmcli con up   $nm_con_name"
+echo "  sudo nmcli con down $nm_con_name"

@@ -152,26 +152,54 @@ def parse_args():
     return parse_args_with_defaults(arg_defs, ["global", script_name])
 
 
-def enable_ssh(disable_passwords: bool = False):
+def enable_ssh(disable_passwords: bool = False, allowed_password_subnets=None):
+    """
+    Configure sshd so that:
+      - Passwords are disabled globally.
+      - If disable_passwords is False and allowed_password_subnets is non-empty,
+        passwords are re-enabled only for those subnets via a Match block.
+
+    allowed_password_subnets: list[str], e.g. ["10.42.0.0/24", "192.168.1.0/24", "10.23.0.0/16"]
+    """
+    if allowed_password_subnets is None:
+        allowed_password_subnets = []
+
     sshd_dir = "/etc/ssh/sshd_config.d"
     custom_conf = os.path.join(sshd_dir, "sensos.conf")
-    password_setting = "no" if disable_passwords else "yes"
 
-    create_dir(sshd_dir, owner="root", mode=0o755)
-    config = f"""\
-# Set by SensOS
-PasswordAuthentication {password_setting}
-PubkeyAuthentication yes
-"""
+    # Global: keys only; tighten a few basics
+    base = [
+        "# Set by SensOS",
+        "PubkeyAuthentication yes",
+        "PasswordAuthentication no",
+        "PermitRootLogin no",
+        "MaxAuthTries 3",
+        "LoginGraceTime 30s",
+    ]
+
+    # Re-enable passwords only on allowed subnets (if not globally disabled)
+    match_block = []
+    if not disable_passwords and allowed_password_subnets:
+        cidrs = ",".join(allowed_password_subnets)
+        match_block = [
+            "",
+            f"Match Address {cidrs}",
+            "    PasswordAuthentication yes",
+        ]
+
+    config = "\n".join(base + match_block) + "\n"
     write_file(custom_conf, config, mode=0o644, user="root")
-    print(
-        f"✅ SSH passwords are {'disabled' if disable_passwords else 'enabled'} in {custom_conf}."
-    )
+
+    print(f"✅ sshd policy written to {custom_conf}")
+    if disable_passwords:
+        print("🔒 SSH passwords disabled globally.")
+    else:
+        print(
+            f"🔓 SSH passwords allowed only from: {', '.join(allowed_password_subnets) or '(none)'}"
+        )
 
     privileged_shell("systemctl enable ssh")
-    privileged_shell("systemctl restart ssh")
-    print("✅ SSH service enabled and restarted.")
-    print("🔄 A reboot is still recommended to ensure all changes take full effect.")
+    privileged_shell("systemctl reload ssh || systemctl restart ssh")
 
 
 def generate_wireguard_keys(network_name, force):
@@ -611,6 +639,15 @@ def remove_sensos_config_files(network_name):
         remove_file(f)  # Assuming remove_file does not error if not present
 
 
+def vnstat_register_interface(iface: str):
+    """Register an interface with vnStat and ensure the service is enabled."""
+    if shutil.which("vnstat") is None:
+        print("⚠️ vnstat not installed; skipping vnStat registration.")
+        return
+    privileged_shell(f"vnstat --add -i {iface} || true")
+    print(f"✅ vnStat: registered interface '{iface}'.")
+
+
 def main():
     username = pwd.getpwuid(os.geteuid()).pw_name
     if username not in ("sensos-admin", "root"):
@@ -662,7 +699,25 @@ def main():
     write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip, wg_port)
     configure_ssh(args, api_password, client_wg_ip)
 
-    enable_ssh(disable_passwords=args.disable_ssh_passwords)
+    try:
+        a, b, _, _ = map(int, client_wg_ip.split("."))
+        wg_subnet = f"{a}.{b}.0.0/16"
+    except Exception:
+        wg_subnet = None
+
+    # Build the allowlist for password-auth (unless disabled entirely)
+    allowed_pw_subnets = []
+    if not args.disable_ssh_passwords:
+        allowed_pw_subnets = ["10.42.0.0/24", "192.168.1.0/24"]
+        if wg_subnet:
+            allowed_pw_subnets.append(wg_subnet)
+
+    enable_ssh(
+        disable_passwords=args.disable_ssh_passwords,
+        allowed_password_subnets=allowed_pw_subnets,
+    )
+
+    vnstat_register_interface(args.network)
 
     if args.connectivity_mode == "always":
         privileged_shell(f"systemctl enable wg-quick@{args.network}")

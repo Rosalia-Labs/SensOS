@@ -18,4 +18,6 @@ libssl-dev
 sqlite3
 vnstat
 nethogs
+iftop
+tcpdump
 jq

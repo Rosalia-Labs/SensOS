@@ -13,8 +13,9 @@ set -euo pipefail
 script_name=$(basename "$0")
 network_conf="/sensos/etc/network.conf"
 
-if [[ $EUID -ne 0 ]]; then
-  echo "This script must be run as root." >&2
+# ----------------------- enforce user / sudo -----------------------
+if [[ "$(id -un)" != "sensos-admin" ]]; then
+  echo "ERROR: this script must be run as sensos-admin." >&2
   exit 1
 fi
 
@@ -122,22 +123,22 @@ fi
 # ----------------------- NM connection -----------------------
 if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
   echo "Updating connection '$nm_con_name' for device '$device'..."
-  nmcli con mod "$nm_con_name" gsm.apn "$apn" || true
-  nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
-  nmcli con mod "$nm_con_name" connection.interface-name "$device" || true
+  sudo nmcli con mod "$nm_con_name" gsm.apn "$apn" || true
+  sudo nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
+  sudo nmcli con mod "$nm_con_name" connection.interface-name "$device" || true
 else
   echo "Creating connection '$nm_con_name' on device '$device'..."
-  nmcli con add type gsm ifname "$device" con-name "$nm_con_name" apn "$apn"
+  sudo nmcli con add type gsm ifname "$device" con-name "$nm_con_name" apn "$apn"
 fi
 
-nmcli con mod "$nm_con_name" ipv4.method auto   || true
-nmcli con mod "$nm_con_name" ipv6.method ignore || true
+sudo nmcli con mod "$nm_con_name" ipv4.method auto   || true
+sudo nmcli con mod "$nm_con_name" ipv6.method ignore || true
 
 if [[ "$CONNECTIVITY_MODE" == "always" ]]; then
-  nmcli con mod "$nm_con_name" connection.autoconnect yes
+  sudo nmcli con mod "$nm_con_name" connection.autoconnect yes
   echo "Autoconnect enabled (CONNECTIVITY_MODE=always)."
 else
-  nmcli con mod "$nm_con_name" connection.autoconnect no
+  sudo nmcli con mod "$nm_con_name" connection.autoconnect no
   echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
 fi
 
@@ -147,15 +148,15 @@ apply_tc_limits() {
 
   if [[ -n "${up_kbit}" ]]; then
     echo "Applying egress cap ${up_kbit} kbit on ${dev}..."
-    tc qdisc del dev "$dev" root 2>/dev/null || true
-    tc qdisc add dev "$dev" root tbf rate "${up_kbit}kbit" burst 32kbit latency 400ms
+    sudo tc qdisc del dev "$dev" root 2>/dev/null || true
+    sudo tc qdisc add dev "$dev" root tbf rate "${up_kbit}kbit" burst 32kbit latency 400ms
   fi
 
   if [[ -n "${down_kbit}" ]]; then
     echo "Applying ingress cap ${down_kbit} kbit on ${dev}..."
-    tc qdisc del dev "$dev" handle ffff: ingress 2>/dev/null || true
-    tc qdisc add dev "$dev" handle ffff: ingress
-    tc filter add dev "$dev" parent ffff: protocol all u32 \
+    sudo tc qdisc del dev "$dev" handle ffff: ingress 2>/dev/null || true
+    sudo tc qdisc add dev "$dev" handle ffff: ingress
+    sudo tc filter add dev "$dev" parent ffff: protocol all u32 \
       match u32 0 0 police rate "${down_kbit}kbit" burst 32k drop flowid :1
   fi
 }
@@ -178,41 +179,52 @@ apply_lockdown_rules() {
   local CHAIN_OUT="SENSOS_LOCKDOWN_${dev}_OUT"
   local CHAIN_FWD="SENSOS_LOCKDOWN_${dev}_FWD"
 
-  iptables -w -L "$CHAIN_IN"  -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_IN"  || iptables -w -N "$CHAIN_IN"
-  iptables -w -L "$CHAIN_OUT" -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_OUT" || iptables -w -N "$CHAIN_OUT"
-  iptables -w -L "$CHAIN_FWD" -n >/dev/null 2>&1 && iptables -w -F "$CHAIN_FWD" || iptables -w -N "$CHAIN_FWD"
+  sudo iptables -w -L "$CHAIN_IN"  -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_IN"  || sudo iptables -w -N "$CHAIN_IN"
+  sudo iptables -w -L "$CHAIN_OUT" -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_OUT" || sudo iptables -w -N "$CHAIN_OUT"
+  sudo iptables -w -L "$CHAIN_FWD" -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_FWD" || sudo iptables -w -N "$CHAIN_FWD"
 
-  iptables -w -A "$CHAIN_IN"  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  iptables -w -A "$CHAIN_IN"  -p udp --sport 67 --dport 68 -j ACCEPT
-  iptables -w -A "$CHAIN_IN"  -j REJECT
-  iptables -w -C INPUT  -i "$dev" -j "$CHAIN_IN" 2>/dev/null || iptables -w -I INPUT  -i "$dev" -j "$CHAIN_IN"
+  # INPUT (to host via $dev): allow DHCP replies, established/related; reject everything else
+  sudo iptables -w -A "$CHAIN_IN"  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo iptables -w -A "$CHAIN_IN"  -p udp --sport 67 --dport 68 -j ACCEPT
+  sudo iptables -w -A "$CHAIN_IN"  -j REJECT
+  sudo iptables -w -C INPUT  -i "$dev" -j "$CHAIN_IN" 2>/dev/null || sudo iptables -w -I INPUT  -i "$dev" -j "$CHAIN_IN"
 
-  iptables -w -A "$CHAIN_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -p udp --sport 68 --dport 67 -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -p udp --dport "$wg_port" -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -p udp --dport 53 -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -p tcp --dport 53 -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -p udp --dport 123 -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -p icmp --icmp-type echo-request -j ACCEPT
-  iptables -w -A "$CHAIN_OUT" -j REJECT
-  iptables -w -C OUTPUT -o "$dev" -j "$CHAIN_OUT" 2>/dev/null || iptables -w -I OUTPUT -o "$dev" -j "$CHAIN_OUT"
+  # OUTPUT (from host to $dev): allow DHCP client, WireGuard, NTP, ICMP; reject everything else
+  sudo iptables -w -A "$CHAIN_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p udp --sport 68 --dport 67 -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p udp --dport "$wg_port" -j ACCEPT
+  # (DNS explicitly NOT allowed)
+  sudo iptables -w -A "$CHAIN_OUT" -p udp --dport 123 -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -p icmp --icmp-type echo-request -j ACCEPT
+  sudo iptables -w -A "$CHAIN_OUT" -j REJECT
+  sudo iptables -w -C OUTPUT -o "$dev" -j "$CHAIN_OUT" 2>/dev/null || sudo iptables -w -I OUTPUT -o "$dev" -j "$CHAIN_OUT"
 
-  iptables -w -A "$CHAIN_FWD" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  iptables -w -A "$CHAIN_FWD" -p udp --dport "$wg_port" -j ACCEPT
-  iptables -w -A "$CHAIN_FWD" -j REJECT
-  iptables -w -C FORWARD -o "$dev" -j "$CHAIN_FWD" 2>/dev/null || iptables -w -I FORWARD -o "$dev" -j "$CHAIN_FWD"
+  # FORWARD (through $dev): block *all* forwarding out the modem iface in restricted mode
+  sudo iptables -w -A "$CHAIN_FWD" -j REJECT
+  sudo iptables -w -C FORWARD -o "$dev" -j "$CHAIN_FWD" 2>/dev/null || sudo iptables -w -I FORWARD -o "$dev" -j "$CHAIN_FWD"
 
-  echo "Applied lockdown on ${dev} (DHCP, DNS, NTP, ICMP-out, WG:${wg_port}; all else blocked)."
+  echo "Applied lockdown on ${dev} (no DNS, no forwarding; host-only: DHCP, WG:${wg_port}, NTP, ICMP)."
 }
 
 if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
   apply_lockdown_rules "$data_iface" "$WG_ENDPOINT_PORT"
 fi
 
+# ----------------------- save firewall snapshot -----------------------
+# Save the entire iptables ruleset for later restore at boot (one file per device).
+rules_dir="/sensos/etc/iptables"
+rules_file="${rules_dir}/lockdown-${data_iface}.rules.v4"
+
+sudo mkdir -p "$rules_dir"
+sudo iptables-save > "$rules_file"
+echo "Saved firewall rules to $rules_file"
+echo "Note: your restore service can glob ${rules_dir}/lockdown-*.rules.v4"
+
+# ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
   if ! vnstat --iflist | grep -qw "$data_iface"; then
     echo "Registering $data_iface with vnstat..."
-    vnstat --add -i "$data_iface"   # vnstat
+    sudo vnstat --add -i "$data_iface"   # vnstat
   fi
 else
   echo "WARNING: vnstat not installed; cannot track usage on $data_iface." >&2
@@ -221,12 +233,12 @@ fi
 # ----------------------- start now? -----------------------
 if [[ "${start_now}" == "true" ]]; then
   echo "Bringing up modem connection '$nm_con_name' via '$device'..."
-  if ! nmcli -w 45 con up "$nm_con_name" ifname "$device"; then
+  if ! sudo nmcli -w 45 con up "$nm_con_name" ifname "$device"; then
     echo "WARNING: Failed to start modem connection '$nm_con_name' (ifname=$device)." >&2
   fi
 fi
 
 echo "Done."
 echo "Manage the modem with:"
-echo "  nmcli con up   $nm_con_name"
-echo "  nmcli con down $nm_con_name"
+echo "  sudo nmcli con up   $nm_con_name"
+echo "  sudo nmcli con down $nm_con_name"

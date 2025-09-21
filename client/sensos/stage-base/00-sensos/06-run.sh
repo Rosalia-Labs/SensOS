@@ -24,4 +24,8 @@ on_chroot <<'EOF'
 systemctl enable vnstat.service
 EOF
 
+on_chroot <<'EOF'
+systemctl enable sensos-restore-iptables.service
+EOF
+
 echo "Completed SensOS 06-run.sh"
