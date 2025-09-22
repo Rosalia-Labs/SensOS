@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 
-set -e
-
-LOG_FILE="$log_dir/access_point.log"
+set -euo pipefail
 
 script_name=$(basename "$0")
 config_dir="/sensos/etc"
 config_file="$config_dir/access_point.conf"
 log_dir="/sensos/log"
+LOG_FILE="$log_dir/access_point.log"
+
+mkdir -p "$config_dir" "$log_dir"
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
@@ -17,109 +18,141 @@ source /sensos/lib/parse-switches.sh
 declare -A default_vars
 load_defaults "$script_name" default_vars
 
-get_default() {
-    local varname="$1"
-    local fallback="$2"
-    echo "${default_vars[$varname]:-$fallback}"
-}
+get_default() { local v="$1" f="${2:-}"; echo "${default_vars[$v]:-$f}"; }
 
 network_conf="/sensos/etc/network.conf"
-
 if [[ ! -f "$network_conf" ]]; then
-    echo "ERROR: $network_conf does not exist."
-    exit 1
+  echo "ERROR: $network_conf does not exist." >&2
+  exit 1
 fi
 
 NETWORK_NAME=""
 CLIENT_WG_IP=""
 while IFS='=' read -r key value; do
-    key=$(echo "$key" | tr -d ' ')
-    value=$(echo "$value" | tr -d ' ')
-    case "$key" in
+  key="${key// /}"; value="${value// /}"
+  case "$key" in
     NETWORK_NAME) NETWORK_NAME="$value" ;;
     CLIENT_WG_IP) CLIENT_WG_IP="$value" ;;
-    esac
+  esac
 done <"$network_conf"
 
 if [[ -z "$NETWORK_NAME" || -z "$CLIENT_WG_IP" ]]; then
-    echo "ERROR: NETWORK_NAME or CLIENT_WG_IP not set in $network_conf"
-    exit 1
+  echo "ERROR: NETWORK_NAME or CLIENT_WG_IP not set in $network_conf" >&2
+  exit 1
 fi
 
 IFS='.' read -r _ _ oct3 oct4 <<<"$CLIENT_WG_IP"
 default_ssid="${NETWORK_NAME}-${oct3}-${oct4}"
 
+# ---- CLI options ----
 register_option --ssid ssid "WiFi SSID" "$(get_default ssid "$default_ssid")"
 register_option --password password "WiFi password (8–63 chars)" "$(get_default password)"
 register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
 register_option --interface interface "Wireless interface to use" "$(get_default interface wlan0)"
-register_option --enable-service enable_service "Enable sensos-hotspot.service" "$(get_default enable_service true)"
-register_option --start-service start_service "Start sensos-hotspot.service" "$(get_default start_service false)"
-
-# Parse CLI
+register_option --channel channel "2.4 GHz channel (1/6/11 or empty for auto)" "$(get_default channel 6)"
+register_option --apply apply "Apply changes immediately (bring AP up)" "$(get_default apply true)"
 parse_switches "$script_name" "$@"
 
-# Validate required args (SSID has a default; only password is required)
-if [[ -z "${password:-}" ]]; then
-    echo "ERROR: --password is required (SSID defaults to '$default_ssid' unless provided)."
-    exit 1
-fi
-
-# Ensure SSID is populated even if parse_switches didn't set it
 ssid="${ssid:-$default_ssid}"
-
+if [[ -z "${password:-}" ]]; then
+  echo "ERROR: --password is required (SSID defaults to '$default_ssid' unless provided)." >&2
+  exit 1
+fi
 if [[ ${#password} -lt 8 || ${#password} -gt 63 ]]; then
-    echo "ERROR: WPA2 password must be between 8 and 63 characters."
-    exit 1
+  echo "ERROR: WPA2 password must be between 8 and 63 characters." >&2
+  exit 1
 fi
 
-# Ensure necessary directories exist
-mkdir -p "$config_dir" "$log_dir"
-
-# Write config file for start-hotspot.sh
+# ---- persist config file (for humans/other tools) ----
 {
-    echo "ssid = $ssid"
-    echo "password = $password"
-    echo "power_save = $power_save"
-    echo "interface = $interface"
+  echo "ssid = $ssid"
+  echo "password = $password"
+  echo "power_save = ${power_save:-false}"
+  echo "interface = ${interface:-wlan0}"
+  echo "channel = ${channel:-}"
 } >"$config_file"
-
 echo "✅ WiFi access point config written to $config_file."
 
-if [[ "$enable_service" == "true" ]]; then
-    echo "Enabling sensos-hotspot.service..."
-    sudo systemctl enable sensos-hotspot.service
-
-    echo "Disabling auto-hotspot.service (will stay active until stopped)..."
-    sudo systemctl disable auto-hotspot.service || true
-
-    echo "Enabling ssh.service..."
-    sudo systemctl enable ssh
-
-    echo "ℹ️  auto-hotspot.service is still running for now and will be stopped after the switch."
+# ---- If not applying now, stop here ----
+if [[ "${apply,,}" != "true" ]]; then
+  echo "ℹ️  Skipping apply (bring-up) because --apply=false."
+  exit 0
 fi
 
-if [[ "$start_service" == "true" ]]; then
-    echo "⚠️  The device is about to switch WiFi networks."
-    echo "📶 A new access point with SSID '$ssid' will be enabled."
-    echo "💡 Please log out now and reconnect to the new network once it appears."
-    echo "⏳ Waiting 10 seconds before switching..."
+# ---- Bring up AP via NetworkManager (no service) ----
+exec 3>>"$LOG_FILE"
+echo "[$(date -Is)] Applying AP config…" >&3
 
-    (
-        sleep 10
-        echo "🔄 Reloading systemd before switching..." | tee -a "$LOG_FILE"
-        sudo systemctl daemon-reexec
-        sudo systemctl daemon-reload
+IFACE="${interface:-wlan0}"
 
-        echo "🔌 Stopping auto-hotspot.service..." | tee -a "$LOG_FILE"
-        sudo systemctl stop auto-hotspot.service
+# Unblock Wi-Fi & turn it on
+rfkill list wifi 2>/dev/null | grep -q "Soft blocked: yes" && rfkill unblock wifi || true
+nmcli radio wifi on || true
 
-        echo "🚀 Starting sensos-hotspot.service..." | tee -a "$LOG_FILE"
-        sudo systemctl start sensos-hotspot.service
-
-        echo "🔐 Starting ssh.service..." | tee -a "$LOG_FILE"
-        sudo systemctl start ssh
-
-        echo "✅ Access point switch complete." | tee -a "$LOG_FILE"
-    ) &
+# If IFACE is already running an AP, don't tear it down (respect your rule)
+current_con="$(nmcli -t -f GENERAL.CONNECTION device show "$IFACE" | cut -d: -f2 || true)"
+if [[ -n "$current_con" ]]; then
+  mode="$(nmcli -t -f 802-11-wireless.mode connection show "$current_con" 2>/dev/null | cut -d: -f2 || true)"
+  if [[ "$mode" == "ap" ]]; then
+    echo "[$(date -Is)] $IFACE is already running AP '$current_con'; will update settings in-place." >&3
+  else
+    # Disconnect client/unknown use so we can switch to AP
+    nmcli dev disconnect "$IFACE" || true
+  fi
 fi
+
+# Make sure we don’t have a stale auto-created "Hotspot" profile stealing the iface
+if nmcli -t -f NAME connection show | grep -qx "Hotspot"; then
+  nmcli connection delete "Hotspot" || true
+fi
+
+# Create or update persistent AP connection "sensosap"
+if nmcli -t -f NAME connection show | grep -qx "sensosap"; then
+  echo "[$(date -Is)] Updating existing 'sensosap'…" >&3
+else
+  echo "[$(date -Is)] Creating 'sensosap'…" >&3
+  nmcli connection add type wifi ifname "$IFACE" con-name "sensosap" ssid "$ssid"
+fi
+
+# Always force AP mode + WPA2-PSK + IPv4 sharing; no autoconnect shenanigans
+nmcli connection modify "sensosap" \
+  802-11-wireless.mode ap \
+  802-11-wireless.band bg \
+  802-11-wireless.hidden no \
+  wifi-sec.key-mgmt wpa-psk \
+  wifi-sec.proto rsn \
+  wifi-sec.group ccmp \
+  wifi-sec.pairwise ccmp \
+  wifi-sec.psk "$password" \
+  ipv4.method shared \
+  connection.autoconnect no
+
+# Optional fixed channel (comment out to let NM pick)
+if [[ -n "${channel:-}" && "${channel}" =~ ^[0-9]+$ ]]; then
+  nmcli connection modify "sensosap" 802-11-wireless.channel "$channel"
+else
+  nmcli connection modify "sensosap" 802-11-wireless.channel "" || true
+fi
+
+# Bring it up (idempotent)
+if ! nmcli connection up "sensosap"; then
+  echo "[$(date -Is)] ERROR: Failed to bring up AP 'sensosap'." >&3
+  exit 1
+fi
+
+# Power-save toggle (best-effort)
+if [[ -n "${power_save:-}" ]]; then
+  if [[ "${power_save,,}" == "true" ]]; then
+    iw dev "$IFACE" set power_save on || true
+  else
+    iw dev "$IFACE" set power_save off || true
+  fi
+fi
+
+# Helpful logging
+iw dev "$IFACE" info >&3 || true
+nmcli -f GENERAL.CONNECTION,IP4.ADDRESS device show "$IFACE" >&3 || true
+nmcli -f NAME,TYPE,MODE,IP4.METHOD connection show "sensosap" >&3 || true
+
+echo "[$(date -Is)] ✅ AP 'sensosap' active on $IFACE" >&3
+exec 3>&-
