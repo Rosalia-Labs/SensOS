@@ -4,6 +4,8 @@
 
 set -e
 
+LOG_FILE="$log_dir/access_point.log"
+
 script_name=$(basename "$0")
 config_dir="/sensos/etc"
 config_file="$config_dir/access_point.conf"
@@ -57,11 +59,14 @@ register_option --start-service start_service "Start sensos-hotspot.service" "$(
 # Parse CLI
 parse_switches "$script_name" "$@"
 
-# Validate required args
-if [[ -z "$ssid" || -z "$password" ]]; then
-    echo "ERROR: Both --ssid and --password are required."
+# Validate required args (SSID has a default; only password is required)
+if [[ -z "${password:-}" ]]; then
+    echo "ERROR: --password is required (SSID defaults to '$default_ssid' unless provided)."
     exit 1
 fi
+
+# Ensure SSID is populated even if parse_switches didn't set it
+ssid="${ssid:-$default_ssid}"
 
 if [[ ${#password} -lt 8 || ${#password} -gt 63 ]]; then
     echo "ERROR: WPA2 password must be between 8 and 63 characters."
