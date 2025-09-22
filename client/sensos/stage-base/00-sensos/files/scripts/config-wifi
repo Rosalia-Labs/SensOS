@@ -222,7 +222,7 @@ fi
 rules_dir="/sensos/etc/iptables"
 rules_file="${rules_dir}/lockdown-${iface}.rules.v4"
 
-sudo mkdir -p "$rules_dir"
+mkdir -p "$rules_dir"
 sudo iptables-save > "$rules_file"
 echo "Saved firewall rules to $rules_file"
 echo "Note: your restore service can glob ${rules_dir}/lockdown-*.rules.v4"
