@@ -5,12 +5,10 @@
 set -euo pipefail
 
 script_name=$(basename "$0")
-config_dir="/sensos/etc"
-config_file="$config_dir/access_point.conf"
 log_dir="/sensos/log"
 LOG_FILE="$log_dir/access_point.log"
 
-mkdir -p "$config_dir" "$log_dir"
+mkdir -p "$log_dir"
 
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
@@ -50,7 +48,6 @@ register_option --password password "WiFi password (8–63 chars)" "$(get_defaul
 register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
 register_option --interface interface "Wireless interface to use" "$(get_default interface wlan0)"
 register_option --channel channel "2.4 GHz channel (1/6/11 or empty for auto)" "$(get_default channel 6)"
-register_option --apply apply "Apply changes immediately (bring AP up)" "$(get_default apply true)"
 parse_switches "$script_name" "$@"
 
 ssid="${ssid:-$default_ssid}"
@@ -63,60 +60,68 @@ if [[ ${#password} -lt 8 || ${#password} -gt 63 ]]; then
   exit 1
 fi
 
-# ---- persist config file (for humans/other tools) ----
-{
-  echo "ssid = $ssid"
-  echo "password = $password"
-  echo "power_save = ${power_save:-false}"
-  echo "interface = ${interface:-wlan0}"
-  echo "channel = ${channel:-}"
-} >"$config_file"
-echo "✅ WiFi access point config written to $config_file."
-
-# ---- If not applying now, stop here ----
-if [[ "${apply,,}" != "true" ]]; then
-  echo "ℹ️  Skipping apply (bring-up) because --apply=false."
-  exit 0
-fi
-
-# ---- Bring up AP via NetworkManager (no service) ----
+# ---- Apply AP via NetworkManager (no service) ----
 exec 3>>"$LOG_FILE"
 echo "[$(date -Is)] Applying AP config…" >&3
 
 IFACE="${interface:-wlan0}"
 
 # Unblock Wi-Fi & turn it on
-rfkill list wifi 2>/dev/null | grep -q "Soft blocked: yes" && rfkill unblock wifi || true
-nmcli radio wifi on || true
+rfkill list wifi 2>/dev/null | grep -q "Soft blocked: yes" && sudo rfkill unblock wifi || true
+sudo nmcli radio wifi on || true
 
-# If IFACE is already running an AP, don't tear it down (respect your rule)
+# If IFACE is connected but not AP, disconnect so we can switch roles
 current_con="$(nmcli -t -f GENERAL.CONNECTION device show "$IFACE" | cut -d: -f2 || true)"
 if [[ -n "$current_con" ]]; then
   mode="$(nmcli -t -f 802-11-wireless.mode connection show "$current_con" 2>/dev/null | cut -d: -f2 || true)"
   if [[ "$mode" == "ap" ]]; then
-    echo "[$(date -Is)] $IFACE is already running AP '$current_con'; will update settings in-place." >&3
+    echo "[$(date -Is)] $IFACE is already running AP '$current_con'; will adopt/update it." >&3
   else
-    # Disconnect client/unknown use so we can switch to AP
-    nmcli dev disconnect "$IFACE" || true
+    sudo nmcli dev disconnect "$IFACE" || true
   fi
 fi
 
-# Make sure we don’t have a stale auto-created "Hotspot" profile stealing the iface
-if nmcli -t -f NAME connection show | grep -qx "Hotspot"; then
-  nmcli connection delete "Hotspot" || true
+# ---- Adopt any existing AP on this iface; otherwise create sensosap ----
+AP_CON=""
+
+# Prefer an active AP on this iface (e.g., boot Hotspot)
+if [[ -n "$current_con" ]]; then
+  mode="$(nmcli -t -f 802-11-wireless.mode connection show "$current_con" 2>/dev/null | cut -d: -f2 || true)"
+  if [[ "$mode" == "ap" ]]; then
+    AP_CON="$current_con"
+    echo "[$(date -Is)] Found active AP '$AP_CON' on $IFACE; adopting it." >&3
+  fi
 fi
 
-# Create or update persistent AP connection "sensosap"
-if nmcli -t -f NAME connection show | grep -qx "sensosap"; then
-  echo "[$(date -Is)] Updating existing 'sensosap'…" >&3
-else
-  echo "[$(date -Is)] Creating 'sensosap'…" >&3
-  nmcli connection add type wifi ifname "$IFACE" con-name "sensosap" ssid "$ssid"
+# If none active, reuse any saved AP profile
+if [[ -z "$AP_CON" ]]; then
+  saved_ap="$(nmcli -t -f NAME,TYPE,802-11-wireless.mode connection show 2>/dev/null \
+              | awk -F: '$2=="wifi" && $3=="ap"{print $1; exit}')"
+  if [[ -n "$saved_ap" ]]; then
+    AP_CON="$saved_ap"
+    echo "[$(date -Is)] Reusing saved AP '$AP_CON'." >&3
+  fi
 fi
 
-# Always force AP mode + WPA2-PSK + IPv4 sharing; no autoconnect shenanigans
-nmcli connection modify "sensosap" \
+# If still none, create a fresh one
+if [[ -z "$AP_CON" ]]; then
+  AP_CON="sensosap"
+  echo "[$(date -Is)] Creating new AP '$AP_CON'…" >&3
+  sudo nmcli connection add type wifi ifname "$IFACE" con-name "$AP_CON" ssid "$ssid"
+fi
+
+# If adopted connection isn't named sensosap, rename it in-place
+if [[ "$AP_CON" != "sensosap" ]]; then
+  echo "[$(date -Is)] Renaming AP '$AP_CON' -> 'sensosap'." >&3
+  sudo nmcli connection modify "$AP_CON" connection.id "sensosap"
+  AP_CON="sensosap"
+fi
+
+# Force AP mode + WPA2-PSK + IPv4 sharing; bind to the intended iface; autoconnect on boot
+sudo nmcli connection modify "$AP_CON" \
+  connection.interface-name "$IFACE" \
   802-11-wireless.mode ap \
+  802-11-wireless.ssid "$ssid" \
   802-11-wireless.band bg \
   802-11-wireless.hidden no \
   wifi-sec.key-mgmt wpa-psk \
@@ -125,34 +130,41 @@ nmcli connection modify "sensosap" \
   wifi-sec.pairwise ccmp \
   wifi-sec.psk "$password" \
   ipv4.method shared \
-  connection.autoconnect no
+  connection.autoconnect yes \
+  connection.autoconnect-priority 100
 
-# Optional fixed channel (comment out to let NM pick)
+# Optional fixed channel (or clear to auto)
 if [[ -n "${channel:-}" && "${channel}" =~ ^[0-9]+$ ]]; then
-  nmcli connection modify "sensosap" 802-11-wireless.channel "$channel"
+  sudo nmcli connection modify "$AP_CON" 802-11-wireless.channel "$channel"
 else
-  nmcli connection modify "sensosap" 802-11-wireless.channel "" || true
+  sudo nmcli connection modify "$AP_CON" 802-11-wireless.channel "" || true
 fi
 
-# Bring it up (idempotent)
-if ! nmcli connection up "sensosap"; then
-  echo "[$(date -Is)] ERROR: Failed to bring up AP 'sensosap'." >&3
+# Bring it up (idempotent; will reapply if already active)
+if ! sudo nmcli connection up "$AP_CON"; then
+  echo "[$(date -Is)] ERROR: Failed to bring up AP '$AP_CON'." >&3
   exit 1
 fi
 
 # Power-save toggle (best-effort)
 if [[ -n "${power_save:-}" ]]; then
   if [[ "${power_save,,}" == "true" ]]; then
-    iw dev "$IFACE" set power_save on || true
+    sudo iw dev "$IFACE" set power_save on || true
   else
-    iw dev "$IFACE" set power_save off || true
+    sudo iw dev "$IFACE" set power_save off || true
   fi
 fi
 
 # Helpful logging
 iw dev "$IFACE" info >&3 || true
 nmcli -f GENERAL.CONNECTION,IP4.ADDRESS device show "$IFACE" >&3 || true
-nmcli -f NAME,TYPE,MODE,IP4.METHOD connection show "sensosap" >&3 || true
+nmcli -f GENERAL,IP4,802-11-wireless connection show "$AP_CON" >&3 || true
 
-echo "[$(date -Is)] ✅ AP 'sensosap' active on $IFACE" >&3
+# After successful bring-up of the AP
+if sudo nmcli -t -f NAME connection show --active | grep -qx "sensosap"; then
+  echo "[$(date -Is)] ✅ AP '$AP_CON' active; disabling boot AP service if present." >&3
+  sudo systemctl disable --now auto-hotspot.service 2>/dev/null || true
+fi
+
+echo "[$(date -Is)] ✅ AP '$AP_CON' active on $IFACE (autoconnect enabled)" >&3
 exec 3>&-
