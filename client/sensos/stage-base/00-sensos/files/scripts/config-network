@@ -705,10 +705,16 @@ def main():
     except Exception:
         wg_subnet = None
 
-    # Build the allowlist for password-auth (unless disabled entirely)
     allowed_pw_subnets = []
     if not args.disable_ssh_passwords:
-        allowed_pw_subnets = ["10.42.0.0/24", "192.168.1.0/24"]
+        allowed_pw_subnets = ["127.0.0.0/8", "::1"]
+        allowed_pw_subnets += [
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+        ]
+        # allowed_pw_subnets += ["fc00::/7", "fe80::/10"]  # ULA + link-local
+
         if wg_subnet:
             allowed_pw_subnets.append(wg_subnet)
 
