@@ -222,9 +222,23 @@ echo "Note: your restore service can glob ${rules_dir}/lockdown-*.rules.v4"
 
 # ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
-  if ! vnstat --iflist | grep -qw "$data_iface"; then
-    echo "Registering $data_iface with vnstat..."
-    sudo vnstat --add -i "$data_iface"   # vnstat
+  if ip link show "$data_iface" >/dev/null 2>&1; then
+    # If no database yet for $data_iface, create it (vnStat v2.x), else noop.
+    if ! vnstat -i "$data_iface" --oneline >/dev/null 2>&1; then
+      if vnstat --help 2>/dev/null | grep -q -- '--create'; then
+        echo "Creating vnStat database for $data_iface..."
+        sudo vnstat --create -i "$data_iface"
+      else
+        echo "Adding vnStat interface $data_iface (legacy vnStat 1.x)..."
+        sudo vnstat --add -i "$data_iface"
+      fi
+    fi
+    # Ensure the collector is running so stats actually accrue.
+    if command -v systemctl >/dev/null 2>&1; then
+      sudo systemctl enable --now vnstat >/dev/null 2>&1 || true
+    fi
+  else
+    echo "WARNING: interface $data_iface not present yet; skipping vnStat registration." >&2
   fi
 else
   echo "WARNING: vnstat not installed; cannot track usage on $data_iface." >&2
