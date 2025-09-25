@@ -1,0 +1,22 @@
+[Unit]
+Description=Restore SensOS ip6tables rules (IPv6)
+DefaultDependencies=no
+Before=docker.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '\
+  set -e; \
+  DIR=/sensos/etc/iptables; \
+  FILES=""; \
+  for f in "$DIR"/[0-9][0-9]-*.rules.v6 "$DIR"/30-lockdown-*.rules.v6; do \
+    [ -f "$f" ] && FILES="$FILES $f"; \
+  done; \
+  [ -n "$FILES" ] && cat $FILES | /sbin/ip6tables-restore -w \
+'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

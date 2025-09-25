@@ -648,6 +648,74 @@ def vnstat_register_interface(iface: str):
     print(f"✅ vnStat: registered interface '{iface}'.")
 
 
+def write_iptables_ssh_allow_rules(
+    wg_iface: str, wg_subnet: str | None, ssh_port: int = 22
+):
+    """
+    Write iptables-restore fragments that:
+      - define SENSOS_SSH_ALLOW
+      - allow SSH from loopback, RFC1918, WG iface, and optional WG routed subnet
+      - insert at top of INPUT with '-I' (so it runs before other hooks)
+    No live changes are made.
+    """
+    rules_dir = "/sensos/etc/iptables"
+    os.makedirs(rules_dir, exist_ok=True)
+
+    def v4_body():
+        lines = [
+            "*filter",
+            ":SENSOS_SSH_ALLOW - [0:0]",
+            f"-A SENSOS_SSH_ALLOW -i lo -p tcp --dport {ssh_port} -j ACCEPT",
+        ]
+        if wg_iface:
+            lines.append(
+                f"-A SENSOS_SSH_ALLOW -i {wg_iface} -p tcp --dport {ssh_port} -j ACCEPT"
+            )
+        # RFC1918
+        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
+            lines.append(
+                f"-A SENSOS_SSH_ALLOW -p tcp --dport {ssh_port} -s {cidr} -j ACCEPT"
+            )
+        if wg_subnet:
+            lines.append(
+                f"-A SENSOS_SSH_ALLOW -p tcp --dport {ssh_port} -s {wg_subnet} -j ACCEPT"
+            )
+        # Ensure jump sits at the very top of INPUT on restore
+        lines.append(f"-I INPUT 1 -p tcp --dport {ssh_port} -j SENSOS_SSH_ALLOW")
+        lines.append("COMMIT")
+        return "\n".join(lines) + "\n"
+
+    def v6_body():
+        lines = [
+            "*filter",
+            ":SENSOS_SSH_ALLOW6 - [0:0]",
+            f"-A SENSOS_SSH_ALLOW6 -i lo -p tcp --dport {ssh_port} -j ACCEPT",
+        ]
+        if wg_iface:
+            lines.append(
+                f"-A SENSOS_SSH_ALLOW6 -i {wg_iface} -p tcp --dport {ssh_port} -j ACCEPT"
+            )
+        # Optional private-ish v6 scopes (comment out if you don't want them)
+        lines.append(
+            f"-A SENSOS_SSH_ALLOW6 -p tcp --dport {ssh_port} -s fc00::/7 -j ACCEPT"
+        )  # ULA
+        lines.append(
+            f"-A SENSOS_SSH_ALLOW6 -p tcp --dport {ssh_port} -s fe80::/10 -j ACCEPT"
+        )  # link-local
+        lines.append(f"-I INPUT 1 -p tcp --dport {ssh_port} -j SENSOS_SSH_ALLOW6")
+        lines.append("COMMIT")
+        return "\n".join(lines) + "\n"
+
+    v4_path = os.path.join(rules_dir, "20-ssh-allow.rules.v4")
+    v6_path = os.path.join(rules_dir, "20-ssh-allow.rules.v6")
+    write_file(v4_path, v4_body(), mode=0o644, user="sensos-admin")
+    write_file(v6_path, v6_body(), mode=0o644, user="sensos-admin")
+    print(f"🧷 Wrote iptables fragments:\n  {v4_path}\n  {v6_path}")
+    print(
+        "ℹ️ Load order note: ensure these run *before* any wwan0 bandwidth lockdown files."
+    )
+
+
 def main():
     username = pwd.getpwuid(os.geteuid()).pw_name
     if username not in ("sensos-admin", "root"):
@@ -713,7 +781,7 @@ def main():
             "172.16.0.0/12",
             "192.168.0.0/16",
         ]
-        # allowed_pw_subnets += ["fc00::/7", "fe80::/10"]  # ULA + link-local
+        allowed_pw_subnets += ["fc00::/7", "fe80::/10"]  # ULA + link-local
 
         if wg_subnet:
             allowed_pw_subnets.append(wg_subnet)
@@ -721,6 +789,10 @@ def main():
     enable_ssh(
         disable_passwords=args.disable_ssh_passwords,
         allowed_password_subnets=allowed_pw_subnets,
+    )
+
+    write_iptables_ssh_allow_rules(
+        wg_iface=args.network, wg_subnet=wg_subnet, ssh_port=22
     )
 
     vnstat_register_interface(args.network)

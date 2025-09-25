@@ -165,60 +165,71 @@ if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
   apply_tc_limits "$data_iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
 fi
 
-# ----------------------- lockdown (restricted policy) -----------------------
-apply_lockdown_rules() {
-  local dev="$1"
-  local wg_port="$2"
+# ----------------------- lockdown fragments (restricted policy) -----------------------
+write_lockdown_fragments() {
+  local dev="$1"        # e.g., wwan0
+  local wg_port="$2"    # WireGuard UDP port
+  local dir="/sensos/etc/iptables"
+  mkdir -p "$dir"
 
-  if ! command -v iptables >/dev/null 2>&1; then
-    echo "WARNING: iptables not found; cannot enforce lockdown on ${dev}." >&2
-    return 0
-  fi
+  # ---- IPv4 fragment ----
+  local v4="$dir/30-lockdown-${dev}.rules.v4"
+  cat >"$v4" <<EOF
+*filter
+:SENSOS_LOCKDOWN_${dev}_IN - [0:0]
+:SENSOS_LOCKDOWN_${dev}_OUT - [0:0]
+:SENSOS_LOCKDOWN_${dev}_FWD - [0:0]
+-A SENSOS_LOCKDOWN_${dev}_IN  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_IN  -p udp --sport 67 --dport 68 -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_IN  -p udp --dport ${wg_port} -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_IN  -j REJECT --reject-with icmp-port-unreachable
+-A SENSOS_LOCKDOWN_${dev}_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_OUT -p udp --sport 68 --dport 67 -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_OUT -p udp --dport ${wg_port} -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_OUT -p udp --dport 123 -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_OUT -p icmp --icmp-type echo-request -j ACCEPT
+-A SENSOS_LOCKDOWN_${dev}_OUT -j REJECT --reject-with icmp-port-unreachable
+-A SENSOS_LOCKDOWN_${dev}_FWD -j REJECT --reject-with icmp-port-unreachable
+-I INPUT 1  -i ${dev} -j SENSOS_LOCKDOWN_${dev}_IN
+-I OUTPUT 1 -o ${dev} -j SENSOS_LOCKDOWN_${dev}_OUT
+-I FORWARD 1 -o ${dev} -j SENSOS_LOCKDOWN_${dev}_FWD
+COMMIT
+EOF
 
-  local CHAIN_IN="SENSOS_LOCKDOWN_${dev}_IN"
-  local CHAIN_OUT="SENSOS_LOCKDOWN_${dev}_OUT"
-  local CHAIN_FWD="SENSOS_LOCKDOWN_${dev}_FWD"
+  # ---- IPv6 fragment ----
+  # Your NM config ignores IPv6 on the uplink; this still safely blocks if v6 appears.
+  local v6="$dir/30-lockdown-${dev}.rules.v6"
+  cat >"$v6" <<EOF
+*filter
+:SENSOS_LOCKDOWN_'"$dev"'_IN6 - [0:0]
+:SENSOS_LOCKDOWN_'"$dev"'_OUT6 - [0:0]
+:SENSOS_LOCKDOWN_'"$dev"'_FWD6 - [0:0]
+-A SENSOS_LOCKDOWN_'"$dev"'_IN6  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+# (no DHCPv6 because IPv6 is ignored for uplink)
+# Allow WG over v6 if you ever use it:
+-A SENSOS_LOCKDOWN_'"$dev"'_IN6  -p udp --dport '"$wg_port"' -j ACCEPT
+-A SENSOS_LOCKDOWN_'"$dev"'_IN6  -j REJECT
+-A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p udp --dport '"$wg_port"' -j ACCEPT
+-A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p udp --dport 123 -j ACCEPT
+-A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p ipv6-icmp -j ACCEPT
+-A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -j REJECT
+-A SENSOS_LOCKDOWN_'"$dev"'_FWD6 -j REJECT
+-I INPUT 1  -i '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_IN6
+-I OUTPUT 1 -o '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_OUT6
+-I FORWARD 1 -o '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_FWD6
+COMMIT
+EOF
 
-  sudo iptables -w -L "$CHAIN_IN"  -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_IN"  || sudo iptables -w -N "$CHAIN_IN"
-  sudo iptables -w -L "$CHAIN_OUT" -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_OUT" || sudo iptables -w -N "$CHAIN_OUT"
-  sudo iptables -w -L "$CHAIN_FWD" -n >/dev/null 2>&1 && sudo iptables -w -F "$CHAIN_FWD" || sudo iptables -w -N "$CHAIN_FWD"
-
-  # INPUT (to host via $dev): allow DHCP replies, established/related; reject everything else
-  sudo iptables -w -A "$CHAIN_IN"  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  sudo iptables -w -A "$CHAIN_IN"  -p udp --sport 67 --dport 68 -j ACCEPT
-  sudo iptables -w -A "$CHAIN_IN"  -j REJECT
-  sudo iptables -w -C INPUT  -i "$dev" -j "$CHAIN_IN" 2>/dev/null || sudo iptables -w -I INPUT  -i "$dev" -j "$CHAIN_IN"
-
-  # OUTPUT (from host to $dev): allow DHCP client, WireGuard, NTP, ICMP; reject everything else
-  sudo iptables -w -A "$CHAIN_OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  sudo iptables -w -A "$CHAIN_OUT" -p udp --sport 68 --dport 67 -j ACCEPT
-  sudo iptables -w -A "$CHAIN_OUT" -p udp --dport "$wg_port" -j ACCEPT
-  # (DNS explicitly NOT allowed)
-  sudo iptables -w -A "$CHAIN_OUT" -p udp --dport 123 -j ACCEPT
-  sudo iptables -w -A "$CHAIN_OUT" -p icmp --icmp-type echo-request -j ACCEPT
-  sudo iptables -w -A "$CHAIN_OUT" -j REJECT
-  sudo iptables -w -C OUTPUT -o "$dev" -j "$CHAIN_OUT" 2>/dev/null || sudo iptables -w -I OUTPUT -o "$dev" -j "$CHAIN_OUT"
-
-  # FORWARD (through $dev): block *all* forwarding out the modem iface in restricted mode
-  sudo iptables -w -A "$CHAIN_FWD" -j REJECT
-  sudo iptables -w -C FORWARD -o "$dev" -j "$CHAIN_FWD" 2>/dev/null || sudo iptables -w -I FORWARD -o "$dev" -j "$CHAIN_FWD"
-
-  echo "Applied lockdown on ${dev} (no DNS, no forwarding; host-only: DHCP, WG:${wg_port}, NTP, ICMP)."
+  echo "Wrote lockdown fragments:"
+  echo "  $v4"
+  echo "  $v6"
+  echo "Restore at boot will apply these after SSH allow."
 }
 
 if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
-  apply_lockdown_rules "$data_iface" "$WG_ENDPOINT_PORT"
+  write_lockdown_fragments "$data_iface" "$WG_ENDPOINT_PORT"
 fi
-
-# ----------------------- save firewall snapshot -----------------------
-# Save the entire iptables ruleset for later restore at boot (one file per device).
-rules_dir="/sensos/etc/iptables"
-rules_file="${rules_dir}/lockdown-${data_iface}.rules.v4"
-
-mkdir -p "$rules_dir"
-sudo iptables-save > "$rules_file"
-echo "Saved firewall rules to $rules_file"
-echo "Note: your restore service can glob ${rules_dir}/lockdown-*.rules.v4"
 
 # ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
