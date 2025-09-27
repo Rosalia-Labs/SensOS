@@ -44,7 +44,7 @@ cd SensOS
 git submodule update --init --recursive
 ```
 
-Once cloned, you can use the included scripts (e.g. `./client/bin/generate-config.sh`) to generate a configuration and build a bootable Raspberry Pi image. The server component relies on [Docker](https://www.docker.com), which you must install. See the [User Guide](https://github.com/Rosalia-Labs/SensOS/wiki) for more information.
+Once cloned, you can use the included scripts (e.g. `./client/bin/generate-config.sh`) to generate a configuration and build a bootable Raspberry Pi image. The server component relies on [Docker](https://www.docker.com), which you must install. See the [User Guide](https://github.com/Rosalia-Labs/SensOS/wiki/User-Guide) for more information.
 
 ---
 
