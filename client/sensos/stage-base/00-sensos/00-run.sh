@@ -35,6 +35,10 @@ for svc in "/sensos/services/"*; do
 done
 EOF
 
+on_chroot <<'EOF'
+    ln -sf /sensos/etc/nftables.conf /etc/nftables.conf
+EOF
+
 if [ -d "$SENSOS_DIR/init.d" ]; then
     echo "Ensuring scripts in /sensos/init.d are executable"
     find "$SENSOS_DIR/init.d" -type f -exec chmod +x {} +
