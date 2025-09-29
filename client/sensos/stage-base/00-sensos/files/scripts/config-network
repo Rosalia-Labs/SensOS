@@ -154,12 +154,10 @@ def parse_args():
 
 def enable_ssh(disable_passwords: bool = False, allowed_password_subnets=None):
     """
-    Configure sshd so that:
-      - Passwords are disabled globally.
+    Configure sshd:
+      - Global defaults: keys enabled, passwords disabled.
       - If disable_passwords is False and allowed_password_subnets is non-empty,
-        passwords are re-enabled only for those subnets via a Match block.
-
-    allowed_password_subnets: list[str], e.g. ["10.42.0.0/24", "192.168.1.0/24", "10.23.0.0/16"]
+        enable passwords only for those subnets via a Match block.
     """
     if allowed_password_subnets is None:
         allowed_password_subnets = []
@@ -167,7 +165,6 @@ def enable_ssh(disable_passwords: bool = False, allowed_password_subnets=None):
     sshd_dir = "/etc/ssh/sshd_config.d"
     custom_conf = os.path.join(sshd_dir, "sensos.conf")
 
-    # Global: keys only; tighten a few basics
     base = [
         "# Set by SensOS",
         "PubkeyAuthentication yes",
@@ -177,7 +174,6 @@ def enable_ssh(disable_passwords: bool = False, allowed_password_subnets=None):
         "LoginGraceTime 30s",
     ]
 
-    # Re-enable passwords only on allowed subnets (if not globally disabled)
     match_block = []
     if not disable_passwords and allowed_password_subnets:
         cidrs = ",".join(allowed_password_subnets)
@@ -224,7 +220,7 @@ def generate_wireguard_keys(network_name, force):
     write_file(private_key_file, private_key, mode=0o600, user="root")
     write_file(public_key_file, public_key, mode=0o644, user="root")
 
-    print(f"✅ WireGuard keys generated:")
+    print("✅ WireGuard keys generated:")
     print(f"  - Private Key stored in: {private_key_file} (permissions set to 600)")
     print(f"  - Public Key stored in: {public_key_file}")
     return public_key
@@ -523,8 +519,6 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
 
 
 def configure_wireguard(args, api_password):
-    config_file = os.path.join(WG_DIR, f"{args.network}.conf")
-
     print("Reconfiguring WireGuard...")
 
     wg_public_key = generate_wireguard_keys(args.network, args.force)
@@ -564,14 +558,8 @@ def configure_wireguard(args, api_password):
         wg_public_ip = ip_only
 
     write_wireguard_config(
-        wg_ip,
-        server_pubkey,
-        wg_public_ip,
-        wg_port,
-        args.network,
-        args.wg_keepalive,
+        wg_ip, server_pubkey, wg_public_ip, wg_port, args.network, args.wg_keepalive
     )
-
     change_hostname(hostname)
     return wg_ip, wg_public_ip, wg_port
 
@@ -581,10 +569,7 @@ def configure_ssh(args, api_password, wg_ip):
     if wg_ip:
         exchange_ssh_keys(args.config_server, args.port, wg_ip, api_password)
     else:
-        print(
-            "❌ No WG IP available; cannot exchange SSH keys.",
-            file=sys.stderr,
-        )
+        print("❌ No WG IP available; cannot exchange SSH keys.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -613,7 +598,6 @@ def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip, wg_port
 
 
 def sensos_config_files_exist(args):
-    # List of files produced by this script
     files_to_check = [
         os.path.join(WG_DIR, f"{args.network}-private.key"),
         os.path.join(WG_DIR, f"{args.network}-public.key"),
@@ -626,7 +610,6 @@ def sensos_config_files_exist(args):
 
 
 def remove_sensos_config_files(network_name):
-    # Remove all the files we generate
     files_to_remove = [
         os.path.join(WG_DIR, f"{network_name}-private.key"),
         os.path.join(WG_DIR, f"{network_name}-public.key"),
@@ -636,7 +619,7 @@ def remove_sensos_config_files(network_name):
         SENSOS_NET_CONF,
     ]
     for f in files_to_remove:
-        remove_file(f)  # Assuming remove_file does not error if not present
+        remove_file(f)
 
 
 def vnstat_register_interface(iface: str):
@@ -646,74 +629,6 @@ def vnstat_register_interface(iface: str):
         return
     privileged_shell(f"vnstat --add -i {iface} || true")
     print(f"✅ vnStat: registered interface '{iface}'.")
-
-
-def write_iptables_ssh_allow_rules(
-    wg_iface: str, wg_subnet: str | None, ssh_port: int = 22
-):
-    """
-    Write iptables-restore fragments that:
-      - define SENSOS_SSH_ALLOW
-      - allow SSH from loopback, RFC1918, WG iface, and optional WG routed subnet
-      - insert at top of INPUT with '-I' (so it runs before other hooks)
-    No live changes are made.
-    """
-    rules_dir = "/sensos/etc/iptables"
-    os.makedirs(rules_dir, exist_ok=True)
-
-    def v4_body():
-        lines = [
-            "*filter",
-            ":SENSOS_SSH_ALLOW - [0:0]",
-            f"-A SENSOS_SSH_ALLOW -i lo -p tcp --dport {ssh_port} -j ACCEPT",
-        ]
-        if wg_iface:
-            lines.append(
-                f"-A SENSOS_SSH_ALLOW -i {wg_iface} -p tcp --dport {ssh_port} -j ACCEPT"
-            )
-        # RFC1918
-        for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"):
-            lines.append(
-                f"-A SENSOS_SSH_ALLOW -p tcp --dport {ssh_port} -s {cidr} -j ACCEPT"
-            )
-        if wg_subnet:
-            lines.append(
-                f"-A SENSOS_SSH_ALLOW -p tcp --dport {ssh_port} -s {wg_subnet} -j ACCEPT"
-            )
-        # Ensure jump sits at the very top of INPUT on restore
-        lines.append(f"-I INPUT 1 -p tcp --dport {ssh_port} -j SENSOS_SSH_ALLOW")
-        lines.append("COMMIT")
-        return "\n".join(lines) + "\n"
-
-    def v6_body():
-        lines = [
-            "*filter",
-            ":SENSOS_SSH_ALLOW6 - [0:0]",
-            f"-A SENSOS_SSH_ALLOW6 -i lo -p tcp --dport {ssh_port} -j ACCEPT",
-        ]
-        if wg_iface:
-            lines.append(
-                f"-A SENSOS_SSH_ALLOW6 -i {wg_iface} -p tcp --dport {ssh_port} -j ACCEPT"
-            )
-        # Optional private-ish v6 scopes (comment out if you don't want them)
-        lines.append(
-            f"-A SENSOS_SSH_ALLOW6 -p tcp --dport {ssh_port} -s fc00::/7 -j ACCEPT"
-        )  # ULA
-        lines.append(
-            f"-A SENSOS_SSH_ALLOW6 -p tcp --dport {ssh_port} -s fe80::/10 -j ACCEPT"
-        )  # link-local
-        lines.append(f"-I INPUT 1 -p tcp --dport {ssh_port} -j SENSOS_SSH_ALLOW6")
-        lines.append("COMMIT")
-        return "\n".join(lines) + "\n"
-
-    v4_path = os.path.join(rules_dir, "20-ssh-allow.rules.v4")
-    v6_path = os.path.join(rules_dir, "20-ssh-allow.rules.v6")
-    write_file(v4_path, v4_body(), mode=0o644, user="sensos-admin")
-    write_file(v6_path, v6_body(), mode=0o644, user="sensos-admin")
-    print(f"🧷 Wrote iptables fragments:\n  {v4_path}\n  {v6_path}")
-    print(
-        "ℹ️ Load order note: ensure these run *before* any wwan0 bandwidth lockdown files."
-    )
 
 
 def main():
@@ -775,24 +690,22 @@ def main():
 
     allowed_pw_subnets = []
     if not args.disable_ssh_passwords:
-        allowed_pw_subnets = ["127.0.0.0/8", "::1"]
-        allowed_pw_subnets += [
+        # By default, if passwords are enabled, allow from local/WG/private ranges.
+        allowed_pw_subnets = [
+            "127.0.0.0/8",
+            "::1",
             "10.0.0.0/8",
             "172.16.0.0/12",
             "192.168.0.0/16",
+            "fc00::/7",
+            "fe80::/10",
         ]
-        allowed_pw_subnets += ["fc00::/7", "fe80::/10"]  # ULA + link-local
-
         if wg_subnet:
             allowed_pw_subnets.append(wg_subnet)
 
     enable_ssh(
         disable_passwords=args.disable_ssh_passwords,
         allowed_password_subnets=allowed_pw_subnets,
-    )
-
-    write_iptables_ssh_allow_rules(
-        wg_iface=args.network, wg_subnet=wg_subnet, ssh_port=22
     )
 
     vnstat_register_interface(args.network)

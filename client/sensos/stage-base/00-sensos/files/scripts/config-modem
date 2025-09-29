@@ -5,7 +5,6 @@
 # config-modem
 # - Creates/updates a NetworkManager GSM profile for the given provider
 # - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
-# - If BANDWIDTH_POLICY=restricted, locks the modem device to WG (UDP WG_ENDPOINT_PORT) + DHCP + ESTABLISHED/RELATED
 # - Optional bandwidth caps via tc (egress/ingress)
 
 set -euo pipefail
@@ -47,6 +46,7 @@ if ! command -v nmcli >/dev/null 2>&1; then
   exit 1
 fi
 
+# Load tiny helpers (defaults + switch parser)
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
 
@@ -88,18 +88,11 @@ fi
 source "$network_conf"
 
 CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
-BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-}"
-WG_ENDPOINT_PORT="${WG_ENDPOINT_PORT:-}"
-
-if [[ "${BANDWIDTH_POLICY,,}" == "restricted" && -z "$WG_ENDPOINT_PORT" ]]; then
-  echo "ERROR: BANDWIDTH_POLICY=restricted but WG_ENDPOINT_PORT is not set in $network_conf." >&2
-  exit 1
-fi
 
 # ----------------------- provider → APN -----------------------
 case "$service" in
-  1nce|1NCE)         apn="iot.1nce.net" ;;
-  Soracom|soracom)   apn="soracom.io" ;;
+  1nce|1NCE)       apn="iot.1nce.net" ;;
+  Soracom|soracom) apn="soracom.io" ;;
   *)
     echo "ERROR: Unsupported service '$service'." >&2
     exit 1
@@ -114,7 +107,7 @@ if [[ "${device}" == wwan* ]]; then
   device="cdc-wdm0"
 fi
 
-# Data iface used for tc/iptables if a control port is used
+# Data iface used for tc and vnstat if a control port is used
 data_iface="$device"
 if [[ "$device" == cdc-wdm* || "$device" == ttyUSB* ]]; then
   data_iface="wwan0"
@@ -142,7 +135,7 @@ else
   echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
 fi
 
-# ----------------------- tc limits -----------------------
+# ----------------------- tc limits (optional) -----------------------
 apply_tc_limits() {
   local dev="$1" up_kbit="${2:-}" down_kbit="${3:-}"
 
@@ -163,72 +156,6 @@ apply_tc_limits() {
 
 if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
   apply_tc_limits "$data_iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
-fi
-
-# ----------------------- lockdown fragments (restricted policy) -----------------------
-write_lockdown_fragments() {
-  local dev="$1"        # e.g., wwan0
-  local wg_port="$2"    # WireGuard UDP port
-  local dir="/sensos/etc/iptables"
-  mkdir -p "$dir"
-
-  # ---- IPv4 fragment ----
-  local v4="$dir/30-lockdown-${dev}.rules.v4"
-  cat >"$v4" <<EOF
-*filter
-:SENSOS_LOCKDOWN_${dev}_IN - [0:0]
-:SENSOS_LOCKDOWN_${dev}_OUT - [0:0]
-:SENSOS_LOCKDOWN_${dev}_FWD - [0:0]
--A SENSOS_LOCKDOWN_${dev}_IN  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_IN  -p udp --sport 67 --dport 68 -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_IN  -p udp --dport ${wg_port} -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_IN  -j REJECT --reject-with icmp-port-unreachable
--A SENSOS_LOCKDOWN_${dev}_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p udp --sport 68 --dport 67 -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p udp --dport ${wg_port} -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p udp --dport 123 -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p icmp --icmp-type echo-request -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -j REJECT --reject-with icmp-port-unreachable
--A SENSOS_LOCKDOWN_${dev}_FWD -j REJECT --reject-with icmp-port-unreachable
--I INPUT 1  -i ${dev} -j SENSOS_LOCKDOWN_${dev}_IN
--I OUTPUT 1 -o ${dev} -j SENSOS_LOCKDOWN_${dev}_OUT
--I FORWARD 1 -o ${dev} -j SENSOS_LOCKDOWN_${dev}_FWD
-COMMIT
-EOF
-
-  # ---- IPv6 fragment ----
-  # Your NM config ignores IPv6 on the uplink; this still safely blocks if v6 appears.
-  local v6="$dir/30-lockdown-${dev}.rules.v6"
-  cat >"$v6" <<EOF
-*filter
-:SENSOS_LOCKDOWN_'"$dev"'_IN6 - [0:0]
-:SENSOS_LOCKDOWN_'"$dev"'_OUT6 - [0:0]
-:SENSOS_LOCKDOWN_'"$dev"'_FWD6 - [0:0]
--A SENSOS_LOCKDOWN_'"$dev"'_IN6  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-# (no DHCPv6 because IPv6 is ignored for uplink)
-# Allow WG over v6 if you ever use it:
--A SENSOS_LOCKDOWN_'"$dev"'_IN6  -p udp --dport '"$wg_port"' -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_IN6  -j REJECT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p udp --dport '"$wg_port"' -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p udp --dport 123 -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p ipv6-icmp -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -j REJECT
--A SENSOS_LOCKDOWN_'"$dev"'_FWD6 -j REJECT
--I INPUT 1  -i '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_IN6
--I OUTPUT 1 -o '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_OUT6
--I FORWARD 1 -o '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_FWD6
-COMMIT
-EOF
-
-  echo "Wrote lockdown fragments:"
-  echo "  $v4"
-  echo "  $v6"
-  echo "Restore at boot will apply these after SSH allow."
-}
-
-if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
-  write_lockdown_fragments "$data_iface" "$WG_ENDPOINT_PORT"
 fi
 
 # ----------------------- vnstat registration -----------------------

@@ -5,10 +5,8 @@
 # config-wifi
 # - Creates/updates a NetworkManager Wi-Fi client profile for the given SSID
 # - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
-# - If BANDWIDTH_POLICY=restricted, locks the Wi-Fi uplink iface to WG (UDP WG_ENDPOINT_PORT) + DHCP + ESTABLISHED/RELATED
-#   and blocks all forwarding out that iface. DNS is NOT allowed on the uplink.
 # - Optional bandwidth caps via tc (egress/ingress)
-# - Persists firewall snapshot per-interface under /sensos/etc/iptables/lockdown-<iface>.rules.v4
+# - Registers interface with vnstat for usage accounting
 
 set -euo pipefail
 
@@ -94,13 +92,6 @@ fi
 source "$network_conf"
 
 CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
-BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-}"
-WG_ENDPOINT_PORT="${WG_ENDPOINT_PORT:-}"
-
-if [[ "${BANDWIDTH_POLICY,,}" == "restricted" && -z "$WG_ENDPOINT_PORT" ]]; then
-  echo "ERROR: BANDWIDTH_POLICY=restricted but WG_ENDPOINT_PORT is not set in $network_conf." >&2
-  exit 1
-fi
 
 # ----------------------- NM connection name -----------------------
 nm_con_name="sensos-wifi-${ssid}"
@@ -137,7 +128,7 @@ else
   fi
 fi
 
-# IP config like modem script
+# IP config similar to modem script
 sudo nmcli con mod "$nm_con_name" ipv4.method auto   || true
 sudo nmcli con mod "$nm_con_name" ipv6.method ignore || true
 
@@ -150,7 +141,7 @@ else
   echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
 fi
 
-# ----------------------- tc limits -----------------------
+# ----------------------- tc limits (optional) -----------------------
 apply_tc_limits() {
   local dev="$1" up_kbit="${2:-}" down_kbit="${3:-}"
 
@@ -173,68 +164,6 @@ if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
   apply_tc_limits "$iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
 fi
 
-# ----------------------- lockdown fragments (restricted policy) -----------------------
-write_lockdown_fragments() {
-  local dev="$1"        # e.g., wlan0
-  local wg_port="$2"
-  local dir="/sensos/etc/iptables"
-  mkdir -p "$dir"
-
-  # v4
-  local v4="$dir/30-lockdown-${dev}.rules.v4"
-  cat >"$v4" <<EOF
-*filter
-:SENSOS_LOCKDOWN_${dev}_IN - [0:0]
-:SENSOS_LOCKDOWN_${dev}_OUT - [0:0]
-:SENSOS_LOCKDOWN_${dev}_FWD - [0:0]
--A SENSOS_LOCKDOWN_${dev}_IN  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_IN  -p udp --sport 67 --dport 68 -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_IN  -p udp --dport ${wg_port} -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_IN  -j REJECT --reject-with icmp-port-unreachable
--A SENSOS_LOCKDOWN_${dev}_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p udp --sport 68 --dport 67 -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p udp --dport ${wg_port} -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p udp --dport 123 -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -p icmp --icmp-type echo-request -j ACCEPT
--A SENSOS_LOCKDOWN_${dev}_OUT -j REJECT --reject-with icmp-port-unreachable
--A SENSOS_LOCKDOWN_${dev}_FWD -j REJECT --reject-with icmp-port-unreachable
--I INPUT 1  -i ${dev} -j SENSOS_LOCKDOWN_${dev}_IN
--I OUTPUT 1 -o ${dev} -j SENSOS_LOCKDOWN_${dev}_OUT
--I FORWARD 1 -o ${dev} -j SENSOS_LOCKDOWN_${dev}_FWD
-COMMIT
-EOF
-
-  # v6
-  local v6="$dir/30-lockdown-${dev}.rules.v6"
-  cat >"$v6" <<EOF
-*filter
-:SENSOS_LOCKDOWN_'"$dev"'_IN6 - [0:0]
-:SENSOS_LOCKDOWN_'"$dev"'_OUT6 - [0:0]
-:SENSOS_LOCKDOWN_'"$dev"'_FWD6 - [0:0]
--A SENSOS_LOCKDOWN_'"$dev"'_IN6  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_IN6  -p udp --dport '"$wg_port"' -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_IN6  -j REJECT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p udp --dport '"$wg_port"' -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p udp --dport 123 -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -p ipv6-icmp -j ACCEPT
--A SENSOS_LOCKDOWN_'"$dev"'_OUT6 -j REJECT
--A SENSOS_LOCKDOWN_'"$dev"'_FWD6 -j REJECT
--I INPUT 1  -i '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_IN6
--I OUTPUT 1 -o '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_OUT6
--I FORWARD 1 -o '"$dev"' -j SENSOS_LOCKDOWN_'"$dev"'_FWD6
-COMMIT
-EOF
-
-  echo "Wrote lockdown fragments:"
-  echo "  $v4"
-  echo "  $v6"
-}
-
-if [[ "${BANDWIDTH_POLICY,,}" == "restricted" ]]; then
-  write_lockdown_fragments "$iface" "$WG_ENDPOINT_PORT"
-fi
-
 # ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
   if ip link show "$iface" >/dev/null 2>&1; then
@@ -245,30 +174,4 @@ if command -v vnstat >/dev/null 2>&1; then
         sudo vnstat --create -i "$iface"
       else
         echo "Adding vnStat interface $iface (legacy vnStat 1.x)..."
-        sudo vnstat --add -i "$iface"
-      fi
-    fi
-    # Ensure collector is running so stats accrue.
-    if command -v systemctl >/dev/null 2>&1; then
-      sudo systemctl enable --now vnstat >/dev/null 2>&1 || true
-    fi
-  else
-    echo "WARNING: interface $iface not present yet; skipping vnStat registration." >&2
-  fi
-else
-  echo "WARNING: vnstat not installed; cannot track usage on $iface." >&2
-fi
-
-# ----------------------- start now? -----------------------
-if [[ "${start_now}" == "true" ]]; then
-  echo "Bringing up Wi-Fi connection '$nm_con_name' via '$iface'..."
-  # IMPORTANT: never bring down an AP profile; this script only manages client profile '$nm_con_name'
-  if ! sudo nmcli -w 45 con up "$nm_con_name" ifname "$iface"; then
-    echo "WARNING: Failed to start Wi-Fi connection '$nm_con_name' (ifname=$iface)." >&2
-  fi
-fi
-
-echo "Done."
-echo "Manage Wi-Fi with:"
-echo "  sudo nmcli con up   $nm_con_name"
-echo "  sudo nmcli con down $nm_con_name"
+        sudo vnstat --add
