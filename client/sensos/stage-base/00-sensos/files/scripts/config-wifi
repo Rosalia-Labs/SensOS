@@ -5,7 +5,8 @@
 # config-wifi
 # - Creates/updates a NetworkManager Wi-Fi client profile for the given SSID
 # - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
-# - Optional bandwidth caps via tc (egress/ingress)
+# - Optional bandwidth caps via tc (egress/ingress); if BANDWIDTH_POLICY=restricted,
+#   apply sane SSH-friendly defaults unless overridden by CLI.
 # - Registers interface with vnstat for usage accounting
 
 set -euo pipefail
@@ -30,8 +31,8 @@ Options:
   --iface [value]            WiFi interface (default: wlan0)
   --start [true|false]       Immediately bring Wi-Fi online after config (default: false)
   --hidden [true|false]      Mark SSID as hidden (default: false)
-  --limit-up-kbit [value]    Egress cap in kbit (optional)
-  --limit-down-kbit [value]  Ingress cap in kbit (optional)
+  --limit-up-kbit [value]    Egress cap in kbit (optional; overrides policy)
+  --limit-down-kbit [value]  Ingress cap in kbit (optional; overrides policy)
   -h, --help                 Show this help and exit
 EOF
 }
@@ -92,12 +93,12 @@ fi
 source "$network_conf"
 
 CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
+BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-open}"
 
 # ----------------------- NM connection name -----------------------
 nm_con_name="sensos-wifi-${ssid}"
 
 # ----------------------- create/update Wi-Fi connection -----------------------
-# If connection exists, modify; else create.
 if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
   echo "Updating Wi-Fi connection '$nm_con_name' on iface '$iface'..."
   sudo nmcli con mod "$nm_con_name" connection.id "$nm_con_name" || true
@@ -110,16 +111,15 @@ if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
     sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk || true
     sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password" || true
   else
-    # Open network
     sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt none || true
-    sudo nmcli con mod "$nm_con_name" -g 802-11-wireless-security.psk >/dev/null 2>&1 || true
+    # ensure no stale PSK
+    sudo nmcli con mod "$nm_con_name" -ipv4.dns-priority >/dev/null 2>&1 || true
   fi
 else
   echo "Creating Wi-Fi connection '$nm_con_name' on iface '$iface'..."
   sudo nmcli con add type wifi ifname "$iface" con-name "$nm_con_name" ssid "$ssid"
   sudo nmcli con mod "$nm_con_name" 802-11-wireless.mode infrastructure
   sudo nmcli con mod "$nm_con_name" 802-11-wireless.hidden "$( [[ "${hidden,,}" == "true" ]] && echo yes || echo no )"
-
   if [[ -n "${password:-}" ]]; then
     sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.key-mgmt wpa-psk
     sudo nmcli con mod "$nm_con_name" 802-11-wireless-security.psk "$password"
@@ -128,7 +128,7 @@ else
   fi
 fi
 
-# IP config similar to modem script
+# IPv4/IPv6 methods
 sudo nmcli con mod "$nm_con_name" ipv4.method auto   || true
 sudo nmcli con mod "$nm_con_name" ipv6.method ignore || true
 
@@ -141,7 +141,13 @@ else
   echo "Autoconnect disabled (CONNECTIVITY_MODE=$CONNECTIVITY_MODE)."
 fi
 
-# ----------------------- tc limits (optional) -----------------------
+# ----------------------- tc helpers -----------------------
+clear_tc_limits() {
+  local dev="$1"
+  sudo tc qdisc del dev "$dev" root 2>/dev/null || true
+  sudo tc qdisc del dev "$dev" ingress 2>/dev/null || true
+}
+
 apply_tc_limits() {
   local dev="$1" up_kbit="${2:-}" down_kbit="${3:-}"
 
@@ -160,6 +166,20 @@ apply_tc_limits() {
   fi
 }
 
+# ----------------------- policy-driven limits -----------------------
+if [[ -z "${limit_up_kbit:-}" && -z "${limit_down_kbit:-}" ]]; then
+  if [[ "$BANDWIDTH_POLICY" == "restricted" ]]; then
+    limit_up_kbit="32"
+    limit_down_kbit="256"
+    echo "BANDWIDTH_POLICY=restricted → applying defaults: up=${limit_up_kbit} kbit, down=${limit_down_kbit} kbit"
+  else
+    echo "BANDWIDTH_POLICY=${BANDWIDTH_POLICY} → clearing any existing traffic caps on ${iface}"
+    clear_tc_limits "$iface"
+  fi
+else
+  echo "CLI limits provided → overriding policy (up='${limit_up_kbit:-}', down='${limit_down_kbit:-}')."
+fi
+
 if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
   apply_tc_limits "$iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
 fi
@@ -167,11 +187,34 @@ fi
 # ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
   if ip link show "$iface" >/dev/null 2>&1; then
-    # If no database yet for $iface, create it (vnStat v2.x). Fallback to --add for 1.x.
     if ! vnstat -i "$iface" --oneline >/dev/null 2>&1; then
       if vnstat --help 2>/dev/null | grep -q -- '--create'; then
         echo "Creating vnStat database for $iface..."
         sudo vnstat --create -i "$iface"
       else
         echo "Adding vnStat interface $iface (legacy vnStat 1.x)..."
-        sudo vnstat --add
+        sudo vnstat --add -i "$iface"
+      fi
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+      sudo systemctl enable --now vnstat >/dev/null 2>&1 || true
+    fi
+  else
+    echo "WARNING: interface $iface not present yet; skipping vnStat registration." >&2
+  fi
+else
+  echo "WARNING: vnstat not installed; cannot track usage on $iface." >&2
+fi
+
+# ----------------------- start now? -----------------------
+if [[ "${start_now:-false}" == "true" ]]; then
+  echo "Bringing up Wi-Fi connection '$nm_con_name' on '$iface'..."
+  if ! sudo nmcli -w 45 con up "$nm_con_name" ifname "$iface"; then
+    echo "WARNING: Failed to start Wi-Fi connection '$nm_con_name' (ifname=$iface)." >&2
+  fi
+fi
+
+echo "Done."
+echo "Manage Wi-Fi with:"
+echo "  sudo nmcli con up   \"$nm_con_name\""
+echo "  sudo nmcli con down \"$nm_con_name\""

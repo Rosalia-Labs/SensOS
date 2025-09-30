@@ -2,23 +2,24 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs
 
-# config-modem
-# - Creates/updates a NetworkManager GSM profile for the given provider
-# - Sets autoconnect based on CONNECTIVITY_MODE from /sensos/etc/network.conf
-# - Optional bandwidth caps via tc (egress/ingress)
+# config-modem (minimal)
+# - Create/update a NetworkManager GSM profile for the provider
+# - Autoconnect behavior via CONNECTIVITY_MODE in /sensos/etc/network.conf
+# - Optional tc bandwidth caps (policy-driven; CLI can override)
+# - For 1NCE only: persist WireGuard MTU=1120 into /etc/wireguard/${NETWORK_NAME}.conf and reload it
 
 set -euo pipefail
 
 script_name=$(basename "$0")
 network_conf="/sensos/etc/network.conf"
 
-# ----------------------- enforce user / sudo -----------------------
+# ----------------------- enforce user -----------------------
 if [[ "$(id -un)" != "sensos-admin" ]]; then
   echo "ERROR: this script must be run as sensos-admin." >&2
   exit 1
 fi
 
-# ----------------------- early help (avoid parse-switches under set -u) -----------------------
+# ----------------------- usage -----------------------
 print_usage() {
   cat <<EOF
 Usage: $script_name [options]
@@ -26,9 +27,9 @@ Usage: $script_name [options]
 Options:
   --service [value]          Cellular provider (e.g. 1nce, Soracom)
   --device  [value]          NetworkManager control port (e.g. cdc-wdm0 or ttyUSB2) (default: cdc-wdm0)
-  --start   [true|false]     Immediately bring modem online after config (default: false)
-  --limit-up-kbit [value]    Egress cap in kbit (optional)
-  --limit-down-kbit [value]  Ingress cap in kbit (optional)
+  --start   [true|false]     Bring modem online after config (default: false)
+  --limit-up-kbit [value]    Egress cap in kbit (optional; overrides policy)
+  --limit-down-kbit [value]  Ingress cap in kbit (optional; overrides policy)
   -h, --help                 Show this help and exit
 EOF
 }
@@ -46,7 +47,7 @@ if ! command -v nmcli >/dev/null 2>&1; then
   exit 1
 fi
 
-# Load tiny helpers (defaults + switch parser)
+# ----------------------- helpers -----------------------
 source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
 
@@ -61,14 +62,11 @@ get_default() {
 
 # ----------------------- options -----------------------
 register_option --service service "Cellular provider (e.g. 1nce, Soracom)" "$(get_default service)"
-# default to control port, not data iface
 register_option --device device "NetworkManager device/control port (e.g. cdc-wdm0 or ttyUSB2)" "$(get_default device cdc-wdm0)"
-register_option --start start_now "Immediately bring modem online after config" "$(get_default start_now false)"
-# Optional bandwidth limits (kbit)
+register_option --start start_now "Bring modem online after config" "$(get_default start_now false)"
 register_option --limit-up-kbit   limit_up_kbit   "Egress cap in kbit (optional)"   "$(get_default limit_up_kbit "")"
 register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" "$(get_default limit_down_kbit "")"
 
-# Guard parse-switches from nounset issues inside its help path
 set +u
 parse_switches "$script_name" "$@"
 set -u
@@ -78,7 +76,7 @@ if [[ -z "${service:-}" ]]; then
   exit 1
 fi
 
-# ----------------------- config -----------------------
+# ----------------------- read config -----------------------
 if [[ ! -f "$network_conf" ]]; then
   echo "ERROR: Required config $network_conf is missing." >&2
   exit 1
@@ -88,6 +86,18 @@ fi
 source "$network_conf"
 
 CONNECTIVITY_MODE="${CONNECTIVITY_MODE:-manual}"
+BANDWIDTH_POLICY="${BANDWIDTH_POLICY:-open}"
+
+# Derive & sanitize the WireGuard iface name from NETWORK_NAME (bash-only)
+WG_IFACE="${NETWORK_NAME-}"
+# remove any Windows CRs
+WG_IFACE="${WG_IFACE//$'\r'/}"
+# trim leading whitespace
+WG_IFACE="${WG_IFACE#"${WG_IFACE%%[![:space:]]*}"}"
+# trim trailing whitespace
+WG_IFACE="${WG_IFACE%"${WG_IFACE##*[![:space:]]}"}"
+
+WG_CONF="/etc/wireguard/${WG_IFACE}.conf"
 
 # ----------------------- provider → APN -----------------------
 case "$service" in
@@ -101,19 +111,19 @@ esac
 
 nm_con_name="sensos-$service"
 
-# If user passed a data iface like wwan0, nudge to control port
+# If a data iface like wwan0 was passed, nudge to control port
 if [[ "${device}" == wwan* ]]; then
   echo "NOTE: '$device' looks like a data interface. Using control port 'cdc-wdm0' instead."
   device="cdc-wdm0"
 fi
 
-# Data iface used for tc and vnstat if a control port is used
+# Data iface used for tc/vnstat when a control port is used
 data_iface="$device"
 if [[ "$device" == cdc-wdm* || "$device" == ttyUSB* ]]; then
   data_iface="wwan0"
 fi
 
-# ----------------------- NM connection -----------------------
+# ----------------------- NetworkManager profile -----------------------
 if nmcli -t -f NAME con show | grep -qx "$nm_con_name"; then
   echo "Updating connection '$nm_con_name' for device '$device'..."
   sudo nmcli con mod "$nm_con_name" gsm.apn "$apn" || true
@@ -136,6 +146,12 @@ else
 fi
 
 # ----------------------- tc limits (optional) -----------------------
+clear_tc_limits() {
+  local dev="$1"
+  sudo tc qdisc del dev "$dev" root 2>/dev/null || true
+  sudo tc qdisc del dev "$dev" ingress 2>/dev/null || true
+}
+
 apply_tc_limits() {
   local dev="$1" up_kbit="${2:-}" down_kbit="${3:-}"
 
@@ -154,14 +170,45 @@ apply_tc_limits() {
   fi
 }
 
+# Policy → default limits (modem: conservative)
+if [[ -z "${limit_up_kbit:-}" && -z "${limit_down_kbit:-}" ]]; then
+  if [[ "$BANDWIDTH_POLICY" == "restricted" ]]; then
+    limit_up_kbit="32"
+    limit_down_kbit="256"
+    echo "BANDWIDTH_POLICY=restricted → defaults: up=${limit_up_kbit} kbit, down=${limit_down_kbit} kbit"
+  else
+    echo "BANDWIDTH_POLICY=${BANDWIDTH_POLICY} → clearing any existing tc caps on ${data_iface}"
+    clear_tc_limits "$data_iface"
+  fi
+else
+  echo "CLI limits provided → overriding policy (up='${limit_up_kbit:-}', down='${limit_down_kbit:-}')."
+fi
+
 if [[ -n "${limit_up_kbit:-}" || -n "${limit_down_kbit:-}" ]]; then
   apply_tc_limits "$data_iface" "${limit_up_kbit:-}" "${limit_down_kbit:-}"
+fi
+
+# ----------------------- 1NCE: persist WG MTU=1120 and reload -----------------------
+if [[ "${service,,}" == "1nce" ]]; then
+  if sudo test -f "$WG_CONF"; then
+    if sudo grep -q '^[[:space:]]*MTU[[:space:]]*=' "$WG_CONF"; then
+      sudo sed -i -E "s/^[[:space:]]*MTU[[:space:]]*=.*/MTU = 1120/" "$WG_CONF"
+    else
+      # insert MTU line once, right after the first [Interface] header
+      sudo sed -i '/^\[Interface\]/a MTU = 1120' "$WG_CONF"
+    fi
+    # Reload using the sanitized interface name
+    sudo wg-quick down "$WG_IFACE" || true
+    sudo wg-quick up "$WG_IFACE"
+    echo "Set WireGuard MTU=1120 in ${WG_CONF} and reloaded (${WG_IFACE}) for 1NCE."
+  else
+    echo "NOTE: ${WG_CONF} not found; MTU persistence skipped." >&2
+  fi
 fi
 
 # ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
   if ip link show "$data_iface" >/dev/null 2>&1; then
-    # If no database yet for $data_iface, create it (vnStat v2.x), else noop.
     if ! vnstat -i "$data_iface" --oneline >/dev/null 2>&1; then
       if vnstat --help 2>/dev/null | grep -q -- '--create'; then
         echo "Creating vnStat database for $data_iface..."
@@ -171,7 +218,6 @@ if command -v vnstat >/dev/null 2>&1; then
         sudo vnstat --add -i "$data_iface"
       fi
     fi
-    # Ensure the collector is running so stats actually accrue.
     if command -v systemctl >/dev/null 2>&1; then
       sudo systemctl enable --now vnstat >/dev/null 2>&1 || true
     fi
