@@ -14,9 +14,8 @@ RUN set -eux; \
     tar git; \
   rm -rf /var/lib/apt/lists/*
 
-# Prevent service auto-starts during apt (pi-gen friendliness) + on_chroot shim
+# Prevent service auto-starts during apt (pi-gen friendliness)
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d
-RUN printf 'on_chroot() { "$@"; }\n' > /usr/local/bin/on_chroot && chmod +x /usr/local/bin/on_chroot
 
 # Bring in SensOS client stage files from repo root context
 WORKDIR /sensos_source
@@ -86,11 +85,8 @@ RUN set -eux; echo sensos > /sensos/keys/api_password
 RUN set -eux; chown -R sensos-admin:sensos-data /sensos
 
 RUN set -eux; \
-    install -d -m 0755 /etc/sudoers.d; \
     printf 'sensos-admin ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/sensos-admin; \
-    chown root:root /etc/sudoers.d/sensos-admin; \
-    chmod 0440 /etc/sudoers.d/sensos-admin; \
-    visudo -cf /etc/sudoers >/dev/null
+    chmod 0440 /etc/sudoers.d/sensos-admin
 
 # Stay root for tests (no user creation)
 WORKDIR /root
