@@ -96,7 +96,7 @@ if [ -n "${VERSION_SUFFIX:-}" ]; then
     VERSION="${VERSION}-${VERSION_SUFFIX}"
 fi
 
-VERSION_FILE_PATH="${STAGE_SRC}/files/etc/sensos-version"
+VERSION_FILE_PATH="${STAGE_SRC}/files/VERSION"
 mkdir -p "$(dirname "$VERSION_FILE_PATH")"
 cat >"$VERSION_FILE_PATH" <<EOF
 VERSION=$VERSION
