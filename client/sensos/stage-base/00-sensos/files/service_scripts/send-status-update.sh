@@ -10,7 +10,7 @@ CONFIG_FILE="/sensos/etc/network.conf"
 API_PATH="/client-status"
 API_USER="sensos"
 API_PASS_FILE="/sensos/keys/api_password"
-VERSION_FILE="/sensos/etc/sensos-version"
+VERSION_FILE="/sensos/VERSION"
 
 if [[ ! -f "$VERSION_FILE" ]]; then
     echo "[ERROR] $VERSION_FILE not found!"
