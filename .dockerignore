@@ -1,0 +1,7 @@
+# .dockerignore (at SensOS/)
+.git
+**/__pycache__/
+**/*.pyc
+backups/
+**/.env
+**/.DS_Store
