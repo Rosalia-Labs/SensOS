@@ -8,14 +8,17 @@ SERVICE_SERVER="${SERVICE_SERVER:-server}"
 SERVER_PORT="${SERVER_PORT:-8765}"
 RUN_AS_USER="${RUN_AS_USER:-sensos-admin}"
 COMPOSE="${COMPOSE:-docker compose}"
-HEALTH_PATH="${HEALTH_PATH:-/health}"   # set to "" if your server has no health endpoint
+HEALTH_PATH="${HEALTH_PATH:-/health}" 
 HEALTH_RETRIES="${HEALTH_RETRIES:-30}"
 HEALTH_DELAY_SECS="${HEALTH_DELAY_SECS:-1}"
+
+HEALTH_PATH=""
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 cleanup() {
+  $COMPOSE ps || true
   echo ">> Tearing down the SensOS DinD testbed…"
   $COMPOSE down -v || true
 }

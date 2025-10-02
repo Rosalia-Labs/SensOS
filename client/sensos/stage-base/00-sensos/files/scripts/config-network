@@ -23,7 +23,7 @@ from utils import *
 WG_DIR = "/etc/wireguard"
 SENSOS_ADMIN_HOME = "/home/sensos-admin"
 SENSOS_NET_CONF = "/sensos/etc/network.conf"
-NFT_INCLUDE_PATH = "/sensos/etc/nft-allow-api.nft"
+NFT_INCLUDE_PATH = "/sensos/etc/sensos-ports.nft"
 
 
 def parse_args():
@@ -669,7 +669,7 @@ def main():
     args = parse_args()
 
     # Temporarily drop firewall while setting up the network
-    privileged_shell("nft flush ruleset")
+    # privileged_shell("nft flush ruleset")
 
     existing_files = sensos_config_files_exist(args)
 
@@ -744,6 +744,9 @@ def main():
         privileged_shell(f"systemctl stop wg-quick@{args.network}")
         privileged_shell(f"systemctl disable wg-quick@{args.network}")
         privileged_shell(f"systemctl enable set-network-config.service")
+
+    print("✅ Enabling firewall service to activate on next boot.")
+    privileged_shell(f"systemctl enable nftables.service")
 
     print("✅ Configuration complete. Reboot now and check connectivity.")
 
