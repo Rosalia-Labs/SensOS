@@ -206,6 +206,19 @@ if [[ "${service,,}" == "1nce" ]]; then
   fi
 fi
 
+# ----------------------- provider-specific MTU (1NCE) -----------------------
+if [[ "${service,,}" == "1nce" ]]; then
+  echo "Setting modem MTU=1200 for 1NCE on connection '$nm_con_name'..."
+  # Persist on the profile
+  sudo nmcli con mod "$nm_con_name" gsm.mtu 1200 || {
+    echo "WARNING: NetworkManager build may not support gsm.mtu; enforcing live MTU only." >&2
+  }
+  # Apply immediately (if iface exists now)
+  if ip link show "$data_iface" >/dev/null 2>&1; then
+    sudo ip link set dev "$data_iface" mtu 1200 || true
+  fi
+fi
+
 # ----------------------- vnstat registration -----------------------
 if command -v vnstat >/dev/null 2>&1; then
   if ip link show "$data_iface" >/dev/null 2>&1; then
