@@ -578,6 +578,7 @@ def write_nftables_include(
     wg_iface: str,
     server_wg_ip: str,
     api_port: int,
+    wg_endpoint: str,
     wg_listen_port: int,
 ):
     """
@@ -598,15 +599,18 @@ def write_nftables_include(
     ]
 
     rules: list[str] = []
+    rules.append(f"add rule inet filter input udp dport {wg_listen_port} accept")
+    rules.append(
+        f"add rule inet filter output ip daddr {wg_endpoint} udp dport {wg_listen_port} accept"
+    )
     rules.append(
         f'add rule inet filter output oifname "{wg_iface}" ip daddr {server_wg_ip} tcp dport {api_port} accept'
     )
-    rules.append(f"add rule inet filter input udp dport {wg_listen_port} accept")
 
     content = "\n".join(header + rules) + ("\n" if rules else "")
     write_file(NFT_INCLUDE_PATH, content, mode=0o644, user="sensos-admin")
 
-    print(f"✅ nft include written: NFT_INCLUDE_PATH")
+    print(f"✅ nft include written to: {NFT_INCLUDE_PATH}")
 
 
 def write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip, wg_port):
@@ -716,7 +720,9 @@ def main():
     endpoint_ip = args.wg_endpoint or wg_public_ip
     endpoint_ip = endpoint_ip.split(":")[0] if ":" in endpoint_ip else endpoint_ip
     write_client_settings(args, server_wg_ip, client_wg_ip, endpoint_ip, wg_port)
-    write_nftables_include(args.network, server_wg_ip, args.port, wg_port)
+    write_nftables_include(
+        args.network, server_wg_ip, args.port, args.wg_endpoint, wg_port
+    )
     configure_ssh(args, api_password, client_wg_ip)
 
     try:
