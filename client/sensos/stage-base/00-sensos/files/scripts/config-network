@@ -668,9 +668,6 @@ def main():
     setup_logging()
     args = parse_args()
 
-    # Temporarily drop firewall while setting up the network
-    # privileged_shell("nft flush ruleset")
-
     existing_files = sensos_config_files_exist(args)
 
     if not args.force and existing_files:
