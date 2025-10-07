@@ -40,6 +40,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      NUMBA_CACHE_DIR: /tmp/numba_cache
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       LATITUDE: ${LATITUDE}
