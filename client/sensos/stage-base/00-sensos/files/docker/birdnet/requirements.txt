@@ -1,6 +1,9 @@
 numpy==1.26.4
-librosa==0.10.2
+scipy==1.11.4
+librosa==0.10.2.post1
+numba==0.59.1
+llvmlite==0.42.0
+lazy-loader==0.3
+soundfile==0.12.1
 tflite-runtime==2.14.0
 psycopg[binary]==3.1.19
-soundfile==0.12.1
-numba==0.59.1
