@@ -103,11 +103,7 @@ def main():
                                 ),
                             )
 
-                        sqlite_cur.execute(
-                            "DELETE FROM i2c_readings WHERE id = ?", (row["id"],)
-                        )
-
-                        logger.info(f"Imported and deleted row {row['id']}")
+                        logger.info(f"Imported row {row['id']}")
 
                     except Exception as e:
                         logger.error(f"Error syncing row {row['id']}: {e}")

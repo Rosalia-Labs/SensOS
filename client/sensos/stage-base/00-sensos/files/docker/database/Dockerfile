@@ -8,7 +8,5 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends $REQUIRED_DEBS && \
     rm -rf /var/lib/apt/lists/*
 
-COPY postgres.conf /etc/postgresql/17/main/postgresql.conf
-
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["postgres"]
