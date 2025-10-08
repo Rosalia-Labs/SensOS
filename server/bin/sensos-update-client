@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+#
+# Update a remote SensOS client by syncing selected subtrees from:
+#   client/sensos/stage-base/00-sensos/files/
+#
+# Design principles:
+# - NO implicit directory creation on the remote: we fail if required dirs are missing.
+# - NO silent defaults: all required inputs checked, clear errors.
+# - Sync only existing files/dirs on the remote: rsync --existing (no surprise new files).
+#
+# Usage:
+#   sensos-update-client <ip|net_sep_a_sep_b> [--dry-run] [--reboot] [-- <remote post cmd>]
+# Examples:
+#   sensos-update-client testing_1_15
+#   sensos-update-client testing-1-15 --dry-run
+#   sensos-update-client 10.254.1.15 --reboot
+#
+# Env:
+#   CONTROLLER_CONTAINER (default: sensos-controller)
+#   BASE                 (defaults to repo root inferred from this script's location)
+
+set -euo pipefail
+
+: "${CONTROLLER_CONTAINER:=sensos-controller}"
+
+# ---------- shared helpers (SSH/IP/validation) ----------
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { echo "Error: required command not found: $1" >&2; exit 127; }
+}
+
+require_container_running() {
+  local n="$1"
+  docker inspect "$n" >/dev/null 2>&1 || { echo "Error: required Docker container not found: $n" >&2; exit 1; }
+  [[ "$(docker inspect -f '{{.State.Running}}' "$n" 2>/dev/null)" == "true" ]] || {
+    echo "Error: Docker container is not running: $n" >&2; exit 1; }
+}
+
+require_in_container_cmd() {
+  local c="$1"
+  if ! docker exec "$CONTROLLER_CONTAINER" which "$c" >/dev/null 2>&1; then
+    echo "Error: required command not found inside container '$CONTROLLER_CONTAINER': $c" >&2
+    exit 127
+  fi
+}
+
+is_ip() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r a b c d <<<"$ip"
+  for n in "$a" "$b" "$c" "$d"; do (( n>=0 && n<=255 )) || return 1; done
+  return 0
+}
+
+hash_octet_from_name() {
+  # Sum of bytes % 256 (ASCII-safe), matches server's Python rule.
+  printf %s "$1" | od -An -t u1 | awk '{for(i=1;i<=NF;i++) s+=$i} END{print s%256}'
+}
+
+build_ip_from_token() {
+  local token="$1"
+  # Accept underscores OR hyphens as separators
+  if [[ ! "$token" =~ ^([A-Za-z0-9-]+)[_-]([0-9]+)[_-]([0-9]+)$ ]]; then
+    echo "Error: invalid token '$token'. Expected '<net>_<a>_<b>' or '<net>-<a>-<b>'." >&2
+    exit 2
+  fi
+  local net="${BASH_REMATCH[1]}" a="${BASH_REMATCH[2]}" b="${BASH_REMATCH[3]}"
+  (( a>=0 && a<=255 )) || { echo "Error: invalid octet $a" >&2; exit 2; }
+  (( b>=0 && b<=255 )) || { echo "Error: invalid octet $b" >&2; exit 2; }
+  local o2; o2="$(hash_octet_from_name "$net")"
+  echo "10.${o2}.${a}.${b}"
+}
+
+# Run a single command string inside controller as user 'sensos'
+run_in_controller_as_sensos() {
+  local cmd="$1"
+  if docker exec "$CONTROLLER_CONTAINER" which sudo >/dev/null 2>&1; then
+    docker exec "$CONTROLLER_CONTAINER" sudo -u sensos -- bash -lc "$cmd"
+  else
+    docker exec "$CONTROLLER_CONTAINER" su -s /bin/bash sensos -c "$cmd"
+  fi
+}
+
+usage() {
+  cat >&2 <<EOF
+Usage: $(basename "$0") <ip-or-token> [--dry-run] [--reboot] [-- <remote post cmd>]
+  <ip-or-token>  Either 10.x.y.z or <net>_<a>_<b> or <net>-<a>-<b>
+  --dry-run      Show what would change without applying
+  --reboot       Reboot the remote Pi after sync
+  --             Everything after this is run on the remote BEFORE reboot
+EOF
+  exit 2
+}
+
+# --------------------------- main ---------------------------
+
+main() {
+  require_cmd docker
+  require_cmd od
+  require_cmd awk
+  require_cmd tar
+  require_cmd rsync
+
+  [[ $# -ge 1 ]] || usage
+
+  local target="$1"; shift
+  local DRY=0 REBOOT=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dry-run) DRY=1; shift ;;
+      --reboot) REBOOT=1; shift ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+  local remote_post_cmd=("$@")  # may be empty
+
+  # Determine IP
+  local ip
+  if is_ip "$target"; then
+    ip="$target"
+  else
+    ip="$(build_ip_from_token "$target")"
+  fi
+
+  # Infer BASE if not explicitly set
+  local SCRIPT_DIR BASE_DIR
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ -z "${BASE:-}" ]]; then
+    BASE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)" || { echo "Error: cannot infer BASE dir." >&2; exit 1; }
+  else
+    BASE_DIR="$BASE"
+  fi
+
+  # Source tree
+  local SRC_ROOT="${BASE_DIR}/client/sensos/stage-base/00-sensos/files"
+  [[ -d "$SRC_ROOT" ]] || { echo "Error: required directory not found: files ($SRC_ROOT)" >&2; exit 1; }
+
+  # Only sync these subtrees (explicit allow-list)
+  local SUBTREES=( etc docker scripts services service_scripts lib python )
+
+  # Validate local subtrees exist
+  for sub in "${SUBTREES[@]}"; do
+    [[ -d "${SRC_ROOT}/${sub}" ]] || { echo "Error: required directory not found: ${sub} (${SRC_ROOT}/${sub})" >&2; exit 1; }
+  done
+
+  # Controller health + required tools inside it
+  require_container_running "$CONTROLLER_CONTAINER"
+  require_in_container_cmd ssh
+  require_in_container_cmd scp
+  # sudo/su handled dynamically by run_in_controller_as_sensos
+
+  # 1) Pack whitelisted subtrees to a tarball
+  local TMP_TAR
+  TMP_TAR="$(mktemp -t sensos-sync.XXXXXX.tar)"
+  (
+    cd "$SRC_ROOT"
+    tar cf "$TMP_TAR" "${SUBTREES[@]}"
+  )
+
+  # 2) Copy tarball into controller /tmp
+  local CT_TAR="/tmp/$(basename "$TMP_TAR")"
+  docker cp "$TMP_TAR" "$CONTROLLER_CONTAINER:$CT_TAR" || {
+    echo "Error: docker cp to controller failed." >&2; rm -f "$TMP_TAR"; exit 1; }
+  rm -f "$TMP_TAR"
+
+  # 3) From controller, scp tarball to remote
+  local REM_TAR="/tmp/$(basename "$CT_TAR")"
+  local SSH_BASE_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
+  run_in_controller_as_sensos "scp $SSH_BASE_OPTS '$CT_TAR' 'sensos-admin@${ip}:${REM_TAR}'"
+
+  # 4) Build remote script (verify dirs, unpack to temp, rsync existing only, optional reboot)
+  local RSYNC_FLAGS="-a --delete-after --existing"
+  (( DRY == 1 )) && RSYNC_FLAGS="--dry-run $RSYNC_FLAGS"
+
+  local REMOTE_SCRIPT
+  read -r -d '' REMOTE_SCRIPT <<'EOS' || true
+set -euo pipefail
+REM_TAR_PLACEHOLDER
+SUBTREES_PLACEHOLDER
+RSYNC_FLAGS_PLACEHOLDER
+
+require_dir() { [[ -d "$1" ]] || { echo "Error: required directory not found: $1" >&2; exit 1; }; }
+
+# Preflight: require /sensos and each subtree dir
+require_dir /sensos
+for d in ${SUBTREES}; do require_dir "/sensos/${d}"; done
+
+# Unpack to temp
+STAGE_DIR="$(mktemp -d /tmp/sensos-sync.XXXXXX)"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+tar xf "${REM_TAR}" -C "$STAGE_DIR"
+rm -f "${REM_TAR}"
+
+# Sync each subtree (existing only)
+for d in ${SUBTREES}; do
+  SRC="$STAGE_DIR/$d"
+  DST="/sensos/$d"
+  require_dir "$DST"
+  rsync ${RSYNC_FLAGS} "$SRC/" "$DST/"
+done
+EOS
+
+  # Inject placeholders
+  REMOTE_SCRIPT="${REMOTE_SCRIPT/REM_TAR_PLACEHOLDER/REM_TAR='${REM_TAR}'}"
+  REMOTE_SCRIPT="${REMOTE_SCRIPT/SUBTREES_PLACEHOLDER/SUBTREES='${SUBTREES[*]}'}"
+  REMOTE_SCRIPT="${REMOTE_SCRIPT/RSYNC_FLAGS_PLACEHOLDER/RSYNC_FLAGS='${RSYNC_FLAGS}'}"
+
+  # Execute remote sync script
+  local REMOTE_CMD
+  REMOTE_CMD="$(printf 'bash -lc %q' "$REMOTE_SCRIPT")"
+  run_in_controller_as_sensos "ssh $SSH_BASE_OPTS 'sensos-admin@${ip}' $REMOTE_CMD"
+
+  # Optional post command BEFORE reboot (if provided)
+  if [[ ${#remote_post_cmd[@]} -gt 0 ]]; then
+    local Q; Q="$(printf '%q ' "${remote_post_cmd[@]}")"
+    run_in_controller_as_sensos "ssh $SSH_BASE_OPTS 'sensos-admin@${ip}' bash -lc $Q"
+  fi
+
+  # 5) Optional reboot
+  if (( REBOOT == 1 )); then
+    # ask the remote to reboot (best effort)
+    run_in_controller_as_sensos "ssh $SSH_BASE_OPTS 'sensos-admin@${ip}' bash -lc 'echo Rebooting in 3s...; sleep 3; /sbin/reboot || reboot'"
+  fi
+
+  # 6) Cleanup controller tarball
+  run_in_controller_as_sensos "rm -f '$CT_TAR' || true"
+
+  echo "✔ Update completed for ${ip} (dry-run=${DRY}, reboot=${REBOOT})"
+}
+
+main "$@"
