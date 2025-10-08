@@ -22,6 +22,22 @@ NETWORK_CONF = "/sensos/etc/network.conf"
 DEFAULT_PORT = "8765"
 
 
+def require_dir(path: str, name: str):
+    if not os.path.isdir(path):
+        sys.exit(f"Error: required directory not found: {name} ({path})")
+
+
+def require_cmd(cmd: str):
+    if shutil.which(cmd) is None:
+        sys.exit(f"Error: required command not found in PATH: {cmd}")
+
+
+def require_nonempty(value, what: str):
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        sys.exit(f"Error: required value not set: {what}")
+    return value
+
+
 def privileged_shell(cmd, check=False, silent=False, user=None):
     """
     Run a shell command as root (or as another user).

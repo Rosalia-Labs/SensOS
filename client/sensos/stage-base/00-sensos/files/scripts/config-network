@@ -26,27 +26,6 @@ SENSOS_NET_CONF = "/sensos/etc/network.conf"
 NFT_INCLUDE_PATH = "/sensos/etc/sensos-ports.nft"
 
 
-def require_dir(path: str, name: str):
-    if not os.path.isdir(path):
-        sys.exit(f"Error: required directory not found: {name} ({path})")
-
-
-def require_file(path: str, name: str):
-    if not os.path.isfile(path):
-        sys.exit(f"Error: required file not found: {name} ({path})")
-
-
-def require_cmd(cmd: str):
-    if shutil.which(cmd) is None:
-        sys.exit(f"Error: required command not found in PATH: {cmd}")
-
-
-def require_nonempty(value, what: str):
-    if value is None or (isinstance(value, str) and value.strip() == ""):
-        sys.exit(f"Error: required value not set: {what}")
-    return value
-
-
 def parse_args():
     script_name = os.path.basename(sys.argv[0])
     if script_name.endswith(".py"):
@@ -326,7 +305,6 @@ def write_wireguard_config(
 
     private_key_file = os.path.join(WG_DIR, f"{network_name}-private.key")
     wg_config_file = os.path.join(WG_DIR, f"{network_name}.conf")
-    require_file(private_key_file, "WireGuard private key")
     private_key = read_file(private_key_file).strip()
     if not private_key:
         sys.exit("Error: private key is empty; cannot write WireGuard config.")
@@ -365,7 +343,6 @@ def generate_ssh_keys(force):
     print("🔑 Generating new SSH key pair...")
     privileged_shell(f"ssh-keygen -t ed25519 -f {private_key_file} -q -N ''")
 
-    require_file(public_key_file, "SSH public key")
     set_permissions_and_owner(private_key_file, 0o600, user="sensos-admin")
     set_permissions_and_owner(public_key_file, 0o644, user="sensos-admin")
     print(f"✅ SSH key generated at {private_key_file} and {public_key_file}.")
@@ -434,7 +411,6 @@ def exchange_ssh_keys(config_server, port, wg_ip, api_password):
     ssh_dir = os.path.join(SENSOS_ADMIN_HOME, ".ssh")
     public_key_file = os.path.join(ssh_dir, "id_ed25519.pub")
     authorized_keys_file = os.path.join(ssh_dir, "authorized_keys")
-    require_file(public_key_file, "SSH public key")
     username = "sensos-admin"
     uid = pwd.getpwnam(username).pw_uid
     key_type, key_size, key_comment, fingerprint, expires_at = extract_ssh_key_params(
