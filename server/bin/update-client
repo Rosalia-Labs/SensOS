@@ -135,7 +135,7 @@ main() {
   run_in_controller_as_sensos "scp $SSH_OPTS '$CT_TAR' 'sensos-admin@${ip}:${REM_TAR}'"
 
   # 4) Remote: verify dirs exist, unpack to temp, full rsync with deletes
-  local RSYNC_FLAGS="-a --delete-after"
+  local RSYNC_FLAGS="-a --delete-after --checksum"
   (( DRY == 1 )) && RSYNC_FLAGS="--dry-run --itemize-changes $RSYNC_FLAGS"
 
   # Build the remote script; error options applied on bash invocation
