@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+#
+# SSH into a remote Pi from the controller container using either:
+#   - explicit IP: 10.x.y.z
+#   - token: <net>_<a>_<b>  or <net>-<a>-<b>
+#     e.g., testing_1_15  or  testing-1-15  → 10.<hash(net)>.1.15
+#
+# Hash rule matches server:
+#   hash(net) = (sum of bytes of net) % 256  → 10.<hash>.0.0/16
+#
+# Usage:
+#   sensos-ssh-client <ip-or-token> [-- <remote command...>]
+
+set -euo pipefail
+: "${CONTROLLER_CONTAINER:=sensos-controller}"
+
+usage() {
+  echo "Usage: $(basename "$0") <ip-or-<net>_<a>_<b>|<net>-<a>-<b>> [-- <remote command...>]" >&2
+  exit 2
+}
+
+require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Error: missing command $1" >&2; exit 127; }; }
+
+require_container_running() {
+  local n="$1"
+  docker inspect "$n" >/dev/null 2>&1 || { echo "Error: container not found: $n" >&2; exit 1; }
+  [[ "$(docker inspect -f '{{.State.Running}}' "$n" 2>/dev/null)" == "true" ]] || {
+    echo "Error: container not running: $n" >&2; exit 1; }
+}
+
+is_ip() {
+  local ip="$1"; [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS='.' read -r a b c d <<<"$ip"
+  for n in "$a" "$b" "$c" "$d"; do (( n>=0 && n<=255 )) || return 1; done
+}
+
+hash_octet_from_name() { printf %s "$1" | od -An -t u1 | awk '{for(i=1;i<=NF;i++) s+=$i} END{print s%256}'; }
+
+build_ip_from_token() {
+  local token="$1"
+  # Accept either underscores or hyphens as separators
+  if [[ ! "$token" =~ ^([A-Za-z0-9]+)[_-]([0-9]+)[_-]([0-9]+)$ ]]; then
+    echo "Error: invalid token '$token'. Expected '<net>_<a>_<b>' or '<net>-<a>-<b>'." >&2
+    exit 2
+  fi
+  local net="${BASH_REMATCH[1]}" a="${BASH_REMATCH[2]}" b="${BASH_REMATCH[3]}"
+  (( a>=0 && a<=255 )) || { echo "Error: invalid octet $a" >&2; exit 2; }
+  (( b>=0 && b<=255 )) || { echo "Error: invalid octet $b" >&2; exit 2; }
+  local o2; o2="$(hash_octet_from_name "$net")"
+  echo "10.${o2}.${a}.${b}"
+}
+
+main() {
+  require_cmd docker; require_cmd od; require_cmd awk
+  [[ $# -ge 1 ]] || usage
+  local target="$1"; shift
+  local ip
+  if is_ip "$target"; then ip="$target"; else ip="$(build_ip_from_token "$target")"; fi
+
+  local remote_cmd=()
+  if [[ $# -gt 0 ]]; then
+    [[ "$1" == "--" ]] && shift
+    while [[ $# -gt 0 ]]; do remote_cmd+=("$1"); shift; done
+  fi
+
+  require_container_running "$CONTROLLER_CONTAINER"
+
+  local DOCKER_TTY=()
+  [[ -t 0 && -t 1 ]] && DOCKER_TTY=(-it)
+
+  local SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=3)
+  local SSH_CMD=(ssh "${SSH_OPTS[@]}" "sensos-admin@${ip}")
+  [[ ${#remote_cmd[@]} -gt 0 ]] && SSH_CMD+=("${remote_cmd[@]}")
+
+  if docker exec "$CONTROLLER_CONTAINER" which sudo >/dev/null 2>&1; then
+    exec docker exec "${DOCKER_TTY[@]}" "$CONTROLLER_CONTAINER" sudo -u sensos -- "${SSH_CMD[@]}"
+  else
+    local Q; Q="$(printf '%q ' "${SSH_CMD[@]}")"
+    exec docker exec "${DOCKER_TTY[@]}" "$CONTROLLER_CONTAINER" su -s /bin/bash sensos -c "$Q"
+  fi
+}
+
+main "$@"
+
