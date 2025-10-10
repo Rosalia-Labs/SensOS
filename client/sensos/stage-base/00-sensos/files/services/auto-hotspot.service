@@ -8,8 +8,7 @@ Requires=NetworkManager.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/bin/bash -c 'systemctl enable ssh && systemctl start ssh'
-ExecStart=/bin/bash -c 'nmcli device wifi hotspot ifname wlan0 ssid sensosnet password sensossensos'
-ExecStop=/bin/bash -c 'nmcli connection down Hotspot || true'
+ExecStart=/bin/bash -c 'mac=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d ":" | tail -c 4); ssid="sensosnet${mac:+$mac}"; nmcli device wifi hotspot ifname wlan0 ssid "$ssid" password sensossensos'ExecStop=/bin/bash -c 'nmcli connection down Hotspot || true'
 
 [Install]
 WantedBy=multi-user.target
