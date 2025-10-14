@@ -7,4 +7,4 @@ adafruit-circuitpython-scd4x
 requests
 pynmea2
 smbus2
-lgpio
+gpiod

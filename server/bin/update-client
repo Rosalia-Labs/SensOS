@@ -2,36 +2,26 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Rosalia Labs LLC
 #
-# Update a remote SensOS client by syncing selected subtrees from:
+# Update a remote SensOS client by syncing the current source tree under:
 #   client/sensos/stage-base/00-sensos/files/
 #
-# Principles:
-# - No implicit directory creation on the remote: required dirs must already exist.
-# - No silent defaults for required inputs.
-# - Fail fast with clear, specific errors.
-# - Perform a real sync: create/update files and delete removed ones on destination.
+# Rules:
+# - Let rsync create missing subdirectories under /sensos (no per-subdir checks).
+# - /sensos must already exist on the remote.
+# - No silent defaults for required inputs; fail fast with clear errors.
+# - Perform a real sync: create/update files and delete removed ones on destination,
+#   while excluding data/, keys/, log/, init.d/ from any changes/deletions.
 
 set -euo pipefail
-
 : "${CONTROLLER_CONTAINER:=sensos-controller}"
 
 # ---------- helpers ----------
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Error: required command not found: $1" >&2; exit 127; }; }
-
 require_container_running() {
   local n="$1"
   docker inspect "$n" >/dev/null 2>&1 || { echo "Error: required Docker container not found: $n" >&2; exit 1; }
   [[ "$(docker inspect -f '{{.State.Running}}' "$n" 2>/dev/null)" == "true" ]] || { echo "Error: Docker container is not running: $n" >&2; exit 1; }
 }
-
-require_in_container_cmd() {
-  local c="$1"
-  if ! docker exec "$CONTROLLER_CONTAINER" which "$c" >/dev/null 2>&1; then
-    echo "Error: required command not found inside '$CONTROLLER_CONTAINER': $c" >&2
-    exit 127
-  fi
-}
-
 is_ip() {
   local ip="$1"
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
@@ -39,12 +29,9 @@ is_ip() {
   for n in "$a" "$b" "$c" "$d"; do (( n>=0 && n<=255 )) || return 1; done
   return 0
 }
-
 hash_octet_from_name() { printf %s "$1" | od -An -t u1 | awk '{for(i=1;i<=NF;i++) s+=$i} END{print s%256}'; }
-
 build_ip_from_token() {
   local tok="$1"
-  # Accept underscores OR hyphens as separators: <net>_<a>_<b> or <net>-<a>-<b>
   if [[ ! "$tok" =~ ^([A-Za-z0-9-]+)[_-]([0-9]+)[_-]([0-9]+)$ ]]; then
     echo "Error: invalid token '$tok'. Expected '<net>_<a>_<b>' or '<net>-<a>-<b>'." >&2
     exit 2
@@ -55,7 +42,6 @@ build_ip_from_token() {
   local o2; o2="$(hash_octet_from_name "$net")"
   echo "10.${o2}.${a}.${b}"
 }
-
 run_in_controller_as_sensos() {
   local cmd="$1"
   if docker exec "$CONTROLLER_CONTAINER" which sudo >/dev/null 2>&1; then
@@ -64,7 +50,6 @@ run_in_controller_as_sensos() {
     docker exec "$CONTROLLER_CONTAINER" su -s /bin/bash sensos -c "$cmd"
   fi
 }
-
 usage() {
   cat >&2 <<'EOF'
 Usage: sensos-update-client <ip-or-token> [--dry-run] [--reboot] [-- <remote post cmd>]
@@ -108,19 +93,11 @@ main() {
   local SRC_ROOT="${BASE_DIR}/client/sensos/stage-base/00-sensos/files"
   [[ -d "$SRC_ROOT" ]] || { echo "Error: required directory not found: files ($SRC_ROOT)" >&2; exit 1; }
 
-  # Allow-list to sync (intentionally excludes data/, keys/, log/, init.d/)
-  local SUBTREES=( etc docker scripts services service_scripts lib python )
-  for sub in "${SUBTREES[@]}"; do
-    [[ -d "${SRC_ROOT}/${sub}" ]] || { echo "Error: required directory not found: ${sub} (${SRC_ROOT}/${sub})" >&2; exit 1; }
-  done
-
   require_container_running "$CONTROLLER_CONTAINER"
-  require_in_container_cmd ssh
-  require_in_container_cmd scp
-
-  # 1) Pack whitelisted subtrees
+  
+  # 1) Pack entire files/ tree
   local TMP_TAR; TMP_TAR="$(mktemp -t sensos-sync.XXXXXX.tar)"
-  ( cd "$SRC_ROOT" && tar cf "$TMP_TAR" "${SUBTREES[@]}" )
+  ( cd "$SRC_ROOT" && tar cf "$TMP_TAR" . )
   local TAR_BYTES; TAR_BYTES="$(stat -c%s "$TMP_TAR" 2>/dev/null || echo 0)"
 
   # 2) Copy tarball into controller
@@ -134,36 +111,28 @@ main() {
   local SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
   run_in_controller_as_sensos "scp $SSH_OPTS '$CT_TAR' 'sensos-admin@${ip}:${REM_TAR}'"
 
-  # 4) Remote: verify dirs exist, unpack to temp, full rsync with deletes
+  # 4) Remote: unpack to temp, single rsync with excludes
   local RSYNC_FLAGS="-a --delete-after --checksum"
   (( DRY == 1 )) && RSYNC_FLAGS="--dry-run --itemize-changes $RSYNC_FLAGS"
 
-  # Build the remote script; error options applied on bash invocation
   local REMOTE_SCRIPT
   read -r -d '' REMOTE_SCRIPT <<EOS
-require_dir() { [[ -d "\$1" ]] || { echo "Error: required directory not found: \$1" >&2; exit 1; }; }
-require_cmd() { command -v "\$1" >/dev/null 2>&1 || { echo "Error: required command not found on remote: \$1" >&2; exit 127; }; }
+set -euxo pipefail
 
-require_cmd rsync
-require_cmd tar
-
-# Preflight (no implicit creation)
-require_dir /sensos
-for d in ${SUBTREES[*]}; do require_dir "/sensos/\$d"; done
-
-# Unpack into temp
 STAGE_DIR="\$(mktemp -d /tmp/sensos-sync.XXXXXX)"
 trap 'rm -rf "\$STAGE_DIR"' EXIT
 tar xf "$REM_TAR" -C "\$STAGE_DIR"
 rm -f "$REM_TAR"
 
-# Sync each subtree (create/update + delete removed)
-for d in ${SUBTREES[*]}; do
-  SRC="\$STAGE_DIR/\$d"
-  DST="/sensos/\$d"
-  require_dir "\$DST"
-  rsync $RSYNC_FLAGS "\$SRC/" "\$DST/"
-done
+# Mirror STAGE_DIR -> /sensos while protecting excluded dirs
+rsync $RSYNC_FLAGS \
+  --exclude='data/' \
+  --exclude='keys/' \
+  --exclude='log/' \
+  --exclude='init.d/' \
+  "\$STAGE_DIR/" "/sensos/"
+
+echo "[sensos-update-client] Remote sync complete."
 EOS
 
   local REMOTE_CMD
@@ -188,4 +157,3 @@ EOS
 }
 
 main "$@"
-
