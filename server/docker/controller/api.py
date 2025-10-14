@@ -360,13 +360,11 @@ def inspect_database(
     """Inspect all database tables in a single formatted HTML output."""
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 SELECT table_name FROM information_schema.tables 
                 WHERE table_schema = 'sensos'
                 ORDER BY table_name;
-                """
-            )
+            """)
             tables = [row[0] for row in cur.fetchall()]
 
             if not tables:
@@ -394,7 +392,14 @@ def inspect_database(
             """
 
             for table in tables:
-                cur.execute(f"SELECT * FROM sensos.{table} LIMIT %s;", (limit,))
+                try:
+                    cur.execute(
+                        f"SELECT * FROM sensos.{table} ORDER BY id DESC LIMIT %s;", (limit,)
+                    )
+                except Exception:
+                    conn.rollback()
+                    cur.execute(f"SELECT * FROM sensos.{table} LIMIT %s;", (limit,))
+
                 rows = cur.fetchall()
                 column_names = [desc[0] for desc in cur.description]
 
@@ -421,7 +426,7 @@ def inspect_database(
 
             html += "</div></body></html>"
             return HTMLResponse(html)
-
+        
 
 @router.get("/get-peer-info")
 def get_peer_info(
