@@ -8,23 +8,7 @@ Requires=NetworkManager.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/bin/bash -c 'systemctl enable ssh && systemctl start ssh'
-ExecStart=/bin/bash -euxo pipefail -c '
-  # Read MAC and strip ":" and newline, then take last 4 chars
-  if read -r mac < /sys/class/net/wlan0/address; then
-    mac=${mac//:}
-    mac=${mac//$"\n"/}
-    mac=${mac: -4}
-  else
-    mac=""
-  fi
-  ssid="sensosnet${mac:+$mac}"
-
-  # Remove any stale hotspot profile so password/ssid aren’t overridden
-  nmcli -t -f NAME connection show | grep -qx Hotspot && nmcli connection delete Hotspot || true
-
-  # Create hotspot with the intended SSID + password
-  nmcli device wifi hotspot ifname wlan0 ssid "$ssid" password "sensossensos"
-'
+ExecStart=/bin/bash -c 'nmcli device wifi hotspot ifname wlan0 ssid sensosnet password sensossensos'
 ExecStop=/bin/bash -c 'nmcli connection down Hotspot || true'
 
 [Install]
