@@ -137,4 +137,4 @@ ENABLE_HOTSPOT="$ENABLE_HOTSPOT"
 IMG_SIZE="$((IMAGE_SIZE * 1048576))"
 EOF
 
-echo -e "\nConfig file written. Now go to the pi-gen directory and run ./build-docker.sh\n"
+echo -e "\nConfig file written.\n"
