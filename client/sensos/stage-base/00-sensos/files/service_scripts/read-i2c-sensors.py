@@ -30,8 +30,8 @@ BACKOFF_MULTIPLIER = 2
 # -------------------------
 _i2c = None
 _cached = {
-    "bme280": {},  # address(int) -> driver
-    "ads1015": None,
+    "bme280": {},
+    "ads1015": {},
     "scd30": None,
     "scd4x": {"driver": None, "warmed": False},
 }
@@ -162,16 +162,24 @@ def read_ads1015(addr_str: str = None):
         from adafruit_ads1x15.analog_in import AnalogIn
 
         i2c = get_i2c()
-        ads = _cached["ads1015"]
+        addr = int(addr_str, 16) if addr_str else 0x48
+
+        # Robust cache (handles old runs where ads1015 might be None)
+        ads_cache = _cached.get("ads1015")
+        if not isinstance(ads_cache, dict):
+            ads_cache = _cached["ads1015"] = {}
+
+        ads = ads_cache.get(addr)
         if ads is None:
-            # If you ever want non-0x48 addrs, pass "address=int(addr_str,16)"
-            ads = ADS.ADS1015(i2c)
-            _cached["ads1015"] = ads
+            ads = ADS.ADS1015(i2c, address=addr)
+            ads_cache[addr] = ads
+
+        # Use integer channel indices (0..3) to avoid P0..P3 symbol differences
         return {
-            "A0": round(AnalogIn(ads, ADS.P0).voltage, 3),  # <-- fixed typo
-            "A1": round(AnalogIn(ads, ADS.P1).voltage, 3),
-            "A2": round(AnalogIn(ads, ADS.P2).voltage, 3),
-            "A3": round(AnalogIn(ads, ADS.P3).voltage, 3),
+            "A0": round(AnalogIn(ads, 0).voltage, 3),
+            "A1": round(AnalogIn(ads, 1).voltage, 3),
+            "A2": round(AnalogIn(ads, 2).voltage, 3),
+            "A3": round(AnalogIn(ads, 3).voltage, 3),
         }
     except Exception as e:
         print(f"⚠️ Error reading ADS1015: {e}", file=sys.stderr)
@@ -268,6 +276,35 @@ def read_i2c_gps(addr_str: str = None):
         return None
 
 
+def read_lt150(addr_str: str = "0x49"):
+    """Read Vegetronix LT-150 light sensor (0–3 V) via ADS1015 channel 0."""
+    try:
+        import adafruit_ads1x15.ads1015 as ADS
+        from adafruit_ads1x15.analog_in import AnalogIn
+
+        i2c = get_i2c()
+        addr = int(addr_str, 16)
+
+        # cache per-address
+        ads_cache = _cached.get("ads1015")
+        if not isinstance(ads_cache, dict):
+            ads_cache = _cached["ads1015"] = {}
+
+        ads = ads_cache.get(addr)
+        if ads is None:
+            ads = ADS.ADS1015(i2c, address=addr)
+            ads.gain = 1  # ±4.096 V range, ideal for 0–3 V sensors
+            ads_cache[addr] = ads
+
+        v = AnalogIn(ads, 0).voltage
+        lux = max(0.0, v * 50000.0)  # LT-150 ≈ 50 000 lux per volt
+        return {"lux": round(lux, 1), "volts": round(v, 3)}
+
+    except Exception as e:
+        print(f"⚠️ Error reading LT-150 @ {addr_str}: {e}", file=sys.stderr)
+        return None
+
+
 # -------------------------
 # Storage helpers
 # -------------------------
@@ -314,6 +351,7 @@ def main():
         ("BME280_0x76", "0x76", "BME280", read_bme280),
         ("BME280_0x77", "0x77", "BME280", read_bme280),
         ("ADS1015", "0x48", "ADS1015", read_ads1015),
+        ("LT150", "0x49", "LT150", read_lt150),
         ("SCD30", "0x61", "SCD30", read_scd30),
         ("SCD4X", "0x62", "SCD4X", read_scd4x),
         ("I2C_GPS", "0x10", "I2C_GPS", read_i2c_gps),

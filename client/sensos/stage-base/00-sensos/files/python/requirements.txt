@@ -6,5 +6,6 @@ adafruit-circuitpython-scd30
 adafruit-circuitpython-scd4x
 requests
 pynmea2
+psutil
 smbus2
 gpiod
