@@ -111,8 +111,17 @@ def main():
                         sqlite_conn.rollback()
                         break  # Stop batch on error
 
+                # ✅ Commit successful inserts
                 pg_conn.commit()
+
+                # ✅ Delete imported rows from SQLite
+                imported_ids = [r["id"] for r in rows]
+                sqlite_cur.executemany(
+                    "DELETE FROM i2c_readings WHERE id = ?",
+                    [(rid,) for rid in imported_ids],
+                )
                 sqlite_conn.commit()
+                logger.info(f"Deleted {len(imported_ids)} imported rows from SQLite.")
 
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
