@@ -436,11 +436,14 @@ Note: This script runs inside the sensos-analytics-admin container.
 
         logger.info("=" * 60)
         logger.info("Import complete!")
-        logger.info(f"  Imported (DB rows): {imported}")
-        logger.info(f"  Copied files:       {copied}")
+        logger.info(f"  Total imported:     {imported}")
+        logger.info(f"  Files copied:       {copied}")
         logger.info(f"  Already existed:    {existed}")
-        logger.info(f"  Skipped:  {skipped}")
-        logger.info(f"  Errors:   {errors}")
+        logger.info(f"  Skipped:            {skipped}")
+        logger.info(f"  Errors:             {errors}")
+        logger.info("")
+        logger.info("Note: WAV files are placed in queued/ for background")
+        logger.info("      conversion to FLAC by the catalog service.")
         logger.info("=" * 60)
 
         if errors > 0:

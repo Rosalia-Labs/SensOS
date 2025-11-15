@@ -66,6 +66,29 @@ services:
       - analytics_network
     command: ["/bin/bash"]
 
+  sensos-analytics-birdnet:
+    build:
+      context: ./birdnet
+      dockerfile: Dockerfile
+    image: sensos-analytics-birdnet:local
+    container_name: sensos-analytics-birdnet
+    restart: always
+    depends_on:
+      sensos-analytics-database:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST:-sensos-analytics-database}
+      DB_PORT: ${DB_PORT:-5432}
+    volumes:
+      - ${AUDIO_DIR}:/audio_recordings
+      - ./birdnet/model:/model
+    networks:
+      - analytics_network
+    command: ["python", "birdnet_analyze.py"]
+
 networks:
   analytics_network:
     driver: bridge

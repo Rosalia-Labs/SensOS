@@ -37,6 +37,29 @@ All Python code runs inside Docker containers, maintaining consistency with the 
   - `capture_timestamp`, audio metadata, etc.
   - Unique constraint: `(location_id, file_path)`
 
+**BirdNET Analysis Tables** (created automatically):
+
+- `sensos.audio_segments` - 3-second segments with 1-second steps
+  - `file_id` → `audio_files(id)`
+  - `channel`, `start_frame`, `end_frame`
+  
+- `sensos.birdnet_scores` - Species detection scores
+  - `segment_id`, `label` (species name)
+  - `score` (audio-based confidence)
+  - `likely` (location-based likelihood, if lat/lon available)
+
+- `sensos.birdnet_embeddings` - 1024-dimensional vectors for similarity
+  - `segment_id`, `vector` (pgvector type)
+
+- `sensos.sound_statistics` - Acoustic features per segment
+  - `peak_amplitude`, `rms`, `snr`
+
+- `sensos.full_spectrum` / `sensos.bioacoustic_spectrum` - Frequency analysis
+  - Binned spectrograms stored as JSONB
+
+- `sensos.score_statistics` - Diversity indices
+  - `hill_number`, `simpson_index`
+
 ### Why Location-Based?
 
 1. **Flexible**: Import data even without client registration
@@ -70,8 +93,22 @@ This creates `docker/.env` with your custom storage locations.
 Starts:
 - `sensos-analytics-database` - PostgreSQL with PostGIS and pgvector extensions
 - `sensos-analytics-catalog-audio` - Audio cataloging service (location-aware)
+- `sensos-analytics-birdnet` - BirdNET analysis service (extracts bird calls, embeddings, acoustic features)
 
 Note: The `sensos-analytics-admin` container is available for running admin commands (bulk-import, etc.) but doesn't start automatically. Use `./bin/run-admin` to run containerized admin tasks.
+
+**BirdNET Setup**: Before starting services, download the BirdNET model:
+
+```bash
+# Download and extract BirdNET v2.4 model
+cd server/analytics/docker/birdnet/model
+wget https://github.com/kahst/BirdNET-Analyzer/releases/download/v2.4/BirdNET_v2.4_tflite.zip
+unzip BirdNET_v2.4_tflite.zip
+# Expected structure:
+#   model/BirdNET_v2.4_tflite/audio-model.tflite
+#   model/BirdNET_v2.4_tflite/meta-model.tflite
+#   model/BirdNET_v2.4_tflite/labels/en_us.txt
+```
 
 ### 2a. Optional: manage via systemd
 
@@ -135,6 +172,15 @@ Import large directory structures with year/month/day organization using the con
 - Place your source data within `${AUDIO_DIR}` or mount additional volumes in `docker-compose.yml`
 - Example: If `AUDIO_DIR=/mnt/storage/audio_recordings`, place imports under `/mnt/storage/audio_recordings/imports/`
 
+**File Format Handling**:
+
+- **FLAC files**: Copied directly to `<location>/cataloged/YYYY/MM/DD/` and registered in database immediately
+- **WAV files**: Placed in `<location>/queued/YYYY/MM/DD/` for background conversion by catalog service
+  - Cataloger converts WAV→FLAC and moves to `cataloged/`
+  - Cataloger fills in audio metadata (frames, channels, sample rate, etc.)
+  - Allows fast import without waiting for conversion
+- **Pattern matching**: Only `sensos_YYYYMMDDTHHMMSS.*` files are imported; others are ignored
+
 **Alternative: Interactive admin container**
 
 For multiple operations or troubleshooting, run an interactive shell:
@@ -162,25 +208,106 @@ psql -h sensos-analytics-database -U sensos -d sensos
 
 **Important**: The script only imports files matching the pattern `sensos_YYYYMMDDTHHMMSS.[flac|wav|mp3|ogg]`. Files like `Barn_Owl_Tyto_alba__0.998_0.170_2405393.flac` (bird detection examples) are automatically ignored.
 
-The script:
+The script handles different formats:
+- **FLAC**: Copied directly to `cataloged/YYYY/MM/DD/`, registered immediately in database
+- **WAV**: Placed in `queued/YYYY/MM/DD/` for background conversion to FLAC by catalog service
+- **MP3/OGG**: Placed in `queued/YYYY/MM/DD/` for background conversion (if supported by soundfile)
+
+Workflow:
 - Recursively scans for files matching `sensos_YYYYMMDDTHHMMSS` pattern
-- Parses capture timestamp from filename (e.g., `sensos_20250808T001404.flac` → 2025-08-08 00:14:04)
-- Preserves directory structure (year/month/day)
-- Copies FLAC directly to `<AUDIO_DIR>/<location>/cataloged/YYYY/MM/DD/`
-- Inserts DB rows with `file_path` relative to the location root (e.g., `cataloged/2025/08/08/file.flac`)
+- Parses capture timestamp from filename (e.g., `sensos_20250408T001404.wav` → 2025-04-08 00:14:04)
+- FLAC: Copies to `<AUDIO_DIR>/<location>/cataloged/YYYY/MM/DD/` and inserts DB row immediately
+- WAV: Copies to `<AUDIO_DIR>/<location>/queued/YYYY/MM/DD/` for cataloger to process
+- Cataloger converts queued files to FLAC, enriches metadata, and registers in database
 - Shows progress for large imports
 - Processes in batches (1000 files/transaction by default)
 - Skips already-imported files (idempotent)
 
 ## Workflow Summary
 
-1. **Collect recordings**: Field sites record continuously to local storage
+1. **Collect recordings**: Field sites record continuously to local storage (FLAC or WAV)
 2. **Physical transfer**: Copy recordings to analytics server (external drive, rsync, etc.)
 3. **Configure storage**: Use `config-docker` to set custom paths for TB-scale data
-4. **Start services**: Use `start-docker` to bring up database and catalog service
-5. **Bulk import**: Use `bulk-import` to register files by location
-6. **Processing**: Catalog service processes metadata (future: add BirdNET analysis)
-7. **Query**: Use SQL for spatial/temporal analysis across locations
+4. **Start services**: Use `start-docker` to bring up database, catalog service, and BirdNET analyzer
+5. **Bulk import**: 
+   - Use `bulk-import` to copy files by location
+   - FLAC files registered immediately in database
+   - WAV files staged in `queued/` for background conversion
+6. **Background processing**: Catalog service converts WAV→FLAC, enriches metadata, registers in DB
+7. **BirdNET analysis**: Automatically processes cataloged files, extracting:
+   - Bird species detection scores (top 5 per 3-second segment)
+   - 1024-dimensional embeddings for similarity search
+   - Acoustic features (spectrogram, RMS, SNR)
+   - Diversity indices (Hill number, Simpson index)
+8. **Query**: Use SQL for spatial/temporal analysis across locations
+
+## BirdNET Analysis
+
+The BirdNET service automatically processes all cataloged audio files:
+
+### What It Computes
+
+For each 3-second audio segment (with 1-second steps):
+- **BirdNET scores**: Top 5 species detections with confidence scores
+- **Location likelihood**: If lat/lon provided, locality probability for each species
+- **Embeddings**: 1024-dimensional vector for similarity search
+- **Acoustic features**: 
+  - Full spectrum (50 Hz - 24 kHz, 20 bins)
+  - Bioacoustic spectrum (1-8 kHz, 20 bins)
+  - Sound statistics (peak amplitude, RMS, SNR)
+- **Diversity**: Hill number and Simpson index
+
+### Example Queries
+
+```sql
+-- Find highest confidence bird detections at a location
+SELECT 
+  l.location_name,
+  bs.label,
+  bs.score,
+  bs.likely,
+  af.capture_timestamp
+FROM sensos.birdnet_scores bs
+JOIN sensos.audio_segments seg ON bs.segment_id = seg.id
+JOIN sensos.audio_files af ON seg.file_id = af.id
+JOIN sensos.locations l ON af.location_id = l.id
+WHERE l.location_name = 'site_001_oak_woodland'
+  AND bs.score > 0.8
+ORDER BY bs.score DESC
+LIMIT 10;
+
+-- Compare species diversity across locations
+SELECT 
+  l.location_name,
+  AVG(ss.hill_number) as avg_diversity,
+  COUNT(DISTINCT seg.id) as segment_count
+FROM sensos.score_statistics ss
+JOIN sensos.audio_segments seg ON ss.segment_id = seg.id
+JOIN sensos.audio_files af ON seg.file_id = af.id
+JOIN sensos.locations l ON af.location_id = l.id
+GROUP BY l.location_name
+ORDER BY avg_diversity DESC;
+
+-- Find similar audio segments using embeddings
+SELECT 
+  seg.id,
+  af.file_path,
+  af.capture_timestamp,
+  be.vector <-> (SELECT vector FROM sensos.birdnet_embeddings WHERE segment_id = 12345) as distance
+FROM sensos.birdnet_embeddings be
+JOIN sensos.audio_segments seg ON be.segment_id = seg.id
+JOIN sensos.audio_files af ON seg.file_id = af.id
+WHERE seg.id != 12345
+ORDER BY distance
+LIMIT 10;
+```
+
+### Monitoring
+
+Watch BirdNET processing in real-time:
+```bash
+docker logs -f sensos-analytics-birdnet
+```
 
 ## Example Import Session
 
@@ -213,13 +340,26 @@ sudo rsync -av /mnt/backup2/ /data/sensos/audio/import_staging/site2/
   --elevation 100 \
   --notes "Oak woodland site, recorder deployed 2024-01"
 
-# Import data from second location
+# Import complete!
+#   Total imported:     1234
+#   Files copied:       1234
+#   Already existed:    0
+#   Skipped:            56
+#   Errors:             0
+#
+# Note: WAV files are placed in queued/ for background
+#       conversion to FLAC by the catalog service.
+
+# Watch catalog service convert WAV files in background
+docker logs -f sensos-analytics-catalog-audio
+
+# Import data from second location (WAV files from sensor)
 ./bin/run-admin /app/bulk-import \
-  --source /audio_recordings/import_staging/site2 \
+  --source /audio_recordings/import_staging/bfl_1_04_17_25/audio_recordings/unprocessed \
   --location "site_002_riparian" \
   --lat 37.8650 --lon -122.2680 \
   --elevation 50 \
-  --notes "Riparian corridor, recorder deployed 2024-02"
+  --notes "Riparian corridor, WAV data from April 2025"
 
 # Clean up staging area after import
 sudo rm -rf /data/sensos/audio/import_staging/

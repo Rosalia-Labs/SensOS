@@ -1,0 +1,8 @@
+# BirdNET model files go here
+# Download from: https://github.com/kahst/BirdNET-Analyzer
+# Required structure:
+#   BirdNET_v2.4_tflite/
+#     audio-model.tflite
+#     meta-model.tflite
+#     labels/
+#       en_us.txt
