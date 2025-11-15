@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+"""
+Import audio recordings from a client to the analytics server.
+This script copies audio files from a client backup/export and places them
+in the appropriate client directory for processing by catalog_audio.
+"""
+
+import os
+import sys
+import argparse
+import logging
+import shutil
+from pathlib import Path
+from typing import Optional
+import psycopg
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+def get_db_connection(host: str, port: int, dbname: str, user: str, password: str):
+    """Create database connection."""
+    return psycopg.connect(
+        host=host,
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
+        autocommit=True
+    )
+
+
+def get_client_id(conn, peer_uuid: Optional[str] = None, wg_ip: Optional[str] = None) -> Optional[int]:
+    """Get client_id from analytics database."""
+    with conn.cursor() as cur:
+        if peer_uuid:
+            cur.execute("SELECT id, hostname FROM sensos.clients WHERE peer_uuid = %s", (peer_uuid,))
+        elif wg_ip:
+            cur.execute("SELECT id, hostname FROM sensos.clients WHERE wg_ip = %s", (wg_ip,))
+        else:
+            return None
+        
+        row = cur.fetchone()
+        if row:
+            client_id, hostname = row
+            logger.info(f"Found client: id={client_id}, hostname={hostname}")
+            return client_id
+        return None
+
+
+def import_recordings(
+    source_dir: Path,
+    dest_root: Path,
+    client_id: int,
+    file_patterns: list[str] = None,
+    dry_run: bool = False
+):
+    """
+    Import audio recordings from source directory to client's queued directory.
+    
+    Args:
+        source_dir: Source directory containing recordings (can be nested)
+        dest_root: Root directory for analytics audio files (/audio_recordings)
+        client_id: Client ID in analytics database
+        file_patterns: List of file extensions to import (e.g., ['.wav', '.flac'])
+        dry_run: If True, only show what would be imported
+    """
+    if not source_dir.exists():
+        raise FileNotFoundError(f"Source directory not found: {source_dir}")
+    
+    # Set up destination directory
+    client_dir = dest_root / str(client_id)
+    queued_dir = client_dir / "queued"
+    
+    if not dry_run:
+        queued_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Default patterns if not specified
+    if file_patterns is None:
+        file_patterns = ['.wav', '.flac', '.mp3', '.ogg']
+    
+    # Find all audio files in source directory
+    audio_files = []
+    for pattern in file_patterns:
+        audio_files.extend(source_dir.rglob(f"*{pattern}"))
+        audio_files.extend(source_dir.rglob(f"*{pattern.upper()}"))
+    
+    logger.info(f"Found {len(audio_files)} audio files to import")
+    
+    if not audio_files:
+        logger.warning("No audio files found in source directory")
+        return 0
+    
+    # Import files
+    imported_count = 0
+    skipped_count = 0
+    error_count = 0
+    
+    for src_file in audio_files:
+        try:
+            # Preserve relative path structure
+            rel_path = src_file.relative_to(source_dir)
+            dest_file = queued_dir / rel_path
+            
+            # Check if already exists
+            if dest_file.exists():
+                logger.debug(f"Skipping existing file: {rel_path}")
+                skipped_count += 1
+                continue
+            
+            if dry_run:
+                logger.info(f"Would import: {src_file} -> {dest_file}")
+                imported_count += 1
+            else:
+                # Create parent directories
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Copy file
+                shutil.copy2(src_file, dest_file)
+                logger.info(f"Imported: {rel_path}")
+                imported_count += 1
+                
+        except Exception as e:
+            logger.error(f"Error importing {src_file}: {e}")
+            error_count += 1
+    
+    logger.info(
+        f"Import summary: {imported_count} imported, "
+        f"{skipped_count} skipped, {error_count} errors"
+    )
+    
+    return imported_count
+
+
+def update_last_import(conn, client_id: int):
+    """Update last_import_at timestamp for client."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sensos.clients SET last_import_at = NOW() WHERE id = %s",
+            (client_id,)
+        )
+    logger.info(f"Updated last_import_at for client_id={client_id}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Import audio recordings from a client to analytics server"
+    )
+    
+    # Source
+    parser.add_argument(
+        "--source",
+        required=True,
+        type=Path,
+        help="Source directory containing client recordings"
+    )
+    
+    # Client identification
+    parser.add_argument(
+        "--client-uuid",
+        help="Client UUID (from management server)"
+    )
+    parser.add_argument(
+        "--client-ip",
+        help="Client WireGuard IP"
+    )
+    parser.add_argument(
+        "--client-id",
+        type=int,
+        help="Client ID (from analytics database)"
+    )
+    
+    # Destination
+    parser.add_argument(
+        "--dest-root",
+        type=Path,
+        default=Path("/audio_recordings"),
+        help="Root directory for analytics audio files (default: /audio_recordings)"
+    )
+    
+    # Database connection
+    parser.add_argument(
+        "--db-host",
+        default="localhost",
+        help="Analytics database host (default: localhost)"
+    )
+    parser.add_argument(
+        "--db-port",
+        type=int,
+        default=5432,
+        help="Analytics database port (default: 5432)"
+    )
+    parser.add_argument(
+        "--db-name",
+        default="sensos",
+        help="Analytics database name (default: sensos)"
+    )
+    parser.add_argument(
+        "--db-user",
+        default="sensos",
+        help="Analytics database user (default: sensos)"
+    )
+    parser.add_argument(
+        "--db-password",
+        default="sensos",
+        help="Analytics database password (default: sensos)"
+    )
+    
+    # Options
+    parser.add_argument(
+        "--file-types",
+        nargs="+",
+        default=[".wav", ".flac", ".mp3", ".ogg"],
+        help="File extensions to import (default: .wav .flac .mp3 .ogg)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be imported without actually copying files"
+    )
+    
+    args = parser.parse_args()
+    
+    # Validate client identification
+    if not (args.client_id or args.client_uuid or args.client_ip):
+        parser.error("Must specify --client-id, --client-uuid, or --client-ip")
+    
+    try:
+        # Get client_id if not directly provided
+        client_id = args.client_id
+        
+        if not client_id:
+            logger.info("Connecting to analytics database...")
+            conn = get_db_connection(
+                args.db_host,
+                args.db_port,
+                args.db_name,
+                args.db_user,
+                args.db_password
+            )
+            
+            client_id = get_client_id(conn, args.client_uuid, args.client_ip)
+            
+            if not client_id:
+                logger.error("Client not found in analytics database")
+                logger.info("Run import-clients first to sync client from management server")
+                sys.exit(1)
+        else:
+            conn = None
+        
+        # Import recordings
+        logger.info(f"Importing recordings for client_id={client_id}")
+        logger.info(f"Source: {args.source}")
+        logger.info(f"Destination root: {args.dest_root}")
+        
+        if args.dry_run:
+            logger.info("DRY RUN - No files will be copied")
+        
+        imported_count = import_recordings(
+            args.source,
+            args.dest_root,
+            client_id,
+            args.file_types,
+            args.dry_run
+        )
+        
+        # Update last import timestamp
+        if imported_count > 0 and not args.dry_run:
+            if conn is None:
+                conn = get_db_connection(
+                    args.db_host,
+                    args.db_port,
+                    args.db_name,
+                    args.db_user,
+                    args.db_password
+                )
+            update_last_import(conn, client_id)
+        
+        logger.info("✅ Import completed successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ Error during import: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+
+if __name__ == "__main__":
+    main()

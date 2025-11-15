@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+"""
+Import client data from management server to analytics database.
+This script syncs client information and prepares the analytics database
+to receive recordings from specific clients.
+"""
+
+import os
+import sys
+import argparse
+import logging
+from typing import Optional
+import psycopg
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+def get_db_connection(host: str, port: int, dbname: str, user: str, password: str):
+    """Create database connection."""
+    return psycopg.connect(
+        host=host,
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
+        autocommit=False
+    )
+
+
+def sync_client_from_management(
+    mgmt_conn,
+    analytics_conn,
+    peer_uuid: Optional[str] = None,
+    wg_ip: Optional[str] = None,
+):
+    """
+    Sync a client from management server to analytics database.
+    
+    Args:
+        mgmt_conn: Connection to management server database
+        analytics_conn: Connection to analytics database
+        peer_uuid: Client UUID from management server
+        wg_ip: Client WireGuard IP
+    """
+    with mgmt_conn.cursor() as mgmt_cur:
+        # Build query based on provided identifiers
+        if peer_uuid:
+            mgmt_cur.execute(
+                """
+                SELECT 
+                    p.uuid,
+                    p.wg_ip,
+                    p.note,
+                    p.registered_at,
+                    cs.hostname,
+                    hp.model,
+                    hp.kernel_version,
+                    hp.cpu,
+                    hp.memory,
+                    pl.latitude,
+                    pl.longitude,
+                    pl.timestamp as location_updated_at
+                FROM sensos.wireguard_peers p
+                LEFT JOIN sensos.client_status cs ON cs.client_id = p.id
+                LEFT JOIN sensos.hardware_profiles hp ON hp.wg_ip = p.wg_ip
+                LEFT JOIN sensos.peer_locations pl ON pl.wg_ip = p.wg_ip
+                WHERE p.uuid = %s
+                ORDER BY cs.last_check_in DESC, pl.timestamp DESC
+                LIMIT 1;
+                """,
+                (peer_uuid,)
+            )
+        elif wg_ip:
+            mgmt_cur.execute(
+                """
+                SELECT 
+                    p.uuid,
+                    p.wg_ip,
+                    p.note,
+                    p.registered_at,
+                    cs.hostname,
+                    hp.model,
+                    hp.kernel_version,
+                    hp.cpu,
+                    hp.memory,
+                    pl.latitude,
+                    pl.longitude,
+                    pl.timestamp as location_updated_at
+                FROM sensos.wireguard_peers p
+                LEFT JOIN sensos.client_status cs ON cs.client_id = p.id
+                LEFT JOIN sensos.hardware_profiles hp ON hp.wg_ip = p.wg_ip
+                LEFT JOIN sensos.peer_locations pl ON pl.wg_ip = p.wg_ip
+                WHERE p.wg_ip = %s
+                ORDER BY cs.last_check_in DESC, pl.timestamp DESC
+                LIMIT 1;
+                """,
+                (wg_ip,)
+            )
+        else:
+            raise ValueError("Must provide either peer_uuid or wg_ip")
+        
+        client_data = mgmt_cur.fetchone()
+        
+        if not client_data:
+            logger.error(f"Client not found in management server: uuid={peer_uuid}, wg_ip={wg_ip}")
+            return None
+    
+    (
+        uuid, wg_ip, note, registered_at, hostname,
+        model, kernel_version, cpu, memory,
+        latitude, longitude, location_updated_at
+    ) = client_data
+    
+    # Insert or update in analytics database
+    with analytics_conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO sensos.clients (
+                peer_uuid, wg_ip, hostname, note, registered_at,
+                model, kernel_version, cpu_info, memory_info,
+                latitude, longitude, location_updated_at
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s,
+                %s, %s, %s
+            )
+            ON CONFLICT (peer_uuid) DO UPDATE SET
+                wg_ip = EXCLUDED.wg_ip,
+                hostname = EXCLUDED.hostname,
+                note = EXCLUDED.note,
+                model = EXCLUDED.model,
+                kernel_version = EXCLUDED.kernel_version,
+                cpu_info = EXCLUDED.cpu_info,
+                memory_info = EXCLUDED.memory_info,
+                latitude = EXCLUDED.latitude,
+                longitude = EXCLUDED.longitude,
+                location_updated_at = EXCLUDED.location_updated_at
+            RETURNING id;
+            """,
+            (
+                uuid, wg_ip, hostname, note, registered_at,
+                model, kernel_version, cpu, memory,
+                latitude, longitude, location_updated_at
+            )
+        )
+        client_id = cur.fetchone()[0]
+        analytics_conn.commit()
+        
+        logger.info(
+            f"Synced client to analytics DB: "
+            f"id={client_id}, uuid={uuid}, wg_ip={wg_ip}, hostname={hostname}"
+        )
+        return client_id
+
+
+def sync_all_clients(mgmt_conn, analytics_conn):
+    """Sync all clients from management server to analytics."""
+    with mgmt_conn.cursor() as mgmt_cur:
+        mgmt_cur.execute("SELECT uuid FROM sensos.wireguard_peers ORDER BY registered_at;")
+        uuids = [row[0] for row in mgmt_cur.fetchall()]
+    
+    logger.info(f"Found {len(uuids)} clients in management server")
+    
+    synced = 0
+    for uuid in uuids:
+        try:
+            client_id = sync_client_from_management(mgmt_conn, analytics_conn, peer_uuid=str(uuid))
+            if client_id:
+                synced += 1
+        except Exception as e:
+            logger.error(f"Failed to sync client {uuid}: {e}")
+    
+    logger.info(f"Successfully synced {synced}/{len(uuids)} clients")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Import client data from management server to analytics database"
+    )
+    
+    # Management server database connection
+    parser.add_argument(
+        "--mgmt-host",
+        required=True,
+        help="Management server database host"
+    )
+    parser.add_argument(
+        "--mgmt-port",
+        type=int,
+        default=5432,
+        help="Management server database port (default: 5432)"
+    )
+    parser.add_argument(
+        "--mgmt-db",
+        default="postgres",
+        help="Management server database name (default: postgres)"
+    )
+    parser.add_argument(
+        "--mgmt-user",
+        default="postgres",
+        help="Management server database user (default: postgres)"
+    )
+    parser.add_argument(
+        "--mgmt-password",
+        required=True,
+        help="Management server database password"
+    )
+    
+    # Analytics database connection
+    parser.add_argument(
+        "--analytics-host",
+        default="localhost",
+        help="Analytics database host (default: localhost)"
+    )
+    parser.add_argument(
+        "--analytics-port",
+        type=int,
+        default=5432,
+        help="Analytics database port (default: 5432)"
+    )
+    parser.add_argument(
+        "--analytics-db",
+        default="sensos",
+        help="Analytics database name (default: sensos)"
+    )
+    parser.add_argument(
+        "--analytics-user",
+        default="sensos",
+        help="Analytics database user (default: sensos)"
+    )
+    parser.add_argument(
+        "--analytics-password",
+        default="sensos",
+        help="Analytics database password (default: sensos)"
+    )
+    
+    # Client selection
+    parser.add_argument(
+        "--client-uuid",
+        help="Sync specific client by UUID"
+    )
+    parser.add_argument(
+        "--client-ip",
+        help="Sync specific client by WireGuard IP"
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Sync all clients from management server"
+    )
+    
+    args = parser.parse_args()
+    
+    if not (args.all or args.client_uuid or args.client_ip):
+        parser.error("Must specify --all, --client-uuid, or --client-ip")
+    
+    try:
+        # Connect to databases
+        logger.info("Connecting to management server database...")
+        mgmt_conn = get_db_connection(
+            args.mgmt_host,
+            args.mgmt_port,
+            args.mgmt_db,
+            args.mgmt_user,
+            args.mgmt_password
+        )
+        
+        logger.info("Connecting to analytics database...")
+        analytics_conn = get_db_connection(
+            args.analytics_host,
+            args.analytics_port,
+            args.analytics_db,
+            args.analytics_user,
+            args.analytics_password
+        )
+        
+        # Sync clients
+        if args.all:
+            sync_all_clients(mgmt_conn, analytics_conn)
+        else:
+            client_id = sync_client_from_management(
+                mgmt_conn,
+                analytics_conn,
+                peer_uuid=args.client_uuid,
+                wg_ip=args.client_ip
+            )
+            if not client_id:
+                logger.error("Failed to sync client")
+                sys.exit(1)
+        
+        logger.info("✅ Client sync completed successfully")
+        
+    except Exception as e:
+        logger.error(f"❌ Error during sync: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        if 'mgmt_conn' in locals():
+            mgmt_conn.close()
+        if 'analytics_conn' in locals():
+            analytics_conn.close()
+
+
+if __name__ == "__main__":
+    main()

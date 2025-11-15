@@ -17,6 +17,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - analytics_network
 
   sensos-analytics-catalog-audio:
     build:
@@ -36,3 +38,34 @@ services:
       DB_PORT: ${DB_PORT:-5432}
     volumes:
       - ${AUDIO_DIR}:/audio_recordings
+    command: ["python3", "/app/catalog_audio.py"]
+    networks:
+      - analytics_network
+
+  sensos-analytics-admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+    image: sensos-analytics-admin:local
+    container_name: sensos-analytics-admin
+    profiles:
+      - admin
+    depends_on:
+      sensos-analytics-database:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST:-sensos-analytics-database}
+      DB_PORT: ${DB_PORT:-5432}
+      AUDIO_DIR: /audio_recordings
+    volumes:
+      - ${AUDIO_DIR}:/audio_recordings
+    networks:
+      - analytics_network
+    command: ["/bin/bash"]
+
+networks:
+  analytics_network:
+    driver: bridge

@@ -1,0 +1,17 @@
+[Unit]
+Description=SensOS Analytics Server
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# Adjust paths if deploying under a different home directory
+WorkingDirectory=/home/sensos/SensOS/server/analytics/docker
+EnvironmentFile=/home/sensos/SensOS/server/analytics/docker/.env
+ExecStart=/home/sensos/SensOS/server/analytics/bin/start-analytics.sh --no-detach
+ExecStop=/home/sensos/SensOS/server/analytics/bin/stop-analytics.sh
+User=sensos
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

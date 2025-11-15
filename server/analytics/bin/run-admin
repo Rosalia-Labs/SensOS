@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DOCKER_DIR="${PROJECT_ROOT}/docker"
+
+# Load environment
+if [[ -f "${DOCKER_DIR}/.env" ]]; then
+    set -a
+    source "${DOCKER_DIR}/.env"
+    set +a
+else
+    echo "Error: ${DOCKER_DIR}/.env not found. Run ./bin/config-docker first."
+    exit 1
+fi
+
+# Build admin container if needed
+echo "Building admin container..."
+cd "${DOCKER_DIR}"
+docker compose build sensos-analytics-admin
+
+# Run the command in the admin container
+echo "Running admin command in container..."
+docker compose run --rm sensos-analytics-admin "$@"

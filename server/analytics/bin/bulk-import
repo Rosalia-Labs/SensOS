@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Rosalia Labs LLC
+
+"""
+Bulk import audio recordings from year/month/day directory structures.
+Handles arecord-style filenames (sensos_YYYYMMDDTHHMMSS) and large data volumes.
+
+NOTE: This script is designed to run inside the sensos-analytics-admin Docker container.
+      Use ./bin/run-admin to execute it:
+      
+      ./bin/run-admin /app/bulk-import --source /audio_recordings/data --location site_1 ...
+"""
+
+import os
+import sys
+import argparse
+import logging
+import re
+import shutil
+from pathlib import Path
+from datetime import datetime
+import psycopg
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Pattern for sensos arecord filenames: sensos_20250808T001404.flac
+SENSOS_PATTERN = re.compile(r'sensos_(\d{8})T(\d{6})\.(flac|wav|mp3|ogg)$', re.IGNORECASE)
+
+
+def parse_sensos_timestamp(filename: str) -> datetime:
+    """
+    Parse timestamp from sensos arecord filename.
+    Example: sensos_20250808T001404.flac -> 2025-08-08 00:14:04
+    Returns None if not a valid sensos filename.
+    """
+    match = SENSOS_PATTERN.match(filename)
+    if not match:
+        return None
+    
+    date_str, time_str, ext = match.groups()
+    try:
+        dt = datetime.strptime(f"{date_str}{time_str}", "%Y%m%d%H%M%S")
+        return dt
+    except ValueError:
+        return None
+
+
+def is_sensos_file(path: Path) -> bool:
+    """Check if file matches sensos naming pattern."""
+    return SENSOS_PATTERN.match(path.name) is not None
+
+
+def get_or_create_location(conn, name, lat, lon, elevation=None, notes=None, 
+                           client_uuid=None, client_wg_ip=None, client_hostname=None):
+    """Get existing location or create new one."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM sensos.locations WHERE location_name = %s",
+            (name,)
+        )
+        row = cur.fetchone()
+        if row:
+            location_id = row[0]
+            logger.info(f"Using existing location: {name} (id={location_id})")
+            return location_id
+        
+        cur.execute(
+            """
+            INSERT INTO sensos.locations 
+            (location_name, latitude, longitude, elevation_m, notes, 
+             client_uuid, client_wg_ip, client_hostname)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (name, lat, lon, elevation, notes, client_uuid, client_wg_ip, client_hostname)
+        )
+        location_id = cur.fetchone()[0]
+        conn.commit()
+        logger.info(f"Created location: {name} (id={location_id}, lat={lat}, lon={lon})")
+        return location_id
+
+
+def scan_recordings(source_dir, extensions):
+    """
+    Recursively scan directory for audio files with sensos naming pattern.
+    Returns list of Path objects that match sensos_YYYYMMDDTHHMMSS pattern.
+    Ignores files that don't match (like bird detection examples).
+    """
+    files = []
+    
+    for root, dirs, filenames in os.walk(source_dir):
+        for filename in filenames:
+            path = Path(root) / filename
+            if is_sensos_file(path):
+                files.append(path)
+            else:
+                logger.debug(f"Skipping non-sensos file: {filename}")
+    
+    return files
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Bulk import audio recordings into analytics database",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples (run via ./bin/run-admin wrapper):
+  # Import data to a new location
+  ./bin/run-admin /app/bulk-import \\
+      --source /audio_recordings/import_data \\
+      --location "backyard_feeder" \\
+      --lat 34.0522 --lon -118.2437 \\
+      --notes "Backyard feeder site, 2024 data"
+  
+  # Import with client linkage
+  ./bin/run-admin /app/bulk-import \\
+      --source /audio_recordings/client1_backup \\
+      --location "ridge_site_1" \\
+      --lat 34.0522 --lon -118.2437 \\
+      --client-uuid "a1b2c3d4-..." \\
+      --client-hostname "sensos-pi-001"
+  
+  # Dry run to preview
+  ./bin/run-admin /app/bulk-import \\
+      --source /audio_recordings/test_data \\
+      --location "test_site" \\
+      --lat 0 --lon 0 \\
+      --dry-run
+
+Note: This script runs inside the sensos-analytics-admin container.
+      Source paths are relative to the container filesystem.
+      By default, ${AUDIO_DIR} is mounted at /audio_recordings.
+        """
+    )
+    
+    # Source directory
+    parser.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="Source directory containing recordings (will be scanned recursively)"
+    )
+    
+    # Location (required)
+    parser.add_argument(
+        "--location",
+        required=True,
+        help="Location name (unique identifier)"
+    )
+    parser.add_argument(
+        "--lat",
+        type=float,
+        required=True,
+        help="Latitude"
+    )
+    parser.add_argument(
+        "--lon",
+        type=float,
+        required=True,
+        help="Longitude"
+    )
+    parser.add_argument(
+        "--elevation",
+        type=float,
+        help="Elevation in meters"
+    )
+    parser.add_argument(
+        "--notes",
+        help="Free-form notes about this location"
+    )
+
+    # Destination root for audio storage (host path, not container path)
+    parser.add_argument(
+        "--dest-root",
+        type=Path,
+        default=Path("/audio_recordings"),
+        help="Root directory to store audio (default: /audio_recordings which is ${AUDIO_DIR} mounted in container). Files will be placed under <dest-root>/<location>/."
+    )
+    
+    # Optional client linkage
+    parser.add_argument(
+        "--client-uuid",
+        help="Client UUID (from management server)"
+    )
+    parser.add_argument(
+        "--client-ip",
+        help="Client WireGuard IP"
+    )
+    parser.add_argument(
+        "--client-hostname",
+        help="Client hostname"
+    )
+    
+    # Database connection
+    parser.add_argument(
+        "--db-host",
+        default=os.environ.get("DB_HOST", "sensos-analytics-database"),
+        help="Database host (default: sensos-analytics-database or $DB_HOST)"
+    )
+    parser.add_argument(
+        "--db-port",
+        type=int,
+        default=int(os.environ.get("DB_PORT", "5432")),
+        help="Database port (default: 5432 or $DB_PORT)"
+    )
+    parser.add_argument(
+        "--db-name",
+        default=os.environ.get("POSTGRES_DB", "sensos"),
+        help="Database name (default: sensos or $POSTGRES_DB)"
+    )
+    parser.add_argument(
+        "--db-user",
+        default=os.environ.get("POSTGRES_USER", "sensos"),
+        help="Database user (default: sensos or $POSTGRES_USER)"
+    )
+    parser.add_argument(
+        "--db-password",
+        default=os.environ.get("POSTGRES_PASSWORD"),
+        help="Database password (default: $POSTGRES_PASSWORD)"
+    )
+    
+    # Options
+    parser.add_argument(
+        "--extensions",
+        nargs="+",
+        default=[".wav", ".flac", ".mp3", ".ogg"],
+        help="File extensions to import (default: .wav .flac .mp3 .ogg) - NOTE: only sensos_* files will be imported"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1000,
+        help="Number of files to process per transaction (default: 1000)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be imported without making changes"
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Validate source
+    if not args.source.exists():
+        logger.error(f"Source directory does not exist: {args.source}")
+        sys.exit(1)
+    
+    if not args.source.is_dir():
+        logger.error(f"Source is not a directory: {args.source}")
+        sys.exit(1)
+    
+    logger.info(f"Scanning source directory: {args.source}")
+    logger.info(f"Looking for files matching pattern: sensos_YYYYMMDDTHHMMSS.[flac|wav|mp3|ogg]")
+    files = scan_recordings(args.source, args.extensions)
+    logger.info(f"Found {len(files)} sensos audio files")
+    
+    if not files:
+        logger.warning("No sensos-pattern audio files found")
+        logger.warning("Files must match pattern: sensos_YYYYMMDDTHHMMSS.[flac|wav|mp3|ogg]")
+        sys.exit(0)
+    
+    # Prepare destination base path
+    dest_root: Path = args.dest_root
+    location_base = dest_root / args.location
+    cataloged_base = location_base / "cataloged"
+    queued_base = location_base / "queued"
+    other_base = location_base / "other"
+
+    if not args.dry_run:
+        # Create base directories if they don't exist
+        for p in (cataloged_base, queued_base, other_base):
+            p.mkdir(parents=True, exist_ok=True)
+
+    if args.dry_run:
+        logger.info("DRY RUN - No changes will be made")
+        logger.info(f"Would import {len(files)} files to location '{args.location}' under {dest_root}")
+        logger.info(f"Sample files (first 10):")
+        for f in files[:10]:
+            rel_path = f.relative_to(args.source)
+            timestamp = parse_sensos_timestamp(f.name)
+            if timestamp:
+                y = f"{timestamp.year:04d}"
+                m = f"{timestamp.month:02d}"
+                d = f"{timestamp.day:02d}"
+                dest_rel = Path("cataloged") / y / m / d / f.name
+            else:
+                dest_rel = Path("cataloged") / "unknown" / f.name
+            logger.info(f"  {rel_path} -> {timestamp} => {dest_rel}")
+        if len(files) > 10:
+            logger.info(f"  ... and {len(files) - 10} more")
+        sys.exit(0)
+    
+    # Connect to database
+    try:
+        logger.info(f"Connecting to database: {args.db_host}:{args.db_port}/{args.db_name}")
+        conn = psycopg.connect(
+            host=args.db_host,
+            port=args.db_port,
+            dbname=args.db_name,
+            user=args.db_user,
+            password=args.db_password,
+            autocommit=False
+        )
+        logger.info("✓ Connected to database")
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        sys.exit(1)
+    
+    try:
+        # Get or create location
+        location_id = get_or_create_location(
+            conn,
+            args.location,
+            args.lat,
+            args.lon,
+            args.elevation,
+            args.notes,
+            args.client_uuid,
+            args.client_ip,
+            args.client_hostname
+        )
+        
+        logger.info(f"Starting import of {len(files)} files...")
+        logger.info(f"This operation shows progress for TB-scale imports")
+
+        imported = 0
+        skipped = 0
+        errors = 0
+        copied = 0
+        existed = 0
+        
+        # Process in batches for better performance with large datasets
+        for i, file_path in enumerate(files, 1):
+            try:
+                # Determine destination relative path based on timestamp
+                timestamp = parse_sensos_timestamp(file_path.name)
+                if not timestamp:
+                    # Should not happen due to earlier filtering
+                    logger.warning(f"Skipping file with unparsable timestamp: {file_path}")
+                    skipped += 1
+                    continue
+
+                y = f"{timestamp.year:04d}"
+                m = f"{timestamp.month:02d}"
+                d = f"{timestamp.day:02d}"
+                dest_rel_path = Path("cataloged") / y / m / d / file_path.name
+                dest_abs_path = location_base / dest_rel_path
+                
+                # Check if already imported
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT 1 FROM sensos.audio_files 
+                        WHERE location_id = %s AND file_path = %s
+                        """,
+                        (location_id, dest_rel_path.as_posix())
+                    )
+                    if cur.fetchone():
+                        logger.debug(f"Skipping already imported: {dest_rel_path}")
+                        skipped += 1
+                        continue
+
+                # Handle file based on format
+                if file_path.suffix.lower() == ".flac":
+                    # FLAC: copy directly to cataloged/ and register in DB immediately
+                    if dest_abs_path.exists():
+                        existed += 1
+                    else:
+                        dest_abs_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(file_path, dest_abs_path)
+                        copied += 1
+                    
+                    # Register FLAC file in database
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO sensos.audio_files 
+                            (location_id, file_path, capture_timestamp)
+                            VALUES (%s, %s, %s)
+                            """,
+                            (location_id, dest_rel_path.as_posix(), timestamp)
+                        )
+                else:
+                    # WAV/other: place in queued/ for cataloger to convert
+                    queued_rel_path = Path("queued") / y / m / d / file_path.name
+                    queued_abs_path = location_base / queued_rel_path
+                    
+                    if queued_abs_path.exists():
+                        logger.debug(f"Already in queued: {queued_rel_path}")
+                        existed += 1
+                    else:
+                        queued_abs_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(file_path, queued_abs_path)
+                        copied += 1
+                        logger.info(f"Copied to queued/ for conversion: {queued_rel_path}")
+                    
+                    # Don't register WAV in DB - cataloger will register after converting to FLAC
+                    # Just count as imported since we've staged it for processing
+                    pass
+                
+                imported += 1
+                
+                # Commit in batches
+                if imported % args.batch_size == 0:
+                    conn.commit()
+                    logger.info(f"  Committed batch (imported={imported}, skipped={skipped})")
+                
+            except Exception as e:
+                logger.error(f"Error processing {file_path}: {e}")
+                errors += 1
+                conn.rollback()
+        
+        # Final commit
+        conn.commit()
+
+        # Update location last_import_at
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sensos.locations SET last_import_at = NOW() WHERE id = %s",
+                (location_id,)
+            )
+        conn.commit()
+
+        logger.info("=" * 60)
+        logger.info("Import complete!")
+        logger.info(f"  Imported (DB rows): {imported}")
+        logger.info(f"  Copied files:       {copied}")
+        logger.info(f"  Already existed:    {existed}")
+        logger.info(f"  Skipped:  {skipped}")
+        logger.info(f"  Errors:   {errors}")
+        logger.info("=" * 60)
+
+        if errors > 0:
+            sys.exit(1)
+        
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user")
+        conn.rollback()
+        sys.exit(130)
+    except Exception as e:
+        logger.error(f"Import failed: {e}", exc_info=True)
+        conn.rollback()
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

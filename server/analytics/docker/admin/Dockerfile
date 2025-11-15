@@ -2,7 +2,6 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Set required DEBs
 ENV REQUIRED_DEBS="python3 python3-venv python3-pip"
 
 RUN apt-get update && \
@@ -14,9 +13,11 @@ RUN python3 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 COPY requirements.txt .
-
 RUN pip install -r requirements.txt
 
-COPY catalog_audio.py .
-COPY catalog_audio_multi_client.py .
-CMD ["python", "catalog_audio.py"]
+# Copy admin scripts
+COPY bulk-import /app/
+RUN chmod +x /app/bulk-import
+
+# Default to interactive shell for running commands
+CMD ["/bin/bash"]
