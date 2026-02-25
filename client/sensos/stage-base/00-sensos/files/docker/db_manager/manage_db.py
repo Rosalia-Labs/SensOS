@@ -30,6 +30,8 @@ EMERGENCY_TRIGGER_MB = int(os.environ.get("EMERGENCY_TRIGGER_MB", "200"))
 DISK_START_THRESHOLD_MB = int(os.environ.get("DISK_START_THRESHOLD_MB", "5000"))
 DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "10000"))
 THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
+PG_STATEMENT_TIMEOUT_MS = int(os.environ.get("PG_STATEMENT_TIMEOUT_MS", "15000"))
+PG_LOCK_TIMEOUT_MS = int(os.environ.get("PG_LOCK_TIMEOUT_MS", "2000"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("db-manager")
@@ -351,6 +353,8 @@ def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None)
     """
     with conn.cursor() as cur:
         cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
+        cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT_MS}ms'")
+        cur.execute(f"SET LOCAL lock_timeout = '{PG_LOCK_TIMEOUT_MS}ms'")
 
     segment_clause = ""
     params: List[Any] = []
@@ -381,6 +385,8 @@ def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
     with conn.cursor() as cur:
         # Prefer using memory over spilling to `pgsql_tmp` when disk is under pressure.
         cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
+        cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT_MS}ms'")
+        cur.execute(f"SET LOCAL lock_timeout = '{PG_LOCK_TIMEOUT_MS}ms'")
 
     def not_in_clause(ids, field="s.id"):
         if not ids:
@@ -396,8 +402,14 @@ def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
 
     picked_ids = set()
     picked_segments = []
+    started_at = time.monotonic()
 
     while len(picked_segments) < max_segments:
+        if len(picked_segments) and len(picked_segments) % 50 == 0:
+            logger.info(
+                f"Thinning selection progress: picked {len(picked_segments)}/{max_segments} segments "
+                f"(elapsed {time.monotonic() - started_at:.1f}s)"
+            )
         clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
             # audio_files has `capture_timestamp`/`cataloged_at` (not `created_at`).
@@ -492,6 +504,7 @@ def thin_data_until_disk_usage_ok(
         if free_mb is None:
             logger.warning("Could not determine free disk space. Aborting thinning.")
             return
+        free_before_mb = free_mb
 
         if free_mb > stop_threshold:
             logger.info("Disk usage is within acceptable bounds, no thinning required.")
@@ -505,24 +518,33 @@ def thin_data_until_disk_usage_ok(
             + (" [scoped]" if segment_ids else " [global]")
         )
         logger.info("Selecting segments for thinning...")
+        selection_started = time.monotonic()
         try:
             segments = pick_segments_for_thinning(
                 conn, batch_size, segment_ids=segment_ids
             )
         except Exception as e:
             disk_full_exc = getattr(getattr(psycopg, "errors", None), "DiskFull", None)
-            if not (disk_full_exc and isinstance(e, disk_full_exc)):
-                raise
-            logger.error(
-                f"Postgres is out of disk for temp files during thinning selection: {e}"
+            query_canceled_exc = getattr(
+                getattr(psycopg, "errors", None), "QueryCanceled", None
             )
-            logger.warning("Falling back to simple thinning selection (no label aggregation).")
+            if not (
+                (disk_full_exc and isinstance(e, disk_full_exc))
+                or (query_canceled_exc and isinstance(e, query_canceled_exc))
+            ):
+                raise
+            logger.error(f"Thinning selection failed (will fall back): {e!r}")
+            logger.warning(
+                "Falling back to simple thinning selection (no label aggregation)."
+            )
             try:
                 segments = pick_segments_for_thinning_simple(
                     conn, batch_size, segment_ids=segment_ids
                 )
             except Exception as fallback_e:
-                if disk_full_exc and isinstance(fallback_e, disk_full_exc):
+                if (disk_full_exc and isinstance(fallback_e, disk_full_exc)) or (
+                    query_canceled_exc and isinstance(fallback_e, query_canceled_exc)
+                ):
                     segments = []
                 else:
                     raise
@@ -546,6 +568,10 @@ def thin_data_until_disk_usage_ok(
                     f"Emergency deletion skipped: free={free_mb} MB is above EMERGENCY_TRIGGER_MB={EMERGENCY_TRIGGER_MB} MB."
                 )
                 return
+        finally:
+            logger.info(
+                f"Thinning selection finished in {time.monotonic() - selection_started:.1f}s"
+            )
         if not segments:
             logger.info("No eligible segments to thin (disk pressure remains).")
             logger.warning("Trying simple thinning selection (no label aggregation).")
@@ -591,6 +617,24 @@ def thin_data_until_disk_usage_ok(
             return
 
         logger.info(f"Disk free after thinning: {free_mb} MB")
+        if free_mb <= free_before_mb + 1.0:
+            logger.warning(
+                f"Thinning batch reclaimed little/no space (before={free_before_mb} MB, after={free_mb} MB)."
+            )
+            if free_mb <= EMERGENCY_TRIGGER_MB:
+                logger.warning(
+                    "Disk is critically low and thinning isn't reclaiming space; deleting random audio files."
+                )
+                deleted = emergency_delete_random_audio_files(
+                    conn,
+                    AUDIO_BASE,
+                    target_free_mb=stop_threshold,
+                    max_files=EMERGENCY_DELETE_MAX_FILES,
+                )
+                logger.warning(f"Emergency deletion removed {deleted} file(s).")
+                if deleted <= 0:
+                    return
+                continue
         if free_mb > stop_threshold:
             logger.info("Disk free space now sufficient, stopping thinning.")
             return
