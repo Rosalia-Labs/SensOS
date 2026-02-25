@@ -25,6 +25,8 @@ MAX_CYCLES = 5
 SEGMENT_BATCH_LIMIT = int(os.environ.get("SEGMENT_BATCH_LIMIT", "5000"))
 PG_WORK_MEM_MB = int(os.environ.get("PG_WORK_MEM_MB", "64"))
 EMERGENCY_DELETE_MAX_FILES = int(os.environ.get("EMERGENCY_DELETE_MAX_FILES", "25"))
+# Only delete whole audio files when we're truly out of space.
+EMERGENCY_TRIGGER_MB = int(os.environ.get("EMERGENCY_TRIGGER_MB", "200"))
 DISK_START_THRESHOLD_MB = int(os.environ.get("DISK_START_THRESHOLD_MB", "5000"))
 DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "10000"))
 THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
@@ -339,6 +341,37 @@ def emergency_delete_oldest_audio_files(*args, **kwargs) -> int:
     return emergency_delete_random_audio_files(*args, **kwargs)
 
 
+def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None):
+    """
+    Low-DB-cost thinning fallback used when the full week/label strategy can't run
+    (e.g. Postgres DiskFull while creating temp files).
+
+    Intentionally simple: picks the earliest un-zeroed segments (optionally scoped)
+    without BirdNET label aggregation.
+    """
+    with conn.cursor() as cur:
+        cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
+
+    segment_clause = ""
+    params: List[Any] = []
+    if segment_ids:
+        segment_clause = "AND s.id = ANY(%s)"
+        params.append(segment_ids)
+
+    with conn.cursor() as cur:
+        sql = f"""
+            SELECT s.id, s.file_id, s.channel, s.start_frame, s.end_frame, f.file_path
+            FROM sensos.audio_segments s
+            JOIN sensos.audio_files f ON s.file_id = f.id
+            WHERE s.zeroed IS NOT TRUE
+              {segment_clause}
+            ORDER BY s.id ASC
+            LIMIT %s
+        """
+        cur.execute(sql, params + [max_segments])
+        return [dict(r) for r in cur.fetchall()]
+
+
 def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
     """
     Iteratively selects segments to thin, using dynamic week/label/score strategy.
@@ -451,13 +484,19 @@ def thin_data_until_disk_usage_ok(
     When `segment_ids` is provided, thinning is constrained to that set to avoid
     expensive full-table queries that can fail when Postgres is out of temp space.
     """
+    # Hysteresis: only start thinning below `start_threshold`, but once we start,
+    # continue until we reach `stop_threshold`.
+    started = False
     while True:
         free_mb = get_disk_free_mb(AUDIO_BASE)
         if free_mb is None:
             logger.warning("Could not determine free disk space. Aborting thinning.")
             return
 
-        if free_mb > start_threshold:
+        if free_mb > stop_threshold:
+            logger.info("Disk usage is within acceptable bounds, no thinning required.")
+            return
+        if not started and free_mb > start_threshold:
             logger.info("Disk usage is within acceptable bounds, no thinning required.")
             return
 
@@ -477,27 +516,62 @@ def thin_data_until_disk_usage_ok(
             logger.error(
                 f"Postgres is out of disk for temp files during thinning selection: {e}"
             )
-            logger.warning(
-                "Entering emergency deletion mode to free disk space without Postgres temp files."
-            )
-            deleted = emergency_delete_random_audio_files(
-                conn,
-                AUDIO_BASE,
-                target_free_mb=stop_threshold,
-                max_files=EMERGENCY_DELETE_MAX_FILES,
-            )
-            logger.warning(f"Emergency deletion removed {deleted} file(s).")
-            return
+            logger.warning("Falling back to simple thinning selection (no label aggregation).")
+            try:
+                segments = pick_segments_for_thinning_simple(
+                    conn, batch_size, segment_ids=segment_ids
+                )
+            except Exception as fallback_e:
+                if disk_full_exc and isinstance(fallback_e, disk_full_exc):
+                    segments = []
+                else:
+                    raise
+            if not segments:
+                if free_mb <= EMERGENCY_TRIGGER_MB:
+                    logger.warning(
+                        "Emergency mode: disk is critically low; deleting random audio files."
+                    )
+                    deleted = emergency_delete_random_audio_files(
+                        conn,
+                        AUDIO_BASE,
+                        target_free_mb=stop_threshold,
+                        max_files=EMERGENCY_DELETE_MAX_FILES,
+                    )
+                    logger.warning(f"Emergency deletion removed {deleted} file(s).")
+                    started = True
+                    if deleted <= 0:
+                        return
+                    continue
+                logger.warning(
+                    f"Emergency deletion skipped: free={free_mb} MB is above EMERGENCY_TRIGGER_MB={EMERGENCY_TRIGGER_MB} MB."
+                )
+                return
         if not segments:
             logger.info("No eligible segments to thin (disk pressure remains).")
-            deleted = emergency_delete_random_audio_files(
-                conn,
-                AUDIO_BASE,
-                target_free_mb=stop_threshold,
-                max_files=EMERGENCY_DELETE_MAX_FILES,
+            logger.warning("Trying simple thinning selection (no label aggregation).")
+            segments = pick_segments_for_thinning_simple(
+                conn, batch_size, segment_ids=segment_ids
             )
-            logger.warning(f"Emergency deletion removed {deleted} file(s).")
-            return
+            if not segments:
+                if free_mb <= EMERGENCY_TRIGGER_MB:
+                    logger.warning(
+                        "Emergency mode: disk is critically low; deleting random audio files."
+                    )
+                    deleted = emergency_delete_random_audio_files(
+                        conn,
+                        AUDIO_BASE,
+                        target_free_mb=stop_threshold,
+                        max_files=EMERGENCY_DELETE_MAX_FILES,
+                    )
+                    logger.warning(f"Emergency deletion removed {deleted} file(s).")
+                    started = True
+                    if deleted <= 0:
+                        return
+                    continue
+                logger.warning(
+                    f"Emergency deletion skipped: free={free_mb} MB is above EMERGENCY_TRIGGER_MB={EMERGENCY_TRIGGER_MB} MB."
+                )
+                return
 
         logger.info(f"Identified {len(segments)} segments for thinning.")
 
@@ -510,21 +584,17 @@ def thin_data_until_disk_usage_ok(
                 cur.execute(sql, zeroed_ids)
                 conn.commit()
 
+        started = True
         free_mb = get_disk_free_mb(AUDIO_BASE)
         if free_mb is None:
             logger.warning("Could not determine free disk space. Aborting thinning.")
-            return
-
-        if free_mb > stop_threshold:
-            logger.info("Disk usage is within acceptable bounds, no thinning required.")
             return
 
         logger.info(f"Disk free after thinning: {free_mb} MB")
         if free_mb > stop_threshold:
             logger.info("Disk free space now sufficient, stopping thinning.")
             return
-        else:
-            logger.info("Still under disk threshold, will thin more in next batch.")
+        logger.info("Still under disk threshold, will thin more in next batch.")
 
 
 def batch_postprocess(conn, segment_ids):
