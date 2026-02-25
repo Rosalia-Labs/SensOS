@@ -110,10 +110,25 @@ def mark_new_segments_processed(conn):
         conn.commit()
 
 
-def get_unprocessed_segment_ids(conn) -> list:
-    """Return a list of segment IDs that are unprocessed (processed=FALSE)."""
+def get_unprocessed_segment_ids(conn, limit: Optional[int] = None) -> List[int]:
+    """Return segment IDs that are unprocessed (processed=FALSE).
+
+    If limit is provided, returns up to `limit` IDs (ordered by id ascending).
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT id FROM sensos.audio_segments WHERE processed = FALSE")
+        if limit is None:
+            cur.execute("SELECT id FROM sensos.audio_segments WHERE processed = FALSE")
+        else:
+            cur.execute(
+                """
+                SELECT id
+                FROM sensos.audio_segments
+                WHERE processed = FALSE
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
         return [row["id"] for row in cur.fetchall()]
 
 

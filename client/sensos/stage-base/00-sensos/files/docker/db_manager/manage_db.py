@@ -22,6 +22,9 @@ from db_utils import (
 
 TESTING = False
 MAX_CYCLES = 5
+SEGMENT_BATCH_LIMIT = int(os.environ.get("SEGMENT_BATCH_LIMIT", "5000"))
+PG_WORK_MEM_MB = int(os.environ.get("PG_WORK_MEM_MB", "64"))
+EMERGENCY_DELETE_MAX_FILES = int(os.environ.get("EMERGENCY_DELETE_MAX_FILES", "25"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("db-manager")
@@ -223,12 +226,95 @@ def delete_fully_zeroed_files(conn):
         conn.commit()
 
 
-def pick_segments_for_thinning(conn, max_segments=1000):
+def emergency_delete_random_audio_files(
+    conn, audio_base: Path, target_free_mb: float, max_files: int = 25
+) -> int:
+    """
+    Emergency escape hatch: if Postgres can't even run thinning queries (e.g. DiskFull
+    creating pgsql_tmp files), delete whole audio files on disk to free space.
+
+    Best-effort: attempts to mark corresponding `sensos.audio_files` rows as deleted
+    by matching `file_path` to the relative path under `audio_base`.
+    """
+    import random
+
+    seed_env = os.environ.get("EMERGENCY_DELETE_SEED")
+    rng = random.Random(int(seed_env)) if seed_env else random.Random()
+
+    free_mb = get_disk_free_mb(audio_base)
+    if free_mb is None:
+        logger.warning("Emergency delete: could not determine free disk space.")
+        return 0
+    if free_mb >= target_free_mb:
+        return 0
+
+    allowed_suffixes = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".mp3", ".m4a"}
+    candidates: List[Path] = []
+    try:
+        for p in audio_base.rglob("*"):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in allowed_suffixes:
+                continue
+            candidates.append(p)
+    except Exception as e:
+        logger.error(f"Emergency delete: failed to scan {audio_base}: {e}")
+        return 0
+
+    rng.shuffle(candidates)
+    deleted: List[Path] = []
+    for p in candidates:
+        if len(deleted) >= max_files:
+            break
+        free_mb = get_disk_free_mb(audio_base)
+        if free_mb is not None and free_mb >= target_free_mb:
+            break
+        try:
+            if TESTING:
+                logger.info(f"[TESTING] Would delete audio file {p}")
+            else:
+                p.unlink()
+                logger.warning(f"Emergency randomly deleted audio file {p}")
+            deleted.append(p)
+        except Exception as e:
+            logger.error(f"Emergency delete: could not delete {p}: {e}")
+
+    if deleted and not TESTING:
+        try:
+            with conn.cursor() as cur:
+                for p in deleted:
+                    rel = p.relative_to(audio_base).as_posix()
+                    cur.execute(
+                        "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE file_path = %s",
+                        (rel,),
+                    )
+            conn.commit()
+        except Exception as e:
+            logger.error(
+                f"Emergency delete: failed to mark deleted files in DB (will retry later): {e}"
+            )
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    return len(deleted)
+
+
+def emergency_delete_oldest_audio_files(*args, **kwargs) -> int:
+    # Backwards-compatible alias (behavior is now random).
+    return emergency_delete_random_audio_files(*args, **kwargs)
+
+
+def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
     """
     Iteratively selects segments to thin, using dynamic week/label/score strategy.
     Returns a list of segments (dicts) for zeroing, in order.
     Does not touch disk or DB.
     """
+    with conn.cursor() as cur:
+        # Prefer using memory over spilling to `pgsql_tmp` when disk is under pressure.
+        cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
 
     def not_in_clause(ids, field="s.id"):
         if not ids:
@@ -236,23 +322,33 @@ def pick_segments_for_thinning(conn, max_segments=1000):
         placeholders = ",".join(["%s"] * len(ids))
         return f"AND {field} NOT IN ({placeholders})", list(ids)
 
+    segment_clause = ""
+    segment_params = []
+    if segment_ids:
+        segment_clause = "AND s.id = ANY(%s)"
+        segment_params = [segment_ids]
+
     picked_ids = set()
     picked_segments = []
 
     while len(picked_segments) < max_segments:
         clause, params = not_in_clause(picked_ids)
         with conn.cursor() as cur:
+            # audio_files has `capture_timestamp`/`cataloged_at` (not `created_at`).
+            # audio_segments has `created_at` as a safe fallback.
             sql = f"""
-                SELECT EXTRACT(WEEK FROM f.created_at)::int AS week_num,
+                SELECT EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int AS week_num,
                        SUM(s.end_frame - s.start_frame) AS total_frames
                 FROM sensos.audio_segments s
                 JOIN sensos.audio_files f ON s.file_id = f.id
-                WHERE s.zeroed IS NOT TRUE {clause}
+                WHERE s.zeroed IS NOT TRUE
+                  {segment_clause}
+                  {clause}
                 GROUP BY week_num
                 ORDER BY total_frames DESC
                 LIMIT 1
             """
-            cur.execute(sql, params)
+            cur.execute(sql, segment_params + params)
             row = cur.fetchone()
             if not row or not row["week_num"]:
                 break
@@ -266,7 +362,8 @@ def pick_segments_for_thinning(conn, max_segments=1000):
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 JOIN sensos.birdnet_scores b ON s.id = b.segment_id
                 WHERE s.zeroed IS NOT TRUE
-                  AND EXTRACT(WEEK FROM f.created_at)::int = %s
+                  AND EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int = %s
+                  {segment_clause}
                   {clause}
                   AND b.label = (
                         SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1
@@ -275,7 +372,7 @@ def pick_segments_for_thinning(conn, max_segments=1000):
                 ORDER BY cnt DESC
                 LIMIT 1
             """
-            cur.execute(sql, [week_num] + params)
+            cur.execute(sql, [week_num] + segment_params + params)
             row = cur.fetchone()
             if not row:
                 break
@@ -291,13 +388,14 @@ def pick_segments_for_thinning(conn, max_segments=1000):
                 FROM sensos.audio_segments s
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 WHERE s.zeroed IS NOT TRUE
-                  AND EXTRACT(WEEK FROM f.created_at)::int = %s
+                  AND EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int = %s
+                  {segment_clause}
                   {clause}
                   AND (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) = %s
                 ORDER BY top_score ASC
                 LIMIT 1
             """
-            cur.execute(sql, [week_num] + params + [label])
+            cur.execute(sql, [week_num] + segment_params + params + [label])
             seg = cur.fetchone()
             if not seg:
                 break
@@ -308,10 +406,17 @@ def pick_segments_for_thinning(conn, max_segments=1000):
 
 
 def thin_data_until_disk_usage_ok(
-    conn, start_threshold=500, stop_threshold=1000, batch_size=1000
+    conn,
+    start_threshold=500,
+    stop_threshold=1000,
+    batch_size=1000,
+    segment_ids=None,
 ):
     """
-    Picks all segments to thin (in optimal order), then zeroes them by file, then updates DB.
+    Picks segments to thin (in optimal order), then zeroes them by file, then updates DB.
+
+    When `segment_ids` is provided, thinning is constrained to that set to avoid
+    expensive full-table queries that can fail when Postgres is out of temp space.
     """
     while True:
         free_mb = get_disk_free_mb(AUDIO_BASE)
@@ -324,7 +429,28 @@ def thin_data_until_disk_usage_ok(
             return
 
         logger.info("Selecting segments for thinning...")
-        segments = pick_segments_for_thinning(conn, batch_size)
+        try:
+            segments = pick_segments_for_thinning(
+                conn, batch_size, segment_ids=segment_ids
+            )
+        except Exception as e:
+            disk_full_exc = getattr(getattr(psycopg, "errors", None), "DiskFull", None)
+            if not (disk_full_exc and isinstance(e, disk_full_exc)):
+                raise
+            logger.error(
+                f"Postgres is out of disk for temp files during thinning selection: {e}"
+            )
+            logger.warning(
+                "Entering emergency deletion mode to free disk space without Postgres temp files."
+            )
+            deleted = emergency_delete_random_audio_files(
+                conn,
+                AUDIO_BASE,
+                target_free_mb=stop_threshold,
+                max_files=EMERGENCY_DELETE_MAX_FILES,
+            )
+            logger.warning(f"Emergency deletion removed {deleted} file(s).")
+            return
         if not segments:
             logger.info("No eligible segments to thin (disk pressure remains).")
             return
@@ -360,7 +486,7 @@ def thin_data_until_disk_usage_ok(
 def batch_postprocess(conn, segment_ids):
     zero_human_segments(conn, segment_ids)
     merge_segments_with_same_label(conn, segment_ids)
-    thin_data_until_disk_usage_ok(conn)
+    thin_data_until_disk_usage_ok(conn, segment_ids=segment_ids)
     delete_fully_zeroed_files(conn)
 
 
@@ -373,7 +499,7 @@ def main_loop(conn):
         cycle += 1
         try:
             wait_for_birdnet_table(conn)
-            segment_ids = get_unprocessed_segment_ids(conn)
+            segment_ids = get_unprocessed_segment_ids(conn, limit=SEGMENT_BATCH_LIMIT)
             if segment_ids:
                 batch_postprocess(conn, segment_ids)
                 mark_segments_processed(conn, segment_ids)

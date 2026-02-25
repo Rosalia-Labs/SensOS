@@ -38,7 +38,8 @@ def setup_schema(conn):
             CREATE TABLE IF NOT EXISTS sensos.audio_files (
                 id SERIAL PRIMARY KEY,
                 file_path TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW(),  
+                capture_timestamp TIMESTAMPTZ,
+                cataloged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 deleted BOOLEAN DEFAULT FALSE,
                 deleted_at TIMESTAMP
             );
@@ -48,6 +49,7 @@ def setup_schema(conn):
                 channel INTEGER,
                 start_frame INTEGER,
                 end_frame INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 processed BOOLEAN DEFAULT FALSE,
                 zeroed BOOLEAN DEFAULT FALSE
             );
