@@ -32,6 +32,12 @@ DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "10000"))
 THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
 PG_STATEMENT_TIMEOUT_MS = int(os.environ.get("PG_STATEMENT_TIMEOUT_MS", "15000"))
 PG_LOCK_TIMEOUT_MS = int(os.environ.get("PG_LOCK_TIMEOUT_MS", "2000"))
+THIN_LOG_IDS = os.environ.get("THIN_LOG_IDS", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("db-manager")
@@ -499,6 +505,7 @@ def thin_data_until_disk_usage_ok(
     # Hysteresis: only start thinning below `start_threshold`, but once we start,
     # continue until we reach `stop_threshold`.
     started = False
+    last_selected_ids = None
     while True:
         free_mb = get_disk_free_mb(AUDIO_BASE)
         if free_mb is None:
@@ -599,6 +606,24 @@ def thin_data_until_disk_usage_ok(
                 )
                 return
 
+        if THIN_LOG_IDS:
+            selected_ids = [s.get("id") for s in segments if "id" in s]
+            selected_ids = [i for i in selected_ids if i is not None]
+            preview = selected_ids[:20]
+            if last_selected_ids is not None and tuple(selected_ids) == last_selected_ids:
+                logger.warning(
+                    f"Thinning selection returned the same IDs as last batch ({len(selected_ids)} ids)."
+                )
+            last_selected_ids = tuple(selected_ids)
+            files_preview = []
+            try:
+                files_preview = sorted({s.get("file_path") for s in segments if s.get("file_path")})[:10]
+            except Exception:
+                files_preview = []
+            logger.info(
+                f"Selected {len(selected_ids)} segment id(s) for thinning; first={preview}; files={files_preview}"
+            )
+
         logger.info(f"Identified {len(segments)} segments for thinning.")
 
         zeroed_ids = zero_segments_by_file(segments, AUDIO_BASE, conn)
@@ -609,6 +634,19 @@ def thin_data_until_disk_usage_ok(
                 sql = f"UPDATE sensos.audio_segments SET zeroed = TRUE WHERE id IN ({placeholders})"
                 cur.execute(sql, zeroed_ids)
                 conn.commit()
+            if THIN_LOG_IDS:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COUNT(*) AS n FROM sensos.audio_segments WHERE id = ANY(%s) AND zeroed = TRUE",
+                            (zeroed_ids,),
+                        )
+                        row = cur.fetchone()
+                    logger.info(
+                        f"Marked {row['n'] if row else 'unknown'} segment(s) as zeroed in DB (expected {len(zeroed_ids)})."
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not verify DB zeroed flags: {e!r}")
 
         started = True
         free_mb = get_disk_free_mb(AUDIO_BASE)
