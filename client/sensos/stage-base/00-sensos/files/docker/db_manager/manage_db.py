@@ -25,6 +25,9 @@ MAX_CYCLES = 5
 SEGMENT_BATCH_LIMIT = int(os.environ.get("SEGMENT_BATCH_LIMIT", "5000"))
 PG_WORK_MEM_MB = int(os.environ.get("PG_WORK_MEM_MB", "64"))
 EMERGENCY_DELETE_MAX_FILES = int(os.environ.get("EMERGENCY_DELETE_MAX_FILES", "25"))
+DISK_START_THRESHOLD_MB = int(os.environ.get("DISK_START_THRESHOLD_MB", "5000"))
+DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "10000"))
+THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("db-manager")
@@ -37,6 +40,30 @@ DB_PARAMS = {
     "port": os.environ.get("DB_PORT", 5432),
 }
 AUDIO_BASE = Path("/audio_recordings")
+
+
+def get_unprocessed_segment_ids_batch(conn, limit: int) -> List[int]:
+    """
+    Fetch a bounded batch of unprocessed segment IDs.
+
+    Compatibility note: some deployed images may still have an older
+    `db_utils.get_unprocessed_segment_ids` that doesn't accept `limit`.
+    """
+    try:
+        return get_unprocessed_segment_ids(conn, limit=limit)
+    except TypeError:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM sensos.audio_segments
+                WHERE processed = FALSE
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return [row["id"] for row in cur.fetchall()]
 
 
 def get_disk_free_mb(path: Path) -> Optional[float]:
@@ -261,6 +288,12 @@ def emergency_delete_random_audio_files(
         logger.error(f"Emergency delete: failed to scan {audio_base}: {e}")
         return 0
 
+    logger.warning(
+        f"Emergency delete: considering {len(candidates)} candidate audio file(s)"
+        + (f" (seed={seed_env})" if seed_env else "")
+        + f"; will delete up to {max_files}."
+    )
+
     rng.shuffle(candidates)
     deleted: List[Path] = []
     for p in candidates:
@@ -428,6 +461,10 @@ def thin_data_until_disk_usage_ok(
             logger.info("Disk usage is within acceptable bounds, no thinning required.")
             return
 
+        logger.warning(
+            f"Disk pressure: free={free_mb} MB (start={start_threshold} MB, stop={stop_threshold} MB)"
+            + (" [scoped]" if segment_ids else " [global]")
+        )
         logger.info("Selecting segments for thinning...")
         try:
             segments = pick_segments_for_thinning(
@@ -453,6 +490,13 @@ def thin_data_until_disk_usage_ok(
             return
         if not segments:
             logger.info("No eligible segments to thin (disk pressure remains).")
+            deleted = emergency_delete_random_audio_files(
+                conn,
+                AUDIO_BASE,
+                target_free_mb=stop_threshold,
+                max_files=EMERGENCY_DELETE_MAX_FILES,
+            )
+            logger.warning(f"Emergency deletion removed {deleted} file(s).")
             return
 
         logger.info(f"Identified {len(segments)} segments for thinning.")
@@ -486,7 +530,13 @@ def thin_data_until_disk_usage_ok(
 def batch_postprocess(conn, segment_ids):
     zero_human_segments(conn, segment_ids)
     merge_segments_with_same_label(conn, segment_ids)
-    thin_data_until_disk_usage_ok(conn, segment_ids=segment_ids)
+    thin_data_until_disk_usage_ok(
+        conn,
+        start_threshold=DISK_START_THRESHOLD_MB,
+        stop_threshold=DISK_STOP_THRESHOLD_MB,
+        batch_size=THIN_BATCH_SIZE,
+        segment_ids=segment_ids,
+    )
     delete_fully_zeroed_files(conn)
 
 
@@ -499,11 +549,18 @@ def main_loop(conn):
         cycle += 1
         try:
             wait_for_birdnet_table(conn)
-            segment_ids = get_unprocessed_segment_ids(conn, limit=SEGMENT_BATCH_LIMIT)
+            segment_ids = get_unprocessed_segment_ids_batch(conn, SEGMENT_BATCH_LIMIT)
             if segment_ids:
                 batch_postprocess(conn, segment_ids)
                 mark_segments_processed(conn, segment_ids)
             else:
+                thin_data_until_disk_usage_ok(
+                    conn,
+                    start_threshold=DISK_START_THRESHOLD_MB,
+                    stop_threshold=DISK_STOP_THRESHOLD_MB,
+                    batch_size=THIN_BATCH_SIZE,
+                    segment_ids=None,
+                )
                 logger.info("No new segments. Sleeping...")
                 time.sleep(5 if TESTING else 60)
         except Exception as e:
