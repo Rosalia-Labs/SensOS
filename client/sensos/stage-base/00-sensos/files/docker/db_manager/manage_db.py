@@ -519,6 +519,22 @@ def thin_data_until_disk_usage_ok(
     active_segment_ids = segment_ids
     last_selected_ids = None
     stalled_batches = 0
+
+    def _repeatable_read_readonly_tx():
+        isolation_level = getattr(getattr(psycopg, "IsolationLevel", None), "REPEATABLE_READ", None)
+        isolation_level = isolation_level or "repeatable read"
+        return conn.transaction(isolation_level=isolation_level, read_only=True)
+
+    def _select_segments_with_stable_snapshot(*, use_simple: bool) -> List[Dict[str, Any]]:
+        # Use a stable snapshot so segments whose BirdNET scores arrive mid-selection
+        # don't influence/enter the current thinning batch.
+        with _repeatable_read_readonly_tx():
+            if use_simple:
+                return pick_segments_for_thinning_simple(
+                    conn, batch_size, segment_ids=active_segment_ids
+                )
+            return pick_segments_for_thinning(conn, batch_size, segment_ids=active_segment_ids)
+
     while True:
         free_mb = get_disk_free_mb(AUDIO_BASE)
         if free_mb is None:
@@ -540,9 +556,7 @@ def thin_data_until_disk_usage_ok(
         logger.info("Selecting segments for thinning...")
         selection_started = time.monotonic()
         try:
-            segments = pick_segments_for_thinning(
-                conn, batch_size, segment_ids=active_segment_ids
-            )
+            segments = _select_segments_with_stable_snapshot(use_simple=False)
         except Exception as e:
             disk_full_exc = getattr(getattr(psycopg, "errors", None), "DiskFull", None)
             query_canceled_exc = getattr(
@@ -558,9 +572,7 @@ def thin_data_until_disk_usage_ok(
                 "Falling back to simple thinning selection (no label aggregation)."
             )
             try:
-                segments = pick_segments_for_thinning_simple(
-                    conn, batch_size, segment_ids=active_segment_ids
-                )
+                segments = _select_segments_with_stable_snapshot(use_simple=True)
             except Exception as fallback_e:
                 if (disk_full_exc and isinstance(fallback_e, disk_full_exc)) or (
                     query_canceled_exc and isinstance(fallback_e, query_canceled_exc)
