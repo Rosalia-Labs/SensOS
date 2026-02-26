@@ -50,6 +50,7 @@ DB_PARAMS = {
     "port": os.environ.get("DB_PORT", 5432),
 }
 AUDIO_BASE = Path("/audio_recordings")
+PENDING_DELETED_FILE_PATHS: Set[str] = set()
 
 
 def get_unprocessed_segment_ids_batch(conn, limit: int) -> List[int]:
@@ -90,6 +91,60 @@ def get_disk_free_mb(path: Path) -> Optional[float]:
     except Exception as e:
         logger.warning(f"Could not get disk usage for {path}: {e}")
         return None
+
+
+def queue_deleted_audio_file_paths(paths: List[Path], audio_base: Path) -> int:
+    queued = 0
+    for p in paths:
+        try:
+            rel = p.relative_to(audio_base).as_posix()
+        except Exception:
+            logger.warning(f"Could not resolve deleted path relative to {audio_base}: {p}")
+            continue
+        if rel not in PENDING_DELETED_FILE_PATHS:
+            queued += 1
+        PENDING_DELETED_FILE_PATHS.add(rel)
+    return queued
+
+
+def flush_pending_deleted_audio_file_marks(
+    conn, *, min_free_mb: Optional[float] = None
+) -> int:
+    if TESTING or not PENDING_DELETED_FILE_PATHS:
+        return 0
+
+    if min_free_mb is not None:
+        free_mb = get_disk_free_mb(AUDIO_BASE)
+        if free_mb is None or free_mb < min_free_mb:
+            return 0
+
+    pending_paths = sorted(PENDING_DELETED_FILE_PATHS)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE sensos.audio_files
+                SET deleted = TRUE, deleted_at = NOW()
+                WHERE file_path = ANY(%s) AND deleted IS NOT TRUE
+                """,
+                (pending_paths,),
+            )
+            updated = cur.rowcount
+        conn.commit()
+        PENDING_DELETED_FILE_PATHS.difference_update(pending_paths)
+        logger.info(
+            f"Flushed deferred deleted-file marks: updated={updated}, cleared={len(pending_paths)} pending path(s)."
+        )
+        return len(pending_paths)
+    except Exception as e:
+        logger.warning(
+            f"Deferred deleted-file mark flush failed; will retry when space is available: {e!r}"
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
 
 
 def zero_segments_by_file(
@@ -329,24 +384,12 @@ def emergency_delete_random_audio_files(
         except Exception as e:
             logger.error(f"Emergency delete: could not delete {p}: {e}")
 
-    if deleted and not TESTING:
-        try:
-            with conn.cursor() as cur:
-                for p in deleted:
-                    rel = p.relative_to(audio_base).as_posix()
-                    cur.execute(
-                        "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE file_path = %s",
-                        (rel,),
-                    )
-            conn.commit()
-        except Exception as e:
-            logger.error(
-                f"Emergency delete: failed to mark deleted files in DB (will retry later): {e}"
-            )
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+    if deleted:
+        queued = queue_deleted_audio_file_paths(deleted, audio_base)
+        if queued:
+            logger.info(f"Queued {queued} deleted file path(s) for deferred DB marking.")
+        # Only flush deferred DB flags when we've recovered enough free space.
+        flush_pending_deleted_audio_file_marks(conn, min_free_mb=target_free_mb)
 
     return len(deleted)
 
@@ -519,6 +562,7 @@ def thin_data_until_disk_usage_ok(
     active_segment_ids = segment_ids
     last_selected_ids = None
     stalled_batches = 0
+    emergency_recovery_active = False
 
     def _repeatable_read_readonly_tx():
         # Some deployed psycopg builds don't support transaction kwargs such as
@@ -575,6 +619,44 @@ def thin_data_until_disk_usage_ok(
             logger.warning("Could not determine free disk space. Aborting thinning.")
             return
         free_before_mb = free_mb
+
+        if free_mb >= start_threshold and PENDING_DELETED_FILE_PATHS:
+            flush_pending_deleted_audio_file_marks(conn, min_free_mb=start_threshold)
+
+        if emergency_recovery_active and free_mb >= start_threshold:
+            emergency_recovery_active = False
+
+        # Global first-step guard: once emergency recovery is active, keep deleting
+        # whole files until we are back above the start threshold.
+        if free_mb <= EMERGENCY_TRIGGER_MB or (
+            emergency_recovery_active and free_mb < start_threshold
+        ):
+            emergency_recovery_active = True
+            logger.warning(
+                f"Emergency precheck: free={free_mb} MB; deleting random audio files until free >= start threshold ({start_threshold} MB)."
+            )
+            deleted = emergency_delete_random_audio_files(
+                conn,
+                AUDIO_BASE,
+                target_free_mb=start_threshold,
+                max_files=EMERGENCY_DELETE_MAX_FILES,
+            )
+            logger.warning(f"Emergency deletion removed {deleted} file(s).")
+            started = True
+            free_after_emergency = get_disk_free_mb(AUDIO_BASE)
+            if (
+                free_after_emergency is not None
+                and free_after_emergency >= start_threshold
+            ):
+                emergency_recovery_active = False
+            if deleted <= 0 and (
+                free_after_emergency is None or free_after_emergency < start_threshold
+            ):
+                logger.warning(
+                    f"Emergency precheck could not reach start threshold {start_threshold} MB; stopping."
+                )
+                return
+            continue
 
         if free_mb > stop_threshold:
             logger.info("Disk usage is within acceptable bounds, no thinning required.")
@@ -666,10 +748,11 @@ def thin_data_until_disk_usage_ok(
                     logger.warning(
                         "Emergency mode: disk is critically low; deleting random audio files."
                     )
+                    emergency_recovery_active = True
                     deleted = emergency_delete_random_audio_files(
                         conn,
                         AUDIO_BASE,
-                        target_free_mb=stop_threshold,
+                        target_free_mb=start_threshold,
                         max_files=EMERGENCY_DELETE_MAX_FILES,
                     )
                     logger.warning(f"Emergency deletion removed {deleted} file(s).")
@@ -714,10 +797,11 @@ def thin_data_until_disk_usage_ok(
                 logger.warning(
                     "Thinning is stalled and disk is still under threshold; deleting whole audio files to recover space."
                 )
+                emergency_recovery_active = True
                 deleted = emergency_delete_random_audio_files(
                     conn,
                     AUDIO_BASE,
-                    target_free_mb=stop_threshold,
+                    target_free_mb=start_threshold,
                     max_files=EMERGENCY_DELETE_MAX_FILES,
                 )
                 logger.warning(f"Emergency deletion removed {deleted} file(s).")
@@ -798,10 +882,11 @@ def thin_data_until_disk_usage_ok(
                 logger.warning(
                     "Disk is critically low and thinning isn't reclaiming space; deleting random audio files."
                 )
+                emergency_recovery_active = True
                 deleted = emergency_delete_random_audio_files(
                     conn,
                     AUDIO_BASE,
-                    target_free_mb=stop_threshold,
+                    target_free_mb=start_threshold,
                     max_files=EMERGENCY_DELETE_MAX_FILES,
                 )
                 logger.warning(f"Emergency deletion removed {deleted} file(s).")
@@ -816,10 +901,11 @@ def thin_data_until_disk_usage_ok(
                 logger.warning(
                     "Disk is still under threshold and thinning isn't reclaiming space; deleting whole audio files to recover space."
                 )
+                emergency_recovery_active = True
                 deleted = emergency_delete_random_audio_files(
                     conn,
                     AUDIO_BASE,
-                    target_free_mb=stop_threshold,
+                    target_free_mb=start_threshold,
                     max_files=EMERGENCY_DELETE_MAX_FILES,
                 )
                 logger.warning(f"Emergency deletion removed {deleted} file(s).")
