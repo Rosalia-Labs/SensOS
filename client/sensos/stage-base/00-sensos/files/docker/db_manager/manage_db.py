@@ -107,8 +107,12 @@ def zero_segments_by_file(
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE sensos.audio_files SET deleted = TRUE WHERE id = %s",
+                        "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE id = %s",
                         (segs[0]["file_id"],),
+                    )
+                    cur.execute(
+                        "UPDATE sensos.audio_segments SET zeroed = TRUE WHERE id = ANY(%s)",
+                        ([s["id"] for s in segs],),
                     )
                     conn.commit()
                     logger.info(f"Marked file as deleted in DB: {segs[0]['file_path']}")
@@ -238,9 +242,12 @@ def delete_fully_zeroed_files(conn):
             """
             SELECT af.id, af.file_path
             FROM sensos.audio_files af
-            WHERE af.deleted = FALSE
+            WHERE af.deleted IS NOT TRUE
             AND NOT EXISTS (
-                SELECT 1 FROM sensos.audio_segments s WHERE s.file_id = af.id AND s.zeroed = FALSE
+                SELECT 1
+                FROM sensos.audio_segments s
+                WHERE s.file_id = af.id
+                  AND s.zeroed IS NOT TRUE
             )
         """
         )
@@ -374,6 +381,7 @@ def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None)
             FROM sensos.audio_segments s
             JOIN sensos.audio_files f ON s.file_id = f.id
             WHERE s.zeroed IS NOT TRUE
+              AND f.deleted IS NOT TRUE
               {segment_clause}
             ORDER BY s.id ASC
             LIMIT %s
@@ -426,6 +434,7 @@ def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
                 FROM sensos.audio_segments s
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 WHERE s.zeroed IS NOT TRUE
+                  AND f.deleted IS NOT TRUE
                   {segment_clause}
                   {clause}
                 GROUP BY week_num
@@ -446,6 +455,7 @@ def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 JOIN sensos.birdnet_scores b ON s.id = b.segment_id
                 WHERE s.zeroed IS NOT TRUE
+                  AND f.deleted IS NOT TRUE
                   AND EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int = %s
                   {segment_clause}
                   {clause}
@@ -472,6 +482,7 @@ def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
                 FROM sensos.audio_segments s
                 JOIN sensos.audio_files f ON s.file_id = f.id
                 WHERE s.zeroed IS NOT TRUE
+                  AND f.deleted IS NOT TRUE
                   AND EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int = %s
                   {segment_clause}
                   {clause}
@@ -505,7 +516,9 @@ def thin_data_until_disk_usage_ok(
     # Hysteresis: only start thinning below `start_threshold`, but once we start,
     # continue until we reach `stop_threshold`.
     started = False
+    active_segment_ids = segment_ids
     last_selected_ids = None
+    stalled_batches = 0
     while True:
         free_mb = get_disk_free_mb(AUDIO_BASE)
         if free_mb is None:
@@ -522,13 +535,13 @@ def thin_data_until_disk_usage_ok(
 
         logger.warning(
             f"Disk pressure: free={free_mb} MB (start={start_threshold} MB, stop={stop_threshold} MB)"
-            + (" [scoped]" if segment_ids else " [global]")
+            + (" [scoped]" if active_segment_ids else " [global]")
         )
         logger.info("Selecting segments for thinning...")
         selection_started = time.monotonic()
         try:
             segments = pick_segments_for_thinning(
-                conn, batch_size, segment_ids=segment_ids
+                conn, batch_size, segment_ids=active_segment_ids
             )
         except Exception as e:
             disk_full_exc = getattr(getattr(psycopg, "errors", None), "DiskFull", None)
@@ -546,7 +559,7 @@ def thin_data_until_disk_usage_ok(
             )
             try:
                 segments = pick_segments_for_thinning_simple(
-                    conn, batch_size, segment_ids=segment_ids
+                    conn, batch_size, segment_ids=active_segment_ids
                 )
             except Exception as fallback_e:
                 if (disk_full_exc and isinstance(fallback_e, disk_full_exc)) or (
@@ -579,32 +592,45 @@ def thin_data_until_disk_usage_ok(
             logger.info(
                 f"Thinning selection finished in {time.monotonic() - selection_started:.1f}s"
             )
+
         if not segments:
-            logger.info("No eligible segments to thin (disk pressure remains).")
-            logger.warning("Trying simple thinning selection (no label aggregation).")
-            segments = pick_segments_for_thinning_simple(
-                conn, batch_size, segment_ids=segment_ids
+            logger.warning(
+                "Thinning selection returned 0 segments; cannot make progress with current selection."
             )
-            if not segments:
-                if free_mb <= EMERGENCY_TRIGGER_MB:
-                    logger.warning(
-                        "Emergency mode: disk is critically low; deleting random audio files."
-                    )
-                    deleted = emergency_delete_random_audio_files(
-                        conn,
-                        AUDIO_BASE,
-                        target_free_mb=stop_threshold,
-                        max_files=EMERGENCY_DELETE_MAX_FILES,
-                    )
-                    logger.warning(f"Emergency deletion removed {deleted} file(s).")
-                    started = True
-                    if deleted <= 0:
-                        return
-                    continue
+            if active_segment_ids is not None:
                 logger.warning(
-                    f"Emergency deletion skipped: free={free_mb} MB is above EMERGENCY_TRIGGER_MB={EMERGENCY_TRIGGER_MB} MB."
+                    "Scoped thinning appears exhausted/stalled; switching to global thinning selection."
                 )
+                active_segment_ids = None
+                continue
+            try:
+                delete_fully_zeroed_files(conn)
+            except Exception as e:
+                logger.warning(f"Could not delete fully-zeroed files: {e!r}")
+
+            free_mb_after = get_disk_free_mb(AUDIO_BASE)
+            if free_mb_after is not None and free_mb_after > stop_threshold:
+                logger.info("Disk free space now sufficient, stopping thinning.")
                 return
+            stalled_batches += 1
+            if free_mb_after is not None and free_mb_after <= start_threshold and stalled_batches >= 3:
+                logger.warning(
+                    "Thinning is stalled and disk is still under threshold; deleting whole audio files to recover space."
+                )
+                deleted = emergency_delete_random_audio_files(
+                    conn,
+                    AUDIO_BASE,
+                    target_free_mb=stop_threshold,
+                    max_files=EMERGENCY_DELETE_MAX_FILES,
+                )
+                logger.warning(f"Emergency deletion removed {deleted} file(s).")
+                if deleted <= 0:
+                    return
+                stalled_batches = 0
+                continue
+            if not TESTING:
+                time.sleep(1)
+            continue
 
         if THIN_LOG_IDS:
             selected_ids = [s.get("id") for s in segments if "id" in s]
@@ -634,6 +660,10 @@ def thin_data_until_disk_usage_ok(
                 sql = f"UPDATE sensos.audio_segments SET zeroed = TRUE WHERE id IN ({placeholders})"
                 cur.execute(sql, zeroed_ids)
                 conn.commit()
+            try:
+                delete_fully_zeroed_files(conn)
+            except Exception as e:
+                logger.warning(f"Could not delete fully-zeroed files after thinning: {e!r}")
             if THIN_LOG_IDS:
                 try:
                     with conn.cursor() as cur:
@@ -659,6 +689,7 @@ def thin_data_until_disk_usage_ok(
             logger.warning(
                 f"Thinning batch reclaimed little/no space (before={free_before_mb} MB, after={free_mb} MB)."
             )
+            stalled_batches += 1
             if free_mb <= EMERGENCY_TRIGGER_MB:
                 logger.warning(
                     "Disk is critically low and thinning isn't reclaiming space; deleting random audio files."
@@ -673,6 +704,40 @@ def thin_data_until_disk_usage_ok(
                 if deleted <= 0:
                     return
                 continue
+            if (
+                active_segment_ids is None
+                and stalled_batches >= 5
+                and free_mb <= start_threshold
+            ):
+                logger.warning(
+                    "Disk is still under threshold and thinning isn't reclaiming space; deleting whole audio files to recover space."
+                )
+                deleted = emergency_delete_random_audio_files(
+                    conn,
+                    AUDIO_BASE,
+                    target_free_mb=stop_threshold,
+                    max_files=EMERGENCY_DELETE_MAX_FILES,
+                )
+                logger.warning(f"Emergency deletion removed {deleted} file(s).")
+                if deleted <= 0:
+                    return
+                stalled_batches = 0
+                continue
+            if (
+                active_segment_ids is not None
+                and stalled_batches >= 3
+                and free_mb <= start_threshold
+            ):
+                logger.warning(
+                    "Scoped thinning isn't reclaiming space; switching to global thinning selection."
+                )
+                active_segment_ids = None
+                stalled_batches = 0
+                continue
+            if not TESTING:
+                time.sleep(1)
+        else:
+            stalled_batches = 0
         if free_mb > stop_threshold:
             logger.info("Disk free space now sufficient, stopping thinning.")
             return

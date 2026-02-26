@@ -296,8 +296,104 @@ def test_thinning_logic():
             print("Thinning test passed, segment zeroed:", cardinal_zeroed[0]["id"])
 
 
+def test_delete_fully_zeroed_files_does_not_delete_on_null_zeroed():
+    with psycopg.connect(**DB_PARAMS) as conn:
+        conn.row_factory = psycopg.rows.dict_row
+
+        setup_schema(conn)
+        make_test_audio("null1.wav", nframes=1000, nchannels=1, sr=22050)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sensos.audio_files (file_path, deleted) VALUES ('null1.wav', FALSE) RETURNING id;"
+            )
+            file_id = cur.fetchone()["id"]
+            cur.execute(
+                """
+                INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame, processed, zeroed)
+                VALUES (%s, 0, 0, 1000, FALSE, %s)
+                """,
+                (file_id, None),
+            )
+            conn.commit()
+
+        import manage_db
+
+        manage_db.delete_fully_zeroed_files(conn)
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT deleted FROM sensos.audio_files WHERE id = %s", (file_id,))
+            assert cur.fetchone()["deleted"] is False, "File should not be deleted when segment.zeroed is NULL"
+
+        assert (AUDIO_BASE / "null1.wav").exists(), "Disk file should not be deleted when segment.zeroed is NULL"
+
+
+def test_pick_segments_excludes_deleted_files():
+    with psycopg.connect(**DB_PARAMS) as conn:
+        conn.row_factory = psycopg.rows.dict_row
+
+        setup_schema(conn)
+        make_test_audio("alive.wav", nframes=1000, nchannels=1, sr=22050)
+        make_test_audio("dead.wav", nframes=1000, nchannels=1, sr=22050)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sensos.audio_files (file_path, deleted) VALUES ('dead.wav', TRUE) RETURNING id;"
+            )
+            dead_file_id = cur.fetchone()["id"]
+            cur.execute(
+                "INSERT INTO sensos.audio_files (file_path, deleted) VALUES ('alive.wav', FALSE) RETURNING id;"
+            )
+            alive_file_id = cur.fetchone()["id"]
+
+            cur.execute(
+                """
+                INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame, processed, zeroed)
+                VALUES (%s, 0, 0, 1000, FALSE, FALSE)
+                RETURNING id;
+                """,
+                (dead_file_id,),
+            )
+            dead_seg = cur.fetchone()["id"]
+            cur.execute(
+                """
+                INSERT INTO sensos.audio_segments (file_id, channel, start_frame, end_frame, processed, zeroed)
+                VALUES (%s, 0, 0, 1000, FALSE, FALSE)
+                RETURNING id;
+                """,
+                (alive_file_id,),
+            )
+            alive_seg = cur.fetchone()["id"]
+
+            cur.execute(
+                """
+                INSERT INTO sensos.birdnet_scores (segment_id, label, score) VALUES
+                (%s, 'cardinal', 0.5),
+                (%s, 'cardinal', 0.5)
+                """,
+                (dead_seg, alive_seg),
+            )
+            conn.commit()
+
+        import manage_db
+
+        simple = manage_db.pick_segments_for_thinning_simple(conn, max_segments=10)
+        assert simple, "Expected at least one thinnable segment"
+        assert all(
+            s["file_path"] == "alive.wav" for s in simple
+        ), "Selection should exclude segments whose audio_files.deleted is TRUE"
+
+        full = manage_db.pick_segments_for_thinning(conn, max_segments=10)
+        assert full, "Expected at least one thinnable segment from full picker"
+        assert all(
+            s["file_path"] == "alive.wav" for s in full
+        ), "Full selection should exclude segments whose audio_files.deleted is TRUE"
+
+
 if __name__ == "__main__":
     test_batch_postprocess()
     test_batch_postprocess_and_merging()
     test_thinning_logic()
+    test_delete_fully_zeroed_files_does_not_delete_on_null_zeroed()
+    test_pick_segments_excludes_deleted_files()
     print("All tests passed.")
