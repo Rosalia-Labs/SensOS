@@ -404,8 +404,8 @@ def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None)
     Low-DB-cost thinning fallback used when the full week/label strategy can't run
     (e.g. Postgres DiskFull while creating temp files).
 
-    Intentionally simple: picks the earliest un-zeroed segments (optionally scoped)
-    without BirdNET label aggregation.
+    Intentionally simple: picks un-zeroed segments (optionally scoped) without
+    BirdNET label aggregation, and avoids explicit oldest-first bias.
     """
     with conn.cursor() as cur:
         cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
@@ -426,7 +426,6 @@ def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None)
             WHERE s.zeroed IS NOT TRUE
               AND f.deleted IS NOT TRUE
               {segment_clause}
-            ORDER BY s.id ASC
             LIMIT %s
         """
         cur.execute(sql, params + [max_segments])
