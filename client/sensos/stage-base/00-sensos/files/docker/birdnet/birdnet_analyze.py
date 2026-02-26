@@ -199,11 +199,39 @@ def get_next_file(cur: psycopg.Cursor) -> Optional[Tuple[int, str]]:
             SELECT 1 FROM sensos.birdnet_processed_files pf
             WHERE pf.file_id = af.id
         )
+          AND af.deleted IS NOT TRUE
         ORDER BY af.cataloged_at
         LIMIT 1;
     """
     )
     return cur.fetchone()
+
+
+def resolve_cataloged_path(file_path: str) -> Path:
+    rel = Path(file_path)
+    try:
+        rel = rel.relative_to("cataloged")
+    except ValueError:
+        pass
+    return CATALOGED / rel
+
+
+def mark_file_deleted(
+    cur: psycopg.Cursor, file_id: int, file_path: str, abs_path: Path, reason: str
+) -> None:
+    try:
+        abs_path.unlink(missing_ok=True)
+    except Exception as unlink_error:
+        logger.warning(
+            f"Could not remove unreadable file from disk: {abs_path} ({unlink_error})"
+        )
+    cur.execute(
+        "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE id = %s",
+        (file_id,),
+    )
+    logger.warning(
+        f"Marked unreadable file as deleted (file_id={file_id}, file_path={file_path}): {reason}"
+    )
 
 
 def fetch_metadata(
@@ -215,7 +243,7 @@ def fetch_metadata(
         return None
 
     (file_path,) = row
-    path = CATALOGED / Path(file_path).relative_to("cataloged")
+    path = resolve_cataloged_path(file_path)
 
     info = sf.info(path)
     return path, {
@@ -230,17 +258,37 @@ def fetch_metadata(
 def get_file_and_metadata(
     cur: psycopg.Cursor,
 ) -> Optional[Tuple[int, str, Path, Dict[str, Any]]]:
-    file_entry = get_next_file(cur)
-    if not file_entry:
-        return None
+    while True:
+        file_entry = get_next_file(cur)
+        if not file_entry:
+            return None
 
-    file_id, file_path = file_entry
-    result = fetch_metadata(cur, file_id)
-    if result is None:
-        return None
+        file_id, file_path = file_entry
+        abs_path = resolve_cataloged_path(file_path)
+        try:
+            result = fetch_metadata(cur, file_id)
+        except Exception as e:
+            mark_file_deleted(
+                cur,
+                file_id,
+                file_path,
+                abs_path,
+                f"metadata read failed: {e}",
+            )
+            try:
+                cur.connection.commit()
+            except Exception as commit_error:
+                logger.error(
+                    f"Failed to commit deletion of unreadable file {file_path}: {commit_error}"
+                )
+                cur.connection.rollback()
+                raise
+            continue
+        if result is None:
+            return None
 
-    abs_path, meta = result
-    return file_id, file_path, abs_path, meta
+        abs_path, meta = result
+        return file_id, file_path, abs_path, meta
 
 
 def process_file(
@@ -403,10 +451,12 @@ def main() -> None:
                     file_id, file_path, abs_path, meta = file_info
 
                     if not abs_path.exists():
-                        logger.warning(f"File missing from disk: {abs_path}")
-                        cur.execute(
-                            "UPDATE sensos.audio_files SET deleted = TRUE WHERE id = %s",
-                            (file_id,),
+                        mark_file_deleted(
+                            cur,
+                            file_id,
+                            file_path,
+                            abs_path,
+                            "file missing from disk",
                         )
                         conn.commit()
                         continue
@@ -415,18 +465,14 @@ def main() -> None:
                         process_file(cur, file_info)
                     else:
                         try:
-                            abs_path.unlink(missing_ok=True)
-                            cur.execute(
-                                "DELETE FROM sensos.audio_files WHERE id = %s",
-                                (file_id,),
-                            )
-                            logger.warning(
-                                f"Deleted DB record for {file_path} due to invalid metadata"
+                            mark_file_deleted(
+                                cur,
+                                file_id,
+                                file_path,
+                                abs_path,
+                                "invalid metadata",
                             )
                             conn.commit()
-                            logger.warning(
-                                f"Marked invalid file as deleted: {file_path}"
-                            )
                         except Exception as e:
                             logger.error(
                                 f"Failed to mark invalid file deleted: {file_path} — {e}"

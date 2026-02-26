@@ -116,6 +116,19 @@ def move_and_cleanup(
         return None
 
 
+def move_queued_to_other(path: Path, reason: str) -> Optional[Path]:
+    rel_path = path.relative_to(QUEUED)
+    dest_path = OTHER / "queued" / rel_path
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(dest_path))
+        logging.warning(f"Moved queued file to other/: {rel_path} — {reason}")
+        return dest_path
+    except Exception as e:
+        logging.error(f"Failed to quarantine queued file {path}: {e}")
+        return None
+
+
 def check_catalog(cur):
     seen_paths = set()
 
@@ -231,6 +244,7 @@ def process_file(cursor, path: Path):
             info = sf.info(path)
         except Exception as e:
             logging.error(f"Could not read metadata from {path}: {e}")
+            move_queued_to_other(path, f"Unreadable by soundfile: {e}")
             return
 
         timestamp = extract_timestamp(path)
@@ -245,6 +259,15 @@ def process_file(cursor, path: Path):
             final_info = sf.info(new_path)
         except Exception as e:
             logging.error(f"Could not read FLAC metadata from {new_path}: {e}")
+            try:
+                move_and_cleanup(
+                    new_path,
+                    OTHER / "cataloged",
+                    f"Unreadable converted FLAC: {e}",
+                )
+            except Exception:
+                pass
+            move_queued_to_other(path, "Converted output unreadable")
             return
 
         os.remove(path)
