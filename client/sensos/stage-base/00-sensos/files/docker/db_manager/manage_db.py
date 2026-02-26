@@ -849,8 +849,6 @@ def thin_data_until_disk_usage_ok(
 
 
 def batch_postprocess(conn, segment_ids):
-    zero_human_segments(conn, segment_ids)
-    merge_segments_with_same_label(conn, segment_ids)
     thin_data_until_disk_usage_ok(
         conn,
         start_threshold=DISK_START_THRESHOLD_MB,
@@ -859,6 +857,8 @@ def batch_postprocess(conn, segment_ids):
         segment_ids=segment_ids,
     )
     delete_fully_zeroed_files(conn)
+    zero_human_segments(conn, segment_ids)
+    merge_segments_with_same_label(conn, segment_ids)
 
 
 def main_loop(conn):
