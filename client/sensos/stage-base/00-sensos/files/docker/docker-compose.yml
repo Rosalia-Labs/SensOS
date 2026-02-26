@@ -80,6 +80,30 @@ services:
     volumes:
       - /sensos/data/microenv:/microenv
 
+  sensos-client-dashboard:
+    image: sensos-client-dashboard
+    container_name: sensos-client-dashboard
+    restart: always
+    depends_on:
+      - sensos-client-database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DASHBOARD_USER: ${DASHBOARD_USER:-sensos}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-change-me}
+      DASHBOARD_DB_USER: ${DASHBOARD_DB_USER:-sensos_dashboard_ro}
+      DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD:-sensos_dashboard_readonly}
+      DASHBOARD_DB_BOOTSTRAP: ${DASHBOARD_DB_BOOTSTRAP:-true}
+      DASHBOARD_WINDOW_HOURS: ${DASHBOARD_WINDOW_HOURS:-24}
+    ports:
+      - "${DASHBOARD_PORT:-8090}:8090"
+    read_only: true
+    tmpfs:
+      - /tmp
+
   sensos-system-recorder:
     image: sensos-client-system-recorder
     container_name: sensos-client-system-recorder

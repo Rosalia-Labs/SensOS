@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SensOS Environmental Dashboard</title>
+  <style>
+    :root {
+      --bg-1: #f3efe4;
+      --bg-2: #dcebe7;
+      --panel: rgba(250, 251, 249, 0.86);
+      --ink: #182022;
+      --muted: #56666a;
+      --line: rgba(24, 32, 34, 0.1);
+      --accent-a: #0e7c7b;
+      --accent-b: #ef8354;
+      --accent-c: #3e6990;
+      --accent-d: #c44536;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Avenir Next", "Trebuchet MS", "Gill Sans", sans-serif;
+      background:
+        radial-gradient(circle at 12% 18%, rgba(14, 124, 123, 0.17), transparent 28%),
+        radial-gradient(circle at 92% 8%, rgba(196, 69, 54, 0.17), transparent 24%),
+        linear-gradient(140deg, var(--bg-1), var(--bg-2));
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1250px;
+      margin: 0 auto;
+      padding: 18px 18px 28px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: clamp(1.35rem, 3vw, 2rem);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-weight: 800;
+    }
+
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .stamp {
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.66);
+      font-size: 0.86rem;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      backdrop-filter: blur(5px);
+      box-shadow: 0 8px 28px rgba(10, 20, 20, 0.06);
+      overflow: hidden;
+    }
+
+    .summary { grid-column: span 12; }
+    .chart-detect { grid-column: span 12; }
+    .chart-system { grid-column: span 12; }
+    .chart-env { grid-column: span 12; }
+    .species { grid-column: span 12; }
+
+    @media (min-width: 980px) {
+      .chart-system { grid-column: span 7; }
+      .chart-env { grid-column: span 5; }
+    }
+
+    .card-title {
+      margin: 0;
+      padding: 12px 14px 0;
+      font-size: 1rem;
+      letter-spacing: 0.02em;
+      font-weight: 700;
+    }
+
+    .card-sub {
+      margin: 3px 0 10px;
+      padding: 0 14px;
+      color: var(--muted);
+      font-size: 0.83rem;
+    }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      padding: 0 12px 12px;
+    }
+
+    @media (min-width: 720px) {
+      .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+
+    .kpi {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.54);
+    }
+
+    .kpi-label {
+      font-size: 0.74rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .kpi-value {
+      margin-top: 4px;
+      font-size: 1.08rem;
+      font-weight: 700;
+      line-height: 1.15;
+    }
+
+    .canvas-wrap {
+      position: relative;
+      height: 300px;
+      padding: 0 8px 8px;
+    }
+
+    .canvas-wrap canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.5);
+      border: 1px solid var(--line);
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 0 12px 10px;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.89rem;
+    }
+
+    th, td {
+      padding: 8px 12px;
+      border-top: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      font-size: 0.77rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(0, 0, 0, 0.01);
+    }
+
+    td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .error {
+      margin: 6px 0 0;
+      color: #9f1f15;
+      font-size: 0.83rem;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="header">
+      <div>
+        <h1 class="title">SensOS Field Dashboard</h1>
+        <p class="subtitle">Bird activity, system health, and environmental signals in one read-only view.</p>
+      </div>
+      <div id="updated-at" class="stamp">Updating…</div>
+    </header>
+
+    <main class="grid">
+      <section class="card summary">
+        <h2 class="card-title">Overview</h2>
+        <p class="card-sub" id="window-label">Rolling window</p>
+        <div class="kpis" id="kpis"></div>
+        <p class="error" id="errors"></p>
+      </section>
+
+      <section class="card chart-detect">
+        <h2 class="card-title">Detection Throughput</h2>
+        <p class="card-sub">Audio segments generated per hour</p>
+        <div class="canvas-wrap"><canvas id="detect-chart"></canvas></div>
+      </section>
+
+      <section class="card chart-system">
+        <h2 class="card-title">System Health</h2>
+        <p class="card-sub">Disk free, memory used %, and 1-minute CPU load</p>
+        <div class="legend" id="system-legend"></div>
+        <div class="canvas-wrap"><canvas id="system-chart"></canvas></div>
+      </section>
+
+      <section class="card chart-env">
+        <h2 class="card-title">Environmental Signals</h2>
+        <p class="card-sub">Sensor streams from I2C ingestion</p>
+        <div class="legend" id="env-legend"></div>
+        <div class="canvas-wrap"><canvas id="env-chart"></canvas></div>
+      </section>
+
+      <section class="card species">
+        <h2 class="card-title">Top Species</h2>
+        <p class="card-sub">Top BirdNET labels by segment count in the current window</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Species</th>
+              <th class="num">Detections</th>
+              <th class="num">Avg Score</th>
+            </tr>
+          </thead>
+          <tbody id="species-table"></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const REFRESH_SECONDS = {{ refresh_seconds|tojson }};
+    let state = {{ initial_payload|tojson }};
+
+    const palette = ["#0e7c7b", "#ef8354", "#3e6990", "#c44536", "#1b998b", "#6b5b95"];
+
+    function fmt(v, digits = 0) {
+      if (v === null || v === undefined || Number.isNaN(v)) return "—";
+      return Number(v).toFixed(digits);
+    }
+
+    function tsToLocal(tsMs) {
+      return new Date(tsMs).toLocaleString();
+    }
+
+    function drawLineChart(canvas, series, opts = {}) {
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(300, canvas.clientWidth);
+      const height = Math.max(220, canvas.clientHeight);
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const pad = { top: 12, right: 10, bottom: 20, left: 42 };
+      const plotW = width - pad.left - pad.right;
+      const plotH = height - pad.top - pad.bottom;
+
+      ctx.clearRect(0, 0, width, height);
+
+      const points = [];
+      for (const s of series) {
+        for (const p of s.points || []) points.push(p);
+      }
+      if (!points.length) {
+        ctx.fillStyle = "#667577";
+        ctx.font = "13px Trebuchet MS";
+        ctx.fillText("No data in selected window.", 12, 24);
+        return;
+      }
+
+      let xMin = Math.min(...points.map((p) => p.t));
+      let xMax = Math.max(...points.map((p) => p.t));
+      let yMin = Math.min(...points.map((p) => p.v));
+      let yMax = Math.max(...points.map((p) => p.v));
+
+      if (xMin === xMax) xMax += 1;
+      if (yMin === yMax) {
+        yMin -= 1;
+        yMax += 1;
+      }
+      if (opts.floorAtZero) yMin = Math.min(0, yMin);
+
+      const xScale = (x) => pad.left + ((x - xMin) / (xMax - xMin)) * plotW;
+      const yScale = (y) => pad.top + (1 - (y - yMin) / (yMax - yMin)) * plotH;
+
+      ctx.strokeStyle = "rgba(24, 32, 34, 0.08)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.top + (i / 4) * plotH;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(width - pad.right, y);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "#556567";
+      ctx.font = "11px Trebuchet MS";
+      for (let i = 0; i <= 4; i++) {
+        const frac = i / 4;
+        const yVal = yMax - frac * (yMax - yMin);
+        const y = pad.top + frac * plotH + 4;
+        ctx.fillText(Number(yVal).toFixed(1), 5, y);
+      }
+
+      for (const s of series) {
+        const pts = s.points || [];
+        if (!pts.length) continue;
+        ctx.strokeStyle = s.color || "#0e7c7b";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        pts.forEach((p, idx) => {
+          const x = xScale(p.t);
+          const y = yScale(p.v);
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "#556567";
+      ctx.font = "11px Trebuchet MS";
+      ctx.fillText(new Date(xMin).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), pad.left, height - 5);
+      const maxLabel = new Date(xMax).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const labelWidth = ctx.measureText(maxLabel).width;
+      ctx.fillText(maxLabel, width - pad.right - labelWidth, height - 5);
+    }
+
+    function setLegend(el, items) {
+      el.innerHTML = "";
+      for (const item of items) {
+        const row = document.createElement("span");
+        row.className = "legend-item";
+        row.innerHTML = `<span class="dot" style="background:${item.color}"></span>${item.label}`;
+        el.appendChild(row);
+      }
+    }
+
+    function renderKPIs(summary) {
+      const cards = [
+        ["Active Files", summary.active_files],
+        ["Audio Hours", fmt(summary.audio_hours, 2)],
+        ["Segments Active", summary.segments_active],
+        ["Segments Total", summary.segments_total],
+        [`Detections (${state.window_hours}h)`, summary.detections_window],
+        ["Disk Free (GB)", fmt(summary.disk_free_gb, 2)],
+        ["Memory Used (MB)", summary.memory_used_mb],
+        ["Load 1m", fmt(summary.load_1m, 2)],
+      ];
+
+      const node = document.getElementById("kpis");
+      node.innerHTML = "";
+      cards.forEach(([label, value]) => {
+        const cell = document.createElement("article");
+        cell.className = "kpi";
+        cell.innerHTML = `<div class="kpi-label">${label}</div><div class="kpi-value">${value ?? "—"}</div>`;
+        node.appendChild(cell);
+      });
+    }
+
+    function renderSpecies(rows) {
+      const body = document.getElementById("species-table");
+      body.innerHTML = "";
+      if (!rows || rows.length === 0) {
+        body.innerHTML = `<tr><td colspan="3">No BirdNET labels in this window.</td></tr>`;
+        return;
+      }
+      rows.forEach((r) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${r.label}</td><td class="num">${r.detections}</td><td class="num">${fmt(r.avg_score, 3)}</td>`;
+        body.appendChild(tr);
+      });
+    }
+
+    function render() {
+      const summary = state.summary || {};
+      document.getElementById("window-label").textContent =
+        `Rolling ${state.window_hours || "?"} hour window`;
+
+      const stamp = state.generated_at ? new Date(state.generated_at).toLocaleString() : "unknown";
+      document.getElementById("updated-at").textContent = `Updated ${stamp}`;
+      document.getElementById("errors").textContent = (state.errors || []).join("\n");
+      renderKPIs(summary);
+
+      drawLineChart(
+        document.getElementById("detect-chart"),
+        [{ label: "Detections", color: "#0e7c7b", points: state.detection_series || [] }],
+        { floorAtZero: true }
+      );
+
+      const sysSeries = [
+        { label: "Disk Free GB", color: "#3e6990", points: (state.system_series || {}).disk_available_gb || [] },
+        { label: "Memory Used %", color: "#ef8354", points: (state.system_series || {}).memory_used_pct || [] },
+        { label: "Load 1m", color: "#c44536", points: (state.system_series || {}).load_1m || [] },
+      ];
+      setLegend(document.getElementById("system-legend"), sysSeries);
+      drawLineChart(document.getElementById("system-chart"), sysSeries);
+
+      const env = state.environment_series || {};
+      const keys = Object.keys(env).sort();
+      const envSeries = keys.map((k, idx) => ({
+        label: k,
+        color: palette[idx % palette.length],
+        points: env[k] || [],
+      }));
+      setLegend(document.getElementById("env-legend"), envSeries);
+      drawLineChart(document.getElementById("env-chart"), envSeries);
+
+      renderSpecies(state.top_species || []);
+    }
+
+    async function refresh() {
+      try {
+        const res = await fetch("/api/dashboard", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        state = await res.json();
+      } catch (err) {
+        const msg = `Refresh failed at ${new Date().toLocaleTimeString()}: ${err}`;
+        if (!state.errors) state.errors = [];
+        state.errors = [msg];
+      }
+      render();
+    }
+
+    window.addEventListener("resize", render);
+    render();
+    setInterval(refresh, REFRESH_SECONDS * 1000);
+  </script>
+</body>
+</html>

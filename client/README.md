@@ -46,3 +46,28 @@ Options:
 ```
 
 You can use `burn-boot-image.sh` or any other software to copy the resulting image onto an SD card or other bootable media.
+
+# On-device configuration order
+
+After first boot, SensOS is configured by running scripts on the device. It is not intended to be "boot-and-run" without configuration.
+
+Recommended sequence:
+
+1. Configure network/WireGuard first (writes `/sensos/etc/network.conf` and firewall include rules).
+2. Configure storage next (mounts/initializes `/sensos/data`).
+3. Configure Docker settings (writes `/sensos/docker/.env`).
+4. Build/load container images if needed.
+5. Start container services.
+
+Example flow:
+
+```bash
+config-network --config-server <server-ip> --port 8765 --network sensos --subnet 1 --wg-endpoint <endpoint-ip>
+config-storage --device /dev/<your-disk>
+config-docker --start-service true
+```
+
+Notes:
+
+- `config-docker` is the step that writes runtime container configuration, including dashboard settings such as `DASHBOARD_PORT`, `DASHBOARD_USER`, and `DASHBOARD_PASSWORD`.
+- If container images are not already loaded from tarballs, run `build-containers` before starting `sensos-container.service`.

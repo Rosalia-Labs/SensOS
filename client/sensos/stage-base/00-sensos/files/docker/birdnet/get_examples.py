@@ -20,7 +20,7 @@ DB_PARAMS = (
 )
 
 AUDIO_BASE_PATH = Path("/audio_recordings")
-TOP_N = int(os.environ.get("N_EXAMPLES", 3))  # top N per label
+TOP_N = int(os.environ.get("N_EXAMPLES", 1))  # top N per label
 TOTAL_LIMIT = int(os.environ.get("TOTAL_LIMIT", 100))  # total max output
 # THRESHOLD = float(os.environ.get("SCORE_THRESHOLD", 0))
 

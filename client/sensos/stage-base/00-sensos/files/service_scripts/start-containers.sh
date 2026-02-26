@@ -25,6 +25,35 @@ if [[ ! -f .env ]]; then
     exit 1
 fi
 
+ensure_dashboard_firewall_rule() {
+    local dashboard_port nft_include nft_conf dashboard_rule
+    dashboard_port="$(grep -E '^DASHBOARD_PORT=' .env | tail -n1 | cut -d= -f2- | tr -d '[:space:]')"
+    [[ -z "$dashboard_port" ]] && dashboard_port="8090"
+    if [[ ! "$dashboard_port" =~ ^[0-9]+$ ]] || ((dashboard_port < 1 || dashboard_port > 65535)); then
+        echo "[WARN] Invalid DASHBOARD_PORT='$dashboard_port' in .env; using 8090"
+        dashboard_port="8090"
+    fi
+
+    nft_include="/sensos/etc/sensos-ports.nft"
+    nft_conf="/sensos/etc/nftables.conf"
+    dashboard_rule="add rule inet filter input tcp dport ${dashboard_port} accept"
+
+    sudo touch "$nft_include"
+    if ! sudo grep -Fqx "$dashboard_rule" "$nft_include"; then
+        echo "[INFO] Allowing dashboard port ${dashboard_port}/tcp through nftables..."
+        echo "$dashboard_rule" | sudo tee -a "$nft_include" >/dev/null
+        if [[ -f "$nft_conf" ]]; then
+            if sudo nft -f "$nft_conf"; then
+                echo "[INFO] Reloaded nftables with dashboard rule."
+            else
+                echo "[WARN] Failed to reload nftables; dashboard may stay blocked until firewall reload."
+            fi
+        fi
+    fi
+}
+
+ensure_dashboard_firewall_rule
+
 # Load images from tarballs (always safe)
 echo "[INFO] Loading any available images from local tarballs..."
 load_images_from_disk
