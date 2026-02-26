@@ -121,6 +121,15 @@ def initialize_schema() -> None:
                 ON sensos.audio_segments(file_id);
                 CREATE INDEX IF NOT EXISTS audio_segments_file_start_index
                 ON sensos.audio_segments(file_id, start_frame);
+                CREATE INDEX IF NOT EXISTS audio_segments_active_file_id_idx
+                ON sensos.audio_segments(file_id, id)
+                WHERE zeroed IS NOT TRUE;
+            """
+            )
+            cur.execute(
+                """CREATE INDEX IF NOT EXISTS audio_files_active_week_source_idx
+                ON sensos.audio_files ((COALESCE(capture_timestamp, cataloged_at)), id)
+                WHERE deleted IS NOT TRUE;
             """
             )
             cur.execute(
@@ -157,6 +166,11 @@ def initialize_schema() -> None:
                 likely FLOAT,
                 PRIMARY KEY (segment_id, label)
             );"""
+            )
+            cur.execute(
+                """CREATE INDEX IF NOT EXISTS birdnet_scores_segment_top_idx
+                ON sensos.birdnet_scores (segment_id, score DESC, label);
+            """
             )
             cur.execute(
                 """CREATE TABLE IF NOT EXISTS sensos.score_statistics (

@@ -30,7 +30,7 @@ EMERGENCY_TRIGGER_MB = int(os.environ.get("EMERGENCY_TRIGGER_MB", "5000"))
 DISK_START_THRESHOLD_MB = int(os.environ.get("DISK_START_THRESHOLD_MB", "10000"))
 DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "20000"))
 THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
-PG_STATEMENT_TIMEOUT_MS = int(os.environ.get("PG_STATEMENT_TIMEOUT_MS", "15000"))
+PG_STATEMENT_TIMEOUT_MS = int(os.environ.get("PG_STATEMENT_TIMEOUT_MS", "0"))
 PG_LOCK_TIMEOUT_MS = int(os.environ.get("PG_LOCK_TIMEOUT_MS", "2000"))
 THIN_LOG_IDS = os.environ.get("THIN_LOG_IDS", "0").strip().lower() in (
     "1",
@@ -99,7 +99,9 @@ def queue_deleted_audio_file_paths(paths: List[Path], audio_base: Path) -> int:
         try:
             rel = p.relative_to(audio_base).as_posix()
         except Exception:
-            logger.warning(f"Could not resolve deleted path relative to {audio_base}: {p}")
+            logger.warning(
+                f"Could not resolve deleted path relative to {audio_base}: {p}"
+            )
             continue
         if rel not in PENDING_DELETED_FILE_PATHS:
             queued += 1
@@ -145,6 +147,50 @@ def flush_pending_deleted_audio_file_marks(
         except Exception:
             pass
         return 0
+
+
+def ensure_thinning_indexes() -> None:
+    index_statements = [
+        (
+            "audio_segments_active_file_id_idx",
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS audio_segments_active_file_id_idx
+            ON sensos.audio_segments (file_id, id)
+            WHERE zeroed IS NOT TRUE
+            """,
+        ),
+        (
+            "audio_files_active_week_source_idx",
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS audio_files_active_week_source_idx
+            ON sensos.audio_files ((COALESCE(capture_timestamp, cataloged_at)), id)
+            WHERE deleted IS NOT TRUE
+            """,
+        ),
+        (
+            "birdnet_scores_segment_top_idx",
+            """
+            CREATE INDEX CONCURRENTLY IF NOT EXISTS birdnet_scores_segment_top_idx
+            ON sensos.birdnet_scores (segment_id, score DESC, label)
+            """,
+        ),
+    ]
+
+    logger.info("Ensuring thinning indexes exist...")
+    try:
+        with connect_with_retry(DB_PARAMS) as index_conn:
+            index_conn.autocommit = True
+            with index_conn.cursor() as cur:
+                cur.execute("SET statement_timeout = '0'")
+                cur.execute(f"SET lock_timeout = '{PG_LOCK_TIMEOUT_MS}ms'")
+                for index_name, statement in index_statements:
+                    try:
+                        cur.execute(statement)
+                        logger.info(f"Ensured index: {index_name}")
+                    except Exception as e:
+                        logger.warning(f"Could not ensure index {index_name}: {e!r}")
+    except Exception as e:
+        logger.warning(f"Could not run thinning index setup: {e!r}")
 
 
 def zero_segments_by_file(
@@ -387,7 +433,9 @@ def emergency_delete_random_audio_files(
     if deleted:
         queued = queue_deleted_audio_file_paths(deleted, audio_base)
         if queued:
-            logger.info(f"Queued {queued} deleted file path(s) for deferred DB marking.")
+            logger.info(
+                f"Queued {queued} deleted file path(s) for deferred DB marking."
+            )
         # Only flush deferred DB flags when we've recovered enough free space.
         flush_pending_deleted_audio_file_marks(conn, min_free_mb=target_free_mb)
 
@@ -399,15 +447,14 @@ def emergency_delete_oldest_audio_files(*args, **kwargs) -> int:
     return emergency_delete_random_audio_files(*args, **kwargs)
 
 
-def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None):
+def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
     """
-    Low-DB-cost thinning fallback used when the full week/label strategy can't run
-    (e.g. Postgres DiskFull while creating temp files).
-
-    Intentionally simple: picks un-zeroed segments (optionally scoped) without
-    BirdNET label aggregation, and avoids explicit oldest-first bias.
+    Selects segments to thin using a single set-based week/label/score query.
+    Returns a list of segments (dicts) for zeroing, in order.
+    Does not touch disk or DB.
     """
     with conn.cursor() as cur:
+        # Prefer using memory over spilling to `pgsql_tmp` when disk is under pressure.
         cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
         cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT_MS}ms'")
         cur.execute(f"SET LOCAL lock_timeout = '{PG_LOCK_TIMEOUT_MS}ms'")
@@ -420,126 +467,76 @@ def pick_segments_for_thinning_simple(conn, max_segments=1000, segment_ids=None)
 
     with conn.cursor() as cur:
         sql = f"""
-            SELECT s.id, s.file_id, s.channel, s.start_frame, s.end_frame, f.file_path
-            FROM sensos.audio_segments s
-            JOIN sensos.audio_files f ON s.file_id = f.id
-            WHERE s.zeroed IS NOT TRUE
-              AND f.deleted IS NOT TRUE
-              {segment_clause}
+            WITH candidate_segments AS (
+                SELECT
+                    s.id,
+                    s.file_id,
+                    s.channel,
+                    s.start_frame,
+                    s.end_frame,
+                    f.file_path,
+                    DATE_TRUNC('week', COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at)) AS week_start
+                FROM sensos.audio_segments s
+                JOIN sensos.audio_files f ON s.file_id = f.id
+                WHERE s.zeroed IS NOT TRUE
+                  AND f.deleted IS NOT TRUE
+                  {segment_clause}
+            ),
+            top_scores AS (
+                SELECT DISTINCT ON (b.segment_id)
+                    b.segment_id,
+                    b.label AS top_label,
+                    b.score AS top_score
+                FROM sensos.birdnet_scores b
+                JOIN candidate_segments cs ON cs.id = b.segment_id
+                ORDER BY b.segment_id, b.score DESC, b.label ASC
+            ),
+            week_totals AS (
+                SELECT
+                    cs.week_start,
+                    SUM(cs.end_frame - cs.start_frame) AS total_frames
+                FROM candidate_segments cs
+                GROUP BY cs.week_start
+            ),
+            target_week AS (
+                SELECT wt.week_start
+                FROM week_totals wt
+                ORDER BY wt.total_frames DESC
+                LIMIT 1
+            ),
+            label_counts AS (
+                SELECT
+                    ts.top_label AS label,
+                    COUNT(*) AS cnt
+                FROM candidate_segments cs
+                JOIN target_week tw ON cs.week_start = tw.week_start
+                JOIN top_scores ts ON ts.segment_id = cs.id
+                GROUP BY ts.top_label
+            ),
+            target_label AS (
+                SELECT lc.label
+                FROM label_counts lc
+                ORDER BY lc.cnt DESC, lc.label ASC
+                LIMIT 1
+            )
+            SELECT
+                cs.id,
+                cs.file_id,
+                cs.channel,
+                cs.start_frame,
+                cs.end_frame,
+                cs.file_path,
+                ts.top_label,
+                ts.top_score
+            FROM candidate_segments cs
+            JOIN target_week tw ON cs.week_start = tw.week_start
+            JOIN top_scores ts ON ts.segment_id = cs.id
+            JOIN target_label tl ON ts.top_label = tl.label
+            ORDER BY ts.top_score ASC, cs.id ASC
             LIMIT %s
         """
         cur.execute(sql, params + [max_segments])
         return [dict(r) for r in cur.fetchall()]
-
-
-def pick_segments_for_thinning(conn, max_segments=1000, segment_ids=None):
-    """
-    Iteratively selects segments to thin, using dynamic week/label/score strategy.
-    Returns a list of segments (dicts) for zeroing, in order.
-    Does not touch disk or DB.
-    """
-    with conn.cursor() as cur:
-        # Prefer using memory over spilling to `pgsql_tmp` when disk is under pressure.
-        cur.execute(f"SET LOCAL work_mem = '{PG_WORK_MEM_MB}MB'")
-        cur.execute(f"SET LOCAL statement_timeout = '{PG_STATEMENT_TIMEOUT_MS}ms'")
-        cur.execute(f"SET LOCAL lock_timeout = '{PG_LOCK_TIMEOUT_MS}ms'")
-
-    def not_in_clause(ids, field="s.id"):
-        if not ids:
-            return "", []
-        placeholders = ",".join(["%s"] * len(ids))
-        return f"AND {field} NOT IN ({placeholders})", list(ids)
-
-    segment_clause = ""
-    segment_params = []
-    if segment_ids:
-        segment_clause = "AND s.id = ANY(%s)"
-        segment_params = [segment_ids]
-
-    picked_ids = set()
-    picked_segments = []
-    started_at = time.monotonic()
-
-    while len(picked_segments) < max_segments:
-        if len(picked_segments) and len(picked_segments) % 50 == 0:
-            logger.info(
-                f"Thinning selection progress: picked {len(picked_segments)}/{max_segments} segments "
-                f"(elapsed {time.monotonic() - started_at:.1f}s)"
-            )
-        clause, params = not_in_clause(picked_ids)
-        with conn.cursor() as cur:
-            # audio_files has `capture_timestamp`/`cataloged_at` (not `created_at`).
-            # audio_segments has `created_at` as a safe fallback.
-            sql = f"""
-                SELECT EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int AS week_num,
-                       SUM(s.end_frame - s.start_frame) AS total_frames
-                FROM sensos.audio_segments s
-                JOIN sensos.audio_files f ON s.file_id = f.id
-                WHERE s.zeroed IS NOT TRUE
-                  AND f.deleted IS NOT TRUE
-                  {segment_clause}
-                  {clause}
-                GROUP BY week_num
-                ORDER BY total_frames DESC
-                LIMIT 1
-            """
-            cur.execute(sql, segment_params + params)
-            row = cur.fetchone()
-            if not row or not row["week_num"]:
-                break
-            week_num = int(row["week_num"])
-
-        clause, params = not_in_clause(picked_ids)
-        with conn.cursor() as cur:
-            sql = f"""
-                SELECT b.label, COUNT(*) AS cnt
-                FROM sensos.audio_segments s
-                JOIN sensos.audio_files f ON s.file_id = f.id
-                JOIN sensos.birdnet_scores b ON s.id = b.segment_id
-                WHERE s.zeroed IS NOT TRUE
-                  AND f.deleted IS NOT TRUE
-                  AND EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int = %s
-                  {segment_clause}
-                  {clause}
-                  AND b.label = (
-                        SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1
-                  )
-                GROUP BY b.label
-                ORDER BY cnt DESC
-                LIMIT 1
-            """
-            cur.execute(sql, [week_num] + segment_params + params)
-            row = cur.fetchone()
-            if not row:
-                break
-            label = row["label"]
-
-        clause, params = not_in_clause(picked_ids)
-        with conn.cursor() as cur:
-            sql = f"""
-                SELECT s.id, s.file_id, s.channel, s.start_frame, s.end_frame,
-                       f.file_path,
-                       (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_label,
-                       (SELECT score FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) as top_score
-                FROM sensos.audio_segments s
-                JOIN sensos.audio_files f ON s.file_id = f.id
-                WHERE s.zeroed IS NOT TRUE
-                  AND f.deleted IS NOT TRUE
-                  AND EXTRACT(WEEK FROM COALESCE(f.capture_timestamp, f.cataloged_at, s.created_at))::int = %s
-                  {segment_clause}
-                  {clause}
-                  AND (SELECT label FROM sensos.birdnet_scores WHERE segment_id = s.id ORDER BY score DESC LIMIT 1) = %s
-                ORDER BY top_score ASC
-                LIMIT 1
-            """
-            cur.execute(sql, [week_num] + segment_params + params + [label])
-            seg = cur.fetchone()
-            if not seg:
-                break
-            seg = dict(seg)
-            picked_segments.append(seg)
-            picked_ids.add(seg["id"])
-    return picked_segments
 
 
 def thin_data_until_disk_usage_ok(
@@ -568,16 +565,10 @@ def thin_data_until_disk_usage_ok(
         # `isolation_level`/`read_only`; use the portable form.
         return conn.transaction()
 
-    def _select_segments_with_stable_snapshot(
-        *, use_simple: bool
-    ) -> List[Dict[str, Any]]:
+    def _select_segments_with_stable_snapshot() -> List[Dict[str, Any]]:
         # Use a stable snapshot so segments whose BirdNET scores arrive mid-selection
         # don't influence/enter the current thinning batch.
         with _repeatable_read_readonly_tx():
-            if use_simple:
-                return pick_segments_for_thinning_simple(
-                    conn, batch_size, segment_ids=active_segment_ids
-                )
             return pick_segments_for_thinning(
                 conn, batch_size, segment_ids=active_segment_ids
             )
@@ -672,12 +663,7 @@ def thin_data_until_disk_usage_ok(
         selection_started = time.monotonic()
         force_emergency_delete = False
         try:
-            segments = _select_segments_with_stable_snapshot(use_simple=False)
-            if not segments:
-                logger.warning(
-                    "Full thinning selector returned 0 segments; trying simple selector."
-                )
-                segments = _select_segments_with_stable_snapshot(use_simple=True)
+            segments = _select_segments_with_stable_snapshot()
         except Exception as e:
             disk_full_exc = getattr(getattr(psycopg, "errors", None), "DiskFull", None)
             query_canceled_exc = getattr(
@@ -692,52 +678,19 @@ def thin_data_until_disk_usage_ok(
                 or (in_failed_tx_exc and isinstance(e, in_failed_tx_exc))
             ):
                 raise
-            if (disk_full_exc and isinstance(e, disk_full_exc)) or (
-                in_failed_tx_exc and isinstance(e, in_failed_tx_exc)
-            ):
-                force_emergency_delete = True
-            logger.error(f"Thinning selection failed (will fall back): {e!r}")
+            force_emergency_delete = True
+            logger.error(
+                f"Thinning selection failed; switching to emergency cleanup: {e!r}"
+            )
             # Query failures can leave the connection in an aborted tx state.
             recovered = _recover_connection_from_selection_error(
                 "Thinning selection failure"
             )
-            logger.warning(
-                "Falling back to simple thinning selection (no label aggregation)."
-            )
-            if recovered:
-                try:
-                    segments = _select_segments_with_stable_snapshot(use_simple=True)
-                except Exception as fallback_e:
-                    _recover_connection_from_selection_error(
-                        "Simple thinning fallback failure"
-                    )
-                    if (
-                        (disk_full_exc and isinstance(fallback_e, disk_full_exc))
-                        or (
-                            query_canceled_exc
-                            and isinstance(fallback_e, query_canceled_exc)
-                        )
-                        or (
-                            in_failed_tx_exc
-                            and isinstance(fallback_e, in_failed_tx_exc)
-                        )
-                    ):
-                        if (
-                            disk_full_exc and isinstance(fallback_e, disk_full_exc)
-                        ) or (
-                            in_failed_tx_exc
-                            and isinstance(fallback_e, in_failed_tx_exc)
-                        ):
-                            force_emergency_delete = True
-                        segments = []
-                    else:
-                        raise
-            else:
-                force_emergency_delete = True
+            if not recovered:
                 logger.warning(
                     "Skipping SQL fallback because connection recovery failed; forcing emergency cleanup path."
                 )
-                segments = []
+            segments = []
             if not segments:
                 if free_mb <= EMERGENCY_TRIGGER_MB or force_emergency_delete:
                     if force_emergency_delete and free_mb > EMERGENCY_TRIGGER_MB:
@@ -948,6 +901,7 @@ def batch_postprocess(conn, segment_ids):
 
 def main_loop(conn):
     cycle = 0
+    indexes_ensured = False
     while True:
         if TESTING and cycle >= MAX_CYCLES:
             logger.info(f"[TESTING] Reached max cycles ({MAX_CYCLES}), exiting loop.")
@@ -955,6 +909,10 @@ def main_loop(conn):
         cycle += 1
         try:
             wait_for_birdnet_table(conn)
+            if not indexes_ensured:
+                if not TESTING:
+                    ensure_thinning_indexes()
+                indexes_ensured = True
             segment_ids = get_unprocessed_segment_ids_batch(conn, SEGMENT_BATCH_LIMIT)
             if segment_ids:
                 batch_postprocess(conn, segment_ids)
