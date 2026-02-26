@@ -26,9 +26,9 @@ SEGMENT_BATCH_LIMIT = int(os.environ.get("SEGMENT_BATCH_LIMIT", "5000"))
 PG_WORK_MEM_MB = int(os.environ.get("PG_WORK_MEM_MB", "64"))
 EMERGENCY_DELETE_MAX_FILES = int(os.environ.get("EMERGENCY_DELETE_MAX_FILES", "25"))
 # Only delete whole audio files when we're truly out of space.
-EMERGENCY_TRIGGER_MB = int(os.environ.get("EMERGENCY_TRIGGER_MB", "200"))
-DISK_START_THRESHOLD_MB = int(os.environ.get("DISK_START_THRESHOLD_MB", "5000"))
-DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "10000"))
+EMERGENCY_TRIGGER_MB = int(os.environ.get("EMERGENCY_TRIGGER_MB", "5000"))
+DISK_START_THRESHOLD_MB = int(os.environ.get("DISK_START_THRESHOLD_MB", "10000"))
+DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "20000"))
 THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
 PG_STATEMENT_TIMEOUT_MS = int(os.environ.get("PG_STATEMENT_TIMEOUT_MS", "15000"))
 PG_LOCK_TIMEOUT_MS = int(os.environ.get("PG_LOCK_TIMEOUT_MS", "2000"))
@@ -521,11 +521,13 @@ def thin_data_until_disk_usage_ok(
     stalled_batches = 0
 
     def _repeatable_read_readonly_tx():
-        isolation_level = getattr(getattr(psycopg, "IsolationLevel", None), "REPEATABLE_READ", None)
-        isolation_level = isolation_level or "repeatable read"
-        return conn.transaction(isolation_level=isolation_level, read_only=True)
+        # Some deployed psycopg builds don't support transaction kwargs such as
+        # `isolation_level`/`read_only`; use the portable form.
+        return conn.transaction()
 
-    def _select_segments_with_stable_snapshot(*, use_simple: bool) -> List[Dict[str, Any]]:
+    def _select_segments_with_stable_snapshot(
+        *, use_simple: bool
+    ) -> List[Dict[str, Any]]:
         # Use a stable snapshot so segments whose BirdNET scores arrive mid-selection
         # don't influence/enter the current thinning batch.
         with _repeatable_read_readonly_tx():
@@ -533,7 +535,39 @@ def thin_data_until_disk_usage_ok(
                 return pick_segments_for_thinning_simple(
                     conn, batch_size, segment_ids=active_segment_ids
                 )
-            return pick_segments_for_thinning(conn, batch_size, segment_ids=active_segment_ids)
+            return pick_segments_for_thinning(
+                conn, batch_size, segment_ids=active_segment_ids
+            )
+
+    def _recover_connection_from_selection_error(context: str) -> bool:
+        try:
+            conn.rollback()
+        except Exception as rollback_error:
+            logger.error(f"{context}: rollback failed: {rollback_error!r}")
+            return False
+
+        tx_state = None
+        tx_enum = getattr(getattr(psycopg, "pq", None), "TransactionStatus", None)
+        try:
+            tx_state = conn.info.transaction_status
+        except Exception as state_error:
+            logger.warning(
+                f"{context}: could not inspect transaction status after rollback: {state_error!r}"
+            )
+            return True
+
+        if tx_enum is not None:
+            if tx_state == getattr(tx_enum, "INERROR", object()):
+                logger.error(
+                    f"{context}: connection remains in failed transaction state after rollback."
+                )
+                return False
+            if tx_state == getattr(tx_enum, "UNKNOWN", object()):
+                logger.error(
+                    f"{context}: connection transaction status is UNKNOWN after rollback."
+                )
+                return False
+        return True
 
     while True:
         free_mb = get_disk_free_mb(AUDIO_BASE)
@@ -555,6 +589,7 @@ def thin_data_until_disk_usage_ok(
         )
         logger.info("Selecting segments for thinning...")
         selection_started = time.monotonic()
+        force_emergency_delete = False
         try:
             segments = _select_segments_with_stable_snapshot(use_simple=False)
             if not segments:
@@ -567,35 +602,67 @@ def thin_data_until_disk_usage_ok(
             query_canceled_exc = getattr(
                 getattr(psycopg, "errors", None), "QueryCanceled", None
             )
+            in_failed_tx_exc = getattr(
+                getattr(psycopg, "errors", None), "InFailedSqlTransaction", None
+            )
             if not (
                 (disk_full_exc and isinstance(e, disk_full_exc))
                 or (query_canceled_exc and isinstance(e, query_canceled_exc))
+                or (in_failed_tx_exc and isinstance(e, in_failed_tx_exc))
             ):
                 raise
+            if (disk_full_exc and isinstance(e, disk_full_exc)) or (
+                in_failed_tx_exc and isinstance(e, in_failed_tx_exc)
+            ):
+                force_emergency_delete = True
             logger.error(f"Thinning selection failed (will fall back): {e!r}")
-            # A canceled statement aborts the current transaction; clear it before fallback.
-            try:
-                conn.rollback()
-            except Exception:
-                pass
+            # Query failures can leave the connection in an aborted tx state.
+            recovered = _recover_connection_from_selection_error(
+                "Thinning selection failure"
+            )
             logger.warning(
                 "Falling back to simple thinning selection (no label aggregation)."
             )
-            try:
-                segments = _select_segments_with_stable_snapshot(use_simple=True)
-            except Exception as fallback_e:
+            if recovered:
                 try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                if (disk_full_exc and isinstance(fallback_e, disk_full_exc)) or (
-                    query_canceled_exc and isinstance(fallback_e, query_canceled_exc)
-                ):
-                    segments = []
-                else:
-                    raise
+                    segments = _select_segments_with_stable_snapshot(use_simple=True)
+                except Exception as fallback_e:
+                    _recover_connection_from_selection_error(
+                        "Simple thinning fallback failure"
+                    )
+                    if (
+                        (disk_full_exc and isinstance(fallback_e, disk_full_exc))
+                        or (
+                            query_canceled_exc
+                            and isinstance(fallback_e, query_canceled_exc)
+                        )
+                        or (
+                            in_failed_tx_exc
+                            and isinstance(fallback_e, in_failed_tx_exc)
+                        )
+                    ):
+                        if (
+                            disk_full_exc and isinstance(fallback_e, disk_full_exc)
+                        ) or (
+                            in_failed_tx_exc
+                            and isinstance(fallback_e, in_failed_tx_exc)
+                        ):
+                            force_emergency_delete = True
+                        segments = []
+                    else:
+                        raise
+            else:
+                force_emergency_delete = True
+                logger.warning(
+                    "Skipping SQL fallback because connection recovery failed; forcing emergency cleanup path."
+                )
+                segments = []
             if not segments:
-                if free_mb <= EMERGENCY_TRIGGER_MB:
+                if free_mb <= EMERGENCY_TRIGGER_MB or force_emergency_delete:
+                    if force_emergency_delete and free_mb > EMERGENCY_TRIGGER_MB:
+                        logger.warning(
+                            "Emergency mode: thinning SQL failed under disk pressure; deleting random audio files."
+                        )
                     logger.warning(
                         "Emergency mode: disk is critically low; deleting random audio files."
                     )
@@ -639,7 +706,11 @@ def thin_data_until_disk_usage_ok(
                 logger.info("Disk free space now sufficient, stopping thinning.")
                 return
             stalled_batches += 1
-            if free_mb_after is not None and free_mb_after <= start_threshold and stalled_batches >= 3:
+            if (
+                free_mb_after is not None
+                and free_mb_after <= start_threshold
+                and stalled_batches >= 3
+            ):
                 logger.warning(
                     "Thinning is stalled and disk is still under threshold; deleting whole audio files to recover space."
                 )
@@ -662,14 +733,19 @@ def thin_data_until_disk_usage_ok(
             selected_ids = [s.get("id") for s in segments if "id" in s]
             selected_ids = [i for i in selected_ids if i is not None]
             preview = selected_ids[:20]
-            if last_selected_ids is not None and tuple(selected_ids) == last_selected_ids:
+            if (
+                last_selected_ids is not None
+                and tuple(selected_ids) == last_selected_ids
+            ):
                 logger.warning(
                     f"Thinning selection returned the same IDs as last batch ({len(selected_ids)} ids)."
                 )
             last_selected_ids = tuple(selected_ids)
             files_preview = []
             try:
-                files_preview = sorted({s.get("file_path") for s in segments if s.get("file_path")})[:10]
+                files_preview = sorted(
+                    {s.get("file_path") for s in segments if s.get("file_path")}
+                )[:10]
             except Exception:
                 files_preview = []
             logger.info(
@@ -689,7 +765,9 @@ def thin_data_until_disk_usage_ok(
             try:
                 delete_fully_zeroed_files(conn)
             except Exception as e:
-                logger.warning(f"Could not delete fully-zeroed files after thinning: {e!r}")
+                logger.warning(
+                    f"Could not delete fully-zeroed files after thinning: {e!r}"
+                )
             if THIN_LOG_IDS:
                 try:
                     with conn.cursor() as cur:
