@@ -180,7 +180,8 @@ def check_catalog(cur):
             cur.connection.rollback()
 
     cur.execute("SELECT file_path FROM sensos.audio_files WHERE deleted = FALSE")
-    for (db_path,) in cur:
+    db_paths = [row[0] for row in cur.fetchall()]
+    for db_path in db_paths:
         if db_path not in seen_paths:
             cur.execute(
                 "UPDATE sensos.audio_files SET deleted = TRUE, deleted_at = NOW() WHERE file_path = %s",

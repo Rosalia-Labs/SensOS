@@ -32,6 +32,8 @@ DISK_STOP_THRESHOLD_MB = int(os.environ.get("DISK_STOP_THRESHOLD_MB", "20000"))
 THIN_BATCH_SIZE = int(os.environ.get("THIN_BATCH_SIZE", "1000"))
 PG_STATEMENT_TIMEOUT_MS = int(os.environ.get("PG_STATEMENT_TIMEOUT_MS", "0"))
 PG_LOCK_TIMEOUT_MS = int(os.environ.get("PG_LOCK_TIMEOUT_MS", "2000"))
+INDEX_SETUP_LOCK_TIMEOUT_MS = int(os.environ.get("INDEX_SETUP_LOCK_TIMEOUT_MS", "500"))
+INDEX_SETUP_RETRY_SEC = int(os.environ.get("INDEX_SETUP_RETRY_SEC", "60"))
 THIN_LOG_IDS = os.environ.get("THIN_LOG_IDS", "0").strip().lower() in (
     "1",
     "true",
@@ -149,7 +151,7 @@ def flush_pending_deleted_audio_file_marks(
         return 0
 
 
-def ensure_thinning_indexes() -> None:
+def ensure_thinning_indexes() -> bool:
     index_statements = [
         (
             "audio_segments_active_file_id_idx",
@@ -176,21 +178,40 @@ def ensure_thinning_indexes() -> None:
         ),
     ]
 
+    target_index_names = [name for name, _ in index_statements]
     logger.info("Ensuring thinning indexes exist...")
     try:
         with connect_with_retry(DB_PARAMS) as index_conn:
             index_conn.autocommit = True
             with index_conn.cursor() as cur:
                 cur.execute("SET statement_timeout = '0'")
-                cur.execute(f"SET lock_timeout = '{PG_LOCK_TIMEOUT_MS}ms'")
+                cur.execute(f"SET lock_timeout = '{INDEX_SETUP_LOCK_TIMEOUT_MS}ms'")
                 for index_name, statement in index_statements:
                     try:
                         cur.execute(statement)
                         logger.info(f"Ensured index: {index_name}")
                     except Exception as e:
                         logger.warning(f"Could not ensure index {index_name}: {e!r}")
+                cur.execute(
+                    """
+                    SELECT indexname
+                    FROM pg_indexes
+                    WHERE schemaname = 'sensos'
+                      AND indexname = ANY(%s)
+                    """,
+                    (target_index_names,),
+                )
+                existing = {row["indexname"] for row in cur.fetchall()}
+                missing = [name for name in target_index_names if name not in existing]
+                if missing:
+                    logger.warning(
+                        f"Thinning indexes still missing (will retry): {missing}"
+                    )
+                    return False
+                return True
     except Exception as e:
         logger.warning(f"Could not run thinning index setup: {e!r}")
+        return False
 
 
 def zero_segments_by_file(
@@ -902,6 +923,7 @@ def batch_postprocess(conn, segment_ids):
 def main_loop(conn):
     cycle = 0
     indexes_ensured = False
+    next_index_attempt_at = 0.0
     while True:
         if TESTING and cycle >= MAX_CYCLES:
             logger.info(f"[TESTING] Reached max cycles ({MAX_CYCLES}), exiting loop.")
@@ -910,9 +932,14 @@ def main_loop(conn):
         try:
             wait_for_birdnet_table(conn)
             if not indexes_ensured:
-                if not TESTING:
-                    ensure_thinning_indexes()
-                indexes_ensured = True
+                now = time.monotonic()
+                if not TESTING and now >= next_index_attempt_at:
+                    indexes_ensured = ensure_thinning_indexes()
+                    if not indexes_ensured:
+                        next_index_attempt_at = now + INDEX_SETUP_RETRY_SEC
+                        logger.warning(
+                            f"Will retry thinning index setup in {INDEX_SETUP_RETRY_SEC}s."
+                        )
             segment_ids = get_unprocessed_segment_ids_batch(conn, SEGMENT_BATCH_LIMIT)
             if segment_ids:
                 batch_postprocess(conn, segment_ids)
