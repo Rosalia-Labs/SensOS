@@ -557,6 +557,11 @@ def thin_data_until_disk_usage_ok(
         selection_started = time.monotonic()
         try:
             segments = _select_segments_with_stable_snapshot(use_simple=False)
+            if not segments:
+                logger.warning(
+                    "Full thinning selector returned 0 segments; trying simple selector."
+                )
+                segments = _select_segments_with_stable_snapshot(use_simple=True)
         except Exception as e:
             disk_full_exc = getattr(getattr(psycopg, "errors", None), "DiskFull", None)
             query_canceled_exc = getattr(
@@ -568,12 +573,21 @@ def thin_data_until_disk_usage_ok(
             ):
                 raise
             logger.error(f"Thinning selection failed (will fall back): {e!r}")
+            # A canceled statement aborts the current transaction; clear it before fallback.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             logger.warning(
                 "Falling back to simple thinning selection (no label aggregation)."
             )
             try:
                 segments = _select_segments_with_stable_snapshot(use_simple=True)
             except Exception as fallback_e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 if (disk_full_exc and isinstance(fallback_e, disk_full_exc)) or (
                     query_canceled_exc and isinstance(fallback_e, query_canceled_exc)
                 ):
