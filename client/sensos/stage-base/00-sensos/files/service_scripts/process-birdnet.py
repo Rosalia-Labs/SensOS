@@ -8,6 +8,7 @@ import sys
 import time
 import shutil
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -17,7 +18,7 @@ import soundfile as sf
 import tflite_runtime.interpreter as tflite
 
 sys.path.append("/sensos/lib")
-from utils import create_dir, setup_logging  # noqa: E402
+from utils import create_dir, read_kv_config, setup_logging  # noqa: E402
 
 INPUT_ROOT = Path("/sensos/data/audio_recordings/queued")
 OUTPUT_ROOT = Path("/sensos/data/audio_recordings/processed")
@@ -26,6 +27,7 @@ DB_PATH = STATE_ROOT / "birdnet.db"
 MODEL_ROOT = Path("/sensos/birdnet/BirdNET_v2.4_tflite")
 MODEL_PATH = MODEL_ROOT / "audio-model.tflite"
 LABELS_PATH = MODEL_ROOT / "labels" / "en_us.txt"
+LOCATION_CONF = Path("/sensos/etc/location.conf")
 
 WINDOW_SEC = 3
 STRIDE_SEC = 1
@@ -198,9 +200,48 @@ def sanitize_label(label: str) -> str:
     return slug or "unknown"
 
 
-def source_output_dir(source_path: Path) -> Path:
+def label_output_dir(source_path: Path, label: str) -> Path:
     rel = source_path.relative_to(INPUT_ROOT)
-    return OUTPUT_ROOT / rel.parent / source_path.stem
+    return OUTPUT_ROOT / rel.parent / sanitize_label(label)
+
+
+def format_coord(value: str | None, positive: str, negative: str) -> str:
+    if value is None:
+        return "na"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "na"
+    direction = positive if numeric >= 0 else negative
+    scaled = int(round(abs(numeric) * 10000))
+    return f"{direction}{scaled:07d}"
+
+
+def location_token() -> str:
+    config = read_kv_config(str(LOCATION_CONF))
+    lat = format_coord(config.get("LATITUDE"), "N", "S")
+    lon = format_coord(config.get("LONGITUDE"), "E", "W")
+    return f"{lat}_{lon}"
+
+
+def source_start_datetime(source_path: Path) -> datetime | None:
+    match = re.search(r"(\d{8}T\d{6})", source_path.stem)
+    if match is None:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+
+
+def filename_time_token(source_path: Path, run: LabelRun, sample_rate: int) -> str:
+    start_dt = source_start_datetime(source_path)
+    if start_dt is None:
+        return source_path.stem
+    run_dt = start_dt + timedelta(seconds=(run.start_frame / sample_rate))
+    return run_dt.strftime("%Y%m%dT%H%M%SZ")
 
 
 def to_mono(audio: np.ndarray) -> np.ndarray:
@@ -263,16 +304,16 @@ def build_runs(detections: List[Detection]) -> List[LabelRun]:
 
 
 def write_flac_runs(source_path: Path, audio: np.ndarray, sample_rate: int, runs: List[LabelRun]) -> List[tuple[LabelRun, Path]]:
-    out_dir = source_output_dir(source_path)
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    create_dir(out_dir, "sensos-admin", "sensos-data", 0o2775)
-
     written = []
+    loc_token = location_token()
     for run in runs:
+        out_dir = label_output_dir(source_path, run.label)
+        create_dir(out_dir, "sensos-admin", "sensos-data", 0o2775)
         start_sec = run.start_frame / sample_rate
         end_sec = run.end_frame / sample_rate
         filename = (
+            f"{filename_time_token(source_path, run, sample_rate)}_"
+            f"{loc_token}_"
             f"{run.run_index:03d}_"
             f"{sanitize_label(run.label)}_"
             f"{start_sec:09.3f}-{end_sec:09.3f}.flac"
@@ -394,7 +435,7 @@ def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path
         (
             now_iso(),
             "done",
-            source_output_dir(source_path).relative_to(INPUT_ROOT.parent).as_posix(),
+            source_path.relative_to(INPUT_ROOT).parent.as_posix(),
             source_key,
         ),
     )
