@@ -224,6 +224,10 @@ def sanitize_label(label: str) -> str:
     return slug or "unknown"
 
 
+def is_human_label(label: str) -> bool:
+    return "human" in label.lower()
+
+
 def label_output_dir(source_path: Path, label: str) -> Path:
     rel = source_path.relative_to(INPUT_ROOT)
     return OUTPUT_ROOT / rel.parent / sanitize_label(label)
@@ -331,6 +335,8 @@ def write_flac_runs(source_path: Path, audio: np.ndarray, sample_rate: int, runs
     written = []
     loc_token = location_token()
     for run in runs:
+        if is_human_label(run.label):
+            continue
         out_dir = label_output_dir(source_path, run.label)
         create_dir(out_dir, "sensos-admin", "sensos-data", 0o2775)
         start_sec = run.start_frame / sample_rate
@@ -473,10 +479,10 @@ def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path
     )
     conn.commit()
 
-    source_path.unlink()
+    delete_bad_source(source_path)
     conn.execute(
-        "UPDATE processed_files SET deleted_source = 1 WHERE source_path = ?",
-        (source_key,),
+        "UPDATE processed_files SET deleted_source = ? WHERE source_path = ?",
+        (0 if source_path.exists() else 1, source_key),
     )
     conn.commit()
 
