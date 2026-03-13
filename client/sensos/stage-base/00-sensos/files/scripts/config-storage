@@ -9,6 +9,7 @@
 
 script_name=$(basename "$0")
 DATA_MOUNT="/sensos/data"
+LOCATION_FILE="/sensos/etc/location.conf"
 
 source /sensos/lib/parse-switches.sh
 register_option --device device "Block device to format/mount" ""
@@ -329,7 +330,18 @@ fi
 
 # Write identifying info onto the mounted storage
 echo "Creating device info on the mounted storage..."
-sudo /sensos/service_scripts/cache-sys-info.sh
+sudo /sensos/service_scripts/cache-sys-info.sh \
+    --include "/sensos/etc/network.conf /sensos/etc/location.conf /sensos/etc/arecord.conf /sensos/etc/i2c-sensors.conf"
+
+if [[ ! -f "$LOCATION_FILE" ]] ||
+    ! grep -q '^LATITUDE=' "$LOCATION_FILE" ||
+    ! grep -q '^LONGITUDE=' "$LOCATION_FILE"; then
+    echo
+    echo "WARNING: device location is not configured."
+    echo "The storage metadata was written, but it does not include a valid location."
+    echo "Run: set-location --latitude <lat> --longitude <lon>"
+    echo
+fi
 
 # Make sure proper permissions
 sudo chown -R sensos-admin:sensos-data "$DATA_MOUNT"
