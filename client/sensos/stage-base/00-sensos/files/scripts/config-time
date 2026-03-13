@@ -6,6 +6,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 CHRONY_CONF = Path("/etc/chrony/chrony.conf")
 SENSOS_CHRONY_CONF = Path("/sensos/etc/chrony.conf")
@@ -22,19 +23,15 @@ def timedatectl_value(key: str, default: str = "") -> str:
     return proc.stdout.strip() or default
 
 
-def current_timezone() -> str:
-    return timedatectl_value("Timezone", "UTC")
-
-
 def current_local_time() -> datetime:
-    proc = run(["date", "+%Y-%m-%d %H:%M:%S"])
+    proc = run(["date", "-u", "+%Y-%m-%d %H:%M:%S"])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "failed to read current time")
     return datetime.strptime(proc.stdout.strip(), "%Y-%m-%d %H:%M:%S")
 
 
 def current_time_display() -> str:
-    proc = run(["date", "+%A, %B %d, %Y at %I:%M:%S %p %Z"])
+    proc = run(["date", "-u", "+%A, %B %d, %Y at %I:%M:%S %p UTC"])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "failed to format current time")
     return proc.stdout.strip()
@@ -143,16 +140,16 @@ def choose_timezone(default_tz: str) -> str:
         print("Invalid selection. Try again.")
 
 
-def set_timezone(tz: str) -> None:
-    proc = run(["sudo", "timedatectl", "set-timezone", tz])
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or f"failed to set timezone to {tz}")
-
-
 def set_local_time(dt: datetime) -> None:
     proc = run(["sudo", "timedatectl", "set-time", dt.strftime("%Y-%m-%d %H:%M:%S")])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or "failed to set time")
+
+
+def ensure_utc_timezone() -> None:
+    proc = run(["sudo", "timedatectl", "set-timezone", "UTC"])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "failed to set timezone to UTC")
 
 
 def restart_chrony() -> None:
@@ -162,7 +159,7 @@ def restart_chrony() -> None:
 def main() -> None:
     print("Current device time:")
     print(f"  {current_time_display()}")
-    print(f"  Timezone: {current_timezone()}")
+    print("  Device timezone: UTC")
     print("Time sync status:")
     for line in sync_status_lines():
         print(line)
@@ -184,28 +181,33 @@ def main() -> None:
         sys.exit(1)
 
     print()
-    print("Enter corrected local time in separate pieces.")
+    print("Enter the corrected date/time in the timezone where you are standing.")
+    print("The device itself will remain configured for UTC.")
     print("Leave any field blank to keep the current value.")
     print()
 
-    tz = choose_timezone(current_timezone())
-    year = int(ask("Year", str(local_dt.year)))
-    month = int(ask("Month", f"{local_dt.month}"))
-    day = int(ask("Day", f"{local_dt.day}"))
-    hour = int(ask("Hour (24-hour)", f"{local_dt.hour}"))
-    minute = int(ask("Minute", f"{local_dt.minute}"))
-    second = int(ask("Second", f"{local_dt.second}"))
+    entry_tz = choose_timezone("UTC")
+    utc_now = local_dt.replace(tzinfo=ZoneInfo("UTC"))
+    entry_now = utc_now.astimezone(ZoneInfo(entry_tz))
+    year = int(ask("Year", str(entry_now.year)))
+    month = int(ask("Month", f"{entry_now.month}"))
+    day = int(ask("Day", f"{entry_now.day}"))
+    hour = int(ask("Hour (24-hour)", f"{entry_now.hour}"))
+    minute = int(ask("Minute", f"{entry_now.minute}"))
+    second = int(ask("Second", f"{entry_now.second}"))
 
     try:
-        new_dt = datetime(year, month, day, hour, minute, second)
+        entered_dt = datetime(year, month, day, hour, minute, second, tzinfo=ZoneInfo(entry_tz))
+        new_dt = entered_dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
     except ValueError as e:
         print(f"Invalid date/time: {e}", file=sys.stderr)
         sys.exit(1)
 
     print()
     print("New settings:")
-    print(f"  Timezone: {tz}")
-    print(f"  Local time: {new_dt.strftime('%A, %B %d, %Y at %I:%M:%S %p')}")
+    print(f"  Entered timezone: {entry_tz}")
+    print(f"  Entered local time: {entered_dt.strftime('%A, %B %d, %Y at %I:%M:%S %p %Z')}")
+    print(f"  Device UTC time to set: {new_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}")
     print()
 
     if not ask_yes_no("Apply these settings?", default_yes=True):
@@ -213,7 +215,7 @@ def main() -> None:
         return
 
     try:
-        set_timezone(tz)
+        ensure_utc_timezone()
         set_local_time(new_dt)
         restart_chrony()
     except Exception as e:
@@ -223,7 +225,7 @@ def main() -> None:
     print()
     print("Updated device time:")
     print(f"  {current_time_display()}")
-    print(f"  Timezone: {current_timezone()}")
+    print("  Device timezone: UTC")
     print("Time sync status:")
     for line in sync_status_lines():
         print(line)
