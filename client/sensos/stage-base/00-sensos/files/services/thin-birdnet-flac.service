@@ -1,0 +1,19 @@
+[Unit]
+Description=Thin BirdNET FLAC directories when disk space is low
+After=multi-user.target ensure-sensos-dir.service process-birdnet.service
+Requires=ensure-sensos-dir.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sensos-runner
+ExecStart=/sensos/python/venv/bin/python /usr/local/bin/thin-birdnet-flac.py
+WorkingDirectory=/sensos/data
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

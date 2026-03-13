@@ -35,7 +35,8 @@ SAMPLE_RATE = 48000
 WINDOW_FRAMES = WINDOW_SEC * SAMPLE_RATE
 STRIDE_FRAMES = STRIDE_SEC * SAMPLE_RATE
 MIN_FILE_AGE_SEC = int(os.environ.get("BIRDNET_MIN_FILE_AGE_SEC", "15"))
-IDLE_SLEEP_SEC = int(os.environ.get("BIRDNET_IDLE_SLEEP_SEC", "10"))
+FILE_STABLE_SEC = int(os.environ.get("BIRDNET_FILE_STABLE_SEC", "30"))
+IDLE_SLEEP_SEC = int(os.environ.get("BIRDNET_IDLE_SLEEP_SEC", "60"))
 ERROR_SLEEP_SEC = int(os.environ.get("BIRDNET_ERROR_SLEEP_SEC", "10"))
 
 
@@ -189,6 +190,29 @@ def find_next_wav() -> Path | None:
         if age >= MIN_FILE_AGE_SEC:
             candidates.append(path)
     return min(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+
+
+def is_file_stable(path: Path) -> bool:
+    try:
+        first = path.stat()
+    except FileNotFoundError:
+        return False
+
+    if (time.time() - first.st_mtime) < MIN_FILE_AGE_SEC:
+        return False
+
+    time.sleep(FILE_STABLE_SEC)
+
+    try:
+        second = path.stat()
+    except FileNotFoundError:
+        return False
+
+    return (
+        first.st_size == second.st_size
+        and first.st_mtime == second.st_mtime
+        and (time.time() - second.st_mtime) >= MIN_FILE_AGE_SEC
+    )
 
 
 def relative_source(path: Path) -> str:
@@ -349,6 +373,14 @@ def record_failure(conn: sqlite3.Connection, source_key: str, info: sf.SoundFile
     conn.commit()
 
 
+def delete_bad_source(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+        print(f"🗑️ Deleted unreadable source file {path}")
+    except Exception as unlink_error:
+        print(f"⚠️ Failed to delete unreadable source file {path}: {unlink_error}", file=sys.stderr)
+
+
 def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path) -> None:
     source_key = relative_source(source_path)
     info = sf.info(source_path)
@@ -474,6 +506,11 @@ def main() -> None:
                 time.sleep(IDLE_SLEEP_SEC)
                 continue
 
+            if not is_file_stable(next_wav):
+                print(f"⏳ Skipping active or recently changed file {next_wav}")
+                time.sleep(IDLE_SLEEP_SEC)
+                continue
+
             print(f"🎧 Processing {next_wav}")
             process_wav(model, conn, next_wav)
             print(f"✅ Finished {next_wav}")
@@ -483,6 +520,7 @@ def main() -> None:
                     record_failure(conn, relative_source(next_wav), sf.info(next_wav), str(e))
                 except Exception:
                     pass
+                delete_bad_source(next_wav)
             print(f"❌ BirdNET processing failure: {e}", file=sys.stderr)
             time.sleep(ERROR_SLEEP_SEC)
 
