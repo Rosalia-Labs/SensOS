@@ -15,21 +15,6 @@ services:
       timeout: 5s
       retries: 5
 
-  sensos-client-catalog-audio:
-    image: sensos-client-catalog-audio
-    container_name: sensos-client-catalog-audio
-    restart: always
-    depends_on:
-      - sensos-client-database
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-    volumes:
-      - /sensos/data/audio_recordings:/audio_recordings
-
   sensos-client-birdnet:
     image: sensos-client-birdnet
     container_name: sensos-client-birdnet
