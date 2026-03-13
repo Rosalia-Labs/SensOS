@@ -9,7 +9,7 @@ set -e
 adduser --system --shell /bin/bash --gecos "Sensos Runner" sensos-runner
 
 # Add user to all required groups
-for grp in sudo sensos-data dialout plugdev netdev docker audio gpio i2c spi; do
+for grp in sudo sensos-data dialout plugdev netdev audio gpio i2c spi; do
     adduser sensos-runner "$grp"
 done
 

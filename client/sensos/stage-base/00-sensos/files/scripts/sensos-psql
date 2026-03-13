@@ -1,5 +1,0 @@
-#!/bin/bash
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Rosalia Labs LLC
-
-exec docker exec -ti sensos-client-database psql -U postgres
