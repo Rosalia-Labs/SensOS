@@ -12,6 +12,7 @@ libssl-dev
 libusb-1.0-0
 libftdi1-2
 lsof
+libsndfile1
 nethogs
 nftables
 openresolv
