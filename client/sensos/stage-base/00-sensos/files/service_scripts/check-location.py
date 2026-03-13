@@ -7,9 +7,8 @@ import time
 import json
 import math
 import requests
-import configparser
 import subprocess
-from pathlib import Path
+import sys
 
 sys.path.insert(0, "/sensos/lib")
 from utils import *
@@ -37,26 +36,28 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 def load_location():
-    if not os.path.exists(CONFIG_PATH):
+    config = read_kv_config(CONFIG_PATH)
+    try:
+        lat = config.get("LATITUDE")
+        lon = config.get("LONGITUDE")
+        if lat is None or lon is None:
+            return None, None
+        return float(lat), float(lon)
+    except (TypeError, ValueError):
         return None, None
-    config = configparser.ConfigParser()
-    config.read(CONFIG_PATH)
-    if "location" in config:
-        return float(config["location"].get("latitude", 0)), float(
-            config["location"].get("longitude", 0)
-        )
-    return None, None
 
 
 def write_location(lat, lon):
-    config = configparser.ConfigParser()
-    config["location"] = {"latitude": f"{lat:.6f}", "longitude": f"{lon:.6f}"}
-    Path(CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        config.write(f)
+    create_dir("/sensos/etc", owner="sensos-admin", mode=0o755)
+    write_file(
+        CONFIG_PATH,
+        f"LATITUDE={lat:.6f}\nLONGITUDE={lon:.6f}\n",
+        mode=0o644,
+        user="sensos-admin",
+    )
 
 
-def post_location(lat, lon, config_server, port):
+def post_location(lat, lon, config_server, port, wg_ip):
     url = f"http://{config_server}:{port}{SET_PEER_URL}"
     password = read_api_password()
     if not password:
@@ -65,7 +66,7 @@ def post_location(lat, lon, config_server, port):
     auth_header = {
         "Authorization": f"Basic {requests.auth._basic_auth_str('', password)}"
     }
-    data = {"latitude": lat, "longitude": lon}
+    data = {"wg_ip": wg_ip, "latitude": lat, "longitude": lon}
     try:
         r = requests.post(url, json=data, headers=auth_header)
         print(f"POST to {url} status: {r.status_code}")
@@ -106,8 +107,15 @@ def collect_gps_average(seconds):
 
 
 def main():
-    config_server = os.getenv("SENSOS_CONFIG_SERVER", DEFAULT_SERVER)
-    port = int(os.getenv("SENSOS_CONFIG_PORT", DEFAULT_PORT))
+    network_conf = read_network_conf()
+    config_server = os.getenv(
+        "SENSOS_CONFIG_SERVER", network_conf.get("SERVER_WG_IP", DEFAULT_SERVER)
+    )
+    port = int(os.getenv("SENSOS_CONFIG_PORT", network_conf.get("SERVER_PORT", DEFAULT_PORT)))
+    wg_ip = network_conf.get("CLIENT_WG_IP")
+    if not wg_ip:
+        print("CLIENT_WG_IP missing from /sensos/etc/network.conf", file=sys.stderr)
+        return
 
     while True:
         existing_lat, existing_lon = load_location()
@@ -144,7 +152,7 @@ def main():
 
         print(f"Saving new location: {avg_lat:.6f}, {avg_lon:.6f}")
         write_location(avg_lat, avg_lon)
-        post_location(avg_lat, avg_lon, config_server, port)
+        post_location(avg_lat, avg_lon, config_server, port, wg_ip)
         time.sleep(SLEEP_INTERVAL)
 
 

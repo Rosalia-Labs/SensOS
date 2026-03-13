@@ -10,13 +10,7 @@ LOG_FILE="$log_dir/access_point.log"
 
 mkdir -p "$log_dir"
 
-source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
-
-declare -A default_vars
-load_defaults "$script_name" default_vars
-
-get_default() { local v="$1" f="${2:-}"; echo "${default_vars[$v]:-$f}"; }
 
 network_conf="/sensos/etc/network.conf"
 if [[ ! -f "$network_conf" ]]; then
@@ -43,11 +37,11 @@ IFS='.' read -r _ _ oct3 oct4 <<<"$CLIENT_WG_IP"
 default_ssid="${NETWORK_NAME}-${oct3}-${oct4}"
 
 # ---- CLI options ----
-register_option --ssid ssid "WiFi SSID" "$(get_default ssid "$default_ssid")"
-register_option --password password "WiFi password (8–63 chars)" "$(get_default password)"
-register_option --power-save power_save "Enable WiFi power management" "$(get_default power_save false)"
-register_option --interface interface "Wireless interface to use" "$(get_default interface wlan0)"
-register_option --channel channel "2.4 GHz channel (1/6/11 or empty for auto)" "$(get_default channel 6)"
+register_option --ssid ssid "WiFi SSID" "$default_ssid"
+register_option --password password "WiFi password (8–63 chars)" ""
+register_option --power-save power_save "Enable WiFi power management" "false"
+register_option --interface interface "Wireless interface to use" "wlan0"
+register_option --channel channel "2.4 GHz channel (1/6/11 or empty for auto)" "6"
 parse_switches "$script_name" "$@"
 
 ssid="${ssid:-$default_ssid}"

@@ -63,10 +63,13 @@ def main():
     conf = read_network_conf()
     server_ip = args.config_server or conf.get("SERVER_WG_IP")
     port = args.port or conf.get("SERVER_PORT")
-    wg_ip = conf.get("WG_IP") or server_ip
+    wg_ip = conf.get("CLIENT_WG_IP")
 
     if not server_ip:
         print("❌ Missing config server IP.", file=sys.stderr)
+        return
+    if not wg_ip:
+        print("❌ Missing CLIENT_WG_IP in /sensos/etc/network.conf.", file=sys.stderr)
         return
 
     api_password = read_api_password()

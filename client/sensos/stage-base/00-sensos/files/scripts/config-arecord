@@ -7,27 +7,51 @@ set -e
 
 script_name=$(basename "$0")
 
-source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
 
-declare -A default_vars
-load_defaults "$script_name" default_vars
+warn_clock_and_location() {
+    local clock_ok=0
+    local location_ok=0
+    local location_file="/sensos/etc/location.conf"
 
-get_default() {
-    local varname="$1"
-    local fallback="$2"
-    echo "${default_vars[$varname]:-$fallback}"
+    if command -v timedatectl >/dev/null 2>&1; then
+        if timedatectl show -p SystemClockSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
+            clock_ok=1
+        elif timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
+            clock_ok=1
+        fi
+    fi
+
+    if [[ -f "$location_file" ]] &&
+        grep -q '^LATITUDE=' "$location_file" &&
+        grep -q '^LONGITUDE=' "$location_file"; then
+        location_ok=1
+    fi
+
+    if [[ "$clock_ok" -eq 1 && "$location_ok" -eq 1 ]]; then
+        return
+    fi
+
+    echo
+    echo "WARNING: device metadata is incomplete."
+    [[ "$clock_ok" -eq 0 ]] && echo "  - System clock does not appear to be synchronized."
+    [[ "$location_ok" -eq 0 ]] && echo "  - Device location has not been set in /sensos/etc/location.conf."
+    echo "Recordings may have incorrect timestamps or missing location context."
+    echo "Recommended actions:"
+    echo "  - Verify time sync before field deployment."
+    echo "  - Run set-location --latitude <lat> --longitude <lon>."
+    echo
 }
 
-register_option --device device "Recording device string (e.g., plughw:1,0)" "$(get_default device)"
-register_option --use-plughw use_plughw "Use plughw instead of hw" "$(get_default use_plughw true)"
-register_option --channels channels "Channel count (e.g., 2)" "$(get_default channels)"
-register_option --max-time max_time "Max duration per file" "$(get_default max_time 900)"
-register_option --format format "Recording format (e.g., S16_LE)" "$(get_default format)"
-register_option --rate rate "Sample rate in Hz" "$(get_default rate 48000)"
-register_option --base-dir base_dir "Base directory for sound files" "$(get_default base_dir /sensos/data/audio_recordings/)"
-register_option --enable-service enable_service "Enable systemd service" "$(get_default enable_service true)"
-register_option --start-service start_service "Start systemd service" "$(get_default start_service false)"
+register_option --device device "Recording device string (e.g., plughw:1,0)" ""
+register_option --use-plughw use_plughw "Use plughw instead of hw" "true"
+register_option --channels channels "Channel count (e.g., 2)" ""
+register_option --max-time max_time "Max duration per file" "900"
+register_option --format format "Recording format (e.g., S16_LE)" ""
+register_option --rate rate "Sample rate in Hz" "48000"
+register_option --base-dir base_dir "Base directory for sound files" "/sensos/data/audio_recordings/"
+register_option --enable-service enable_service "Enable systemd service" "true"
+register_option --start-service start_service "Start systemd service" "false"
 
 # Parse args
 parse_switches "$script_name" "$@"
@@ -267,3 +291,5 @@ if [[ "$start_service" == "true" ]]; then
     echo "Starting sensos-arecord.service..."
     sudo systemctl start sensos-arecord.service
 fi
+
+warn_clock_and_location

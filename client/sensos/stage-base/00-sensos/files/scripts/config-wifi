@@ -50,27 +50,17 @@ if ! command -v nmcli >/dev/null 2>&1; then
   exit 1
 fi
 
-source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
 
-declare -A default_vars
-load_defaults "$script_name" default_vars
-
-get_default() {
-  local varname="$1"
-  local fallback="${2-}"
-  echo "${default_vars[$varname]:-$fallback}"
-}
-
 # ----------------------- options -----------------------
-register_option --ssid ssid "WiFi SSID (required)" "$(get_default ssid)"
-register_option --password password "WiFi password (required for WPA-PSK; omit for open)" "$(get_default password)"
-register_option --iface iface "WiFi interface" "$(get_default iface wlan0)"
-register_option --start start_now "Immediately bring Wi-Fi online after config" "$(get_default start_now false)"
-register_option --hidden hidden "Mark SSID as hidden (true/false)" "$(get_default hidden false)"
+register_option --ssid ssid "WiFi SSID (required)" ""
+register_option --password password "WiFi password (required for WPA-PSK; omit for open)" ""
+register_option --iface iface "WiFi interface" "wlan0"
+register_option --start start_now "Immediately bring Wi-Fi online after config" "false"
+register_option --hidden hidden "Mark SSID as hidden (true/false)" "false"
 # Optional bandwidth limits (kbit)
-register_option --limit-up-kbit   limit_up_kbit   "Egress cap in kbit (optional)"   "$(get_default limit_up_kbit "")"
-register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" "$(get_default limit_down_kbit "")"
+register_option --limit-up-kbit   limit_up_kbit   "Egress cap in kbit (optional)"   ""
+register_option --limit-down-kbit limit_down_kbit "Ingress cap in kbit (optional)" ""
 
 # Guard parse-switches from nounset issues inside its help path
 set +u

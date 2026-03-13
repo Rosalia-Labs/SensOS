@@ -6,33 +6,57 @@ set -e
 
 script_name=$(basename "$0")
 
-source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
+
+warn_clock_and_location() {
+    local clock_ok=0
+    local location_ok=0
+    local location_file="/sensos/etc/location.conf"
+
+    if command -v timedatectl >/dev/null 2>&1; then
+        if timedatectl show -p SystemClockSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
+            clock_ok=1
+        elif timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -qi '^yes$'; then
+            clock_ok=1
+        fi
+    fi
+
+    if [[ -f "$location_file" ]] &&
+        grep -q '^LATITUDE=' "$location_file" &&
+        grep -q '^LONGITUDE=' "$location_file"; then
+        location_ok=1
+    fi
+
+    if [[ "$clock_ok" -eq 1 && "$location_ok" -eq 1 ]]; then
+        return
+    fi
+
+    echo
+    echo "WARNING: device metadata is incomplete."
+    [[ "$clock_ok" -eq 0 ]] && echo "  - System clock does not appear to be synchronized."
+    [[ "$location_ok" -eq 0 ]] && echo "  - Device location has not been set in /sensos/etc/location.conf."
+    echo "Sensor readings may have incorrect timestamps or missing location context."
+    echo "Recommended actions:"
+    echo "  - Verify time sync before field deployment."
+    echo "  - Run set-location --latitude <lat> --longitude <lon>."
+    echo
+}
 
 config_path="/sensos/etc/i2c-sensors.conf"
 mkdir -p /sensos/etc
 
-declare -A default_vars
-load_defaults "/sensos/etc/defaults.conf" "$script_name"
-
-get_default() {
-    local varname="$1"
-    local fallback="$2"
-    echo "${default_vars[$varname]:-$fallback}"
-}
-
-register_option --interval interval "Default polling interval (seconds)" "$(get_default INTERVAL_SEC 60)"
+register_option --interval interval "Default polling interval (seconds)" "60"
 
 # Optional per-sensor overrides (auto-enables them if set)
-register_option --bme280-0x76-interval bme280_0x76_interval "Interval for BME280 at 0x76 (seconds)" "$(get_default BME280_0x76_INTERVAL_SEC "")"
-register_option --bme280-0x77-interval bme280_0x77_interval "Interval for BME280 at 0x77 (seconds)" "$(get_default BME280_0x77_INTERVAL_SEC "")"
-register_option --scd30-interval scd30_interval "Interval for SCD30 (seconds)" "$(get_default SCD30_INTERVAL_SEC "")"
-register_option --scd4x-interval scd4x_interval "Interval for SCD4X (seconds)" "$(get_default SCD4X_INTERVAL_SEC "")"
-register_option --ads1015-interval ads1015_interval "Interval for ADS1015 (seconds)" "$(get_default ADS1015_INTERVAL_SEC "")"
-register_option --i2c-gps-interval i2c_gps_interval "Interval for I2C GPS (seconds)" "$(get_default I2C_GPS_INTERVAL_SEC "")"
+register_option --bme280-0x76-interval bme280_0x76_interval "Interval for BME280 at 0x76 (seconds)" ""
+register_option --bme280-0x77-interval bme280_0x77_interval "Interval for BME280 at 0x77 (seconds)" ""
+register_option --scd30-interval scd30_interval "Interval for SCD30 (seconds)" ""
+register_option --scd4x-interval scd4x_interval "Interval for SCD4X (seconds)" ""
+register_option --ads1015-interval ads1015_interval "Interval for ADS1015 (seconds)" ""
+register_option --i2c-gps-interval i2c_gps_interval "Interval for I2C GPS (seconds)" ""
 
-register_option --enable-service enable_service "Enable systemd timer" "$(get_default enable_service true)"
-register_option --start-service start_service "Start systemd timer" "$(get_default start_service false)"
+register_option --enable-service enable_service "Enable systemd timer" "true"
+register_option --start-service start_service "Start systemd timer" "false"
 
 parse_switches "$script_name" "$@"
 
@@ -67,3 +91,5 @@ if [[ "$start_service" == "true" ]]; then
     sudo systemctl daemon-reload
     sudo systemctl start read-i2c-sensors.service
 fi
+
+warn_clock_and_location

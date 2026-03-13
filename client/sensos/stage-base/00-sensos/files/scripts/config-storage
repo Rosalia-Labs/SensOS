@@ -10,19 +10,8 @@
 script_name=$(basename "$0")
 DATA_MOUNT="/sensos/data"
 
-source /sensos/lib/load-defaults.sh
 source /sensos/lib/parse-switches.sh
-
-declare -A default_vars
-load_defaults "$script_name" default_vars
-
-get_default() {
-    local varname="$1"
-    local fallback="$2"
-    echo "${default_vars[$varname]:-$fallback}"
-}
-
-register_option --device device "Block device to format/mount" "$(get_default device)"
+register_option --device device "Block device to format/mount" ""
 register_option --no-fstab no_fstab "Skip adding fstab entry (non-persistent mount)" "false"
 
 # Parse CLI
