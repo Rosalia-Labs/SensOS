@@ -65,21 +65,6 @@ services:
     volumes:
       - /sensos/data/audio_recordings:/audio_recordings
 
-  sensos-client-sqlite-importer:
-    image: sensos-client-sqlite-importer
-    container_name: sensos-client-sqlite-importer
-    restart: always
-    depends_on:
-      - sensos-client-database
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
-    volumes:
-      - /sensos/data/microenv:/microenv
-
   sensos-client-dashboard:
     image: sensos-client-dashboard
     container_name: sensos-client-dashboard
