@@ -8,7 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PI_GEN_DIR="${CLIENT_DIR}/pi-gen"
-BUILD_SCRIPT="${CLIENT_DIR}/bin/build-image.sh"
+BUILD_SCRIPT="${CLIENT_DIR}/bin/create-boot-image.sh"
 BASE_CONFIG_FILE="${PI_GEN_DIR}/config"
 TEMP_CONFIG_FILE="${PI_GEN_DIR}/config.qemu"
 
@@ -31,6 +31,16 @@ while [[ $# -gt 0 ]]; do
     --remove-existing-images)
         REMOVE_DEPLOY=true
         shift
+        ;;
+    -h|--help)
+        echo "Usage: $0 [OPTIONS]"
+        echo
+        echo "Options:"
+        echo "  --build-docker-images          Build and store docker images for offline use"
+        echo "  --continue                     Continue from a previously interrupted build"
+        echo "  --remove-existing-images       Delete previously created boot images in the deploy directory"
+        echo "  -h, --help                     Show this help message and exit"
+        exit 0
         ;;
     *)
         echo "Unknown option: $1"
@@ -69,6 +79,6 @@ trap cleanup EXIT
 "$BUILD_SCRIPT" \
     $([ "$BUILD_DOCKER_IMAGES" = true ] && echo "--build-docker-images") \
     $([ "$CONTINUE_BUILD" = true ] && echo "--continue") \
-    $([ "$REMOVE_DEPLOY" = true ] && echo "--remove-existing-images")
+    $([ "$REMOVE_DEPLOY" = true ] && echo "--remove-existing")
 
 echo "✅ QEMU image build complete."
