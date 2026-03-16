@@ -185,6 +185,7 @@ def connect_db() -> sqlite3.Connection:
             source_path TEXT NOT NULL,
             run_index INTEGER NOT NULL,
             label TEXT NOT NULL,
+            label_dir TEXT,
             start_frame INTEGER NOT NULL,
             end_frame INTEGER NOT NULL,
             start_sec REAL NOT NULL,
@@ -192,17 +193,24 @@ def connect_db() -> sqlite3.Connection:
             peak_score REAL NOT NULL,
             peak_likely_score REAL,
             flac_path TEXT NOT NULL,
+            deleted_at TEXT,
             UNIQUE (source_path, run_index)
         )
         """
     )
     ensure_column(conn, "detections", "top_likely_score", "REAL")
+    ensure_column(conn, "flac_runs", "label_dir", "TEXT")
     ensure_column(conn, "flac_runs", "peak_likely_score", "REAL")
+    ensure_column(conn, "flac_runs", "deleted_at", "TEXT")
+    backfill_flac_run_columns(conn)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_detections_source ON detections (source_path, window_index)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_flac_runs_source ON flac_runs (source_path, run_index)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_flac_runs_active_dir ON flac_runs (label_dir, deleted_at)"
     )
     conn.commit()
     return conn
@@ -214,6 +222,25 @@ def ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, c
     }
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+
+def backfill_flac_run_columns(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, flac_path
+        FROM flac_runs
+        WHERE label_dir IS NULL
+        """
+    ).fetchall()
+    if not rows:
+        return
+    conn.executemany(
+        "UPDATE flac_runs SET label_dir = ? WHERE id = ?",
+        [
+            (Path(flac_path).parent.as_posix(), row_id)
+            for row_id, flac_path in rows
+        ],
+    )
 
 
 def find_next_wav() -> Path | None:
@@ -556,14 +583,15 @@ def process_wav(
     conn.executemany(
         """
         INSERT INTO flac_runs (
-            source_path, run_index, label, start_frame, end_frame, start_sec, end_sec, peak_score, peak_likely_score, flac_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_path, run_index, label, label_dir, start_frame, end_frame, start_sec, end_sec, peak_score, peak_likely_score, flac_path, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         """,
         [
             (
                 source_key,
                 run.run_index,
                 run.label,
+                flac_path.relative_to(INPUT_ROOT.parent).parent.as_posix(),
                 run.start_frame,
                 run.end_frame,
                 run.start_frame / sample_rate,
