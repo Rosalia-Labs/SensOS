@@ -13,17 +13,12 @@ BASE_CONFIG_FILE="${PI_GEN_DIR}/config"
 TEMP_CONFIG_FILE="${PI_GEN_DIR}/config.qemu"
 
 FORCE_BULLSEYE=true
-BUILD_DOCKER_IMAGES=false
 CONTINUE_BUILD=false
 REMOVE_DEPLOY=false
 
 # Parse CLI args
 while [[ $# -gt 0 ]]; do
     case "$1" in
-    --build-docker-images)
-        BUILD_DOCKER_IMAGES=true
-        shift
-        ;;
     --continue)
         CONTINUE_BUILD=true
         shift
@@ -36,7 +31,6 @@ while [[ $# -gt 0 ]]; do
         echo "Usage: $0 [OPTIONS]"
         echo
         echo "Options:"
-        echo "  --build-docker-images          Build and store docker images for offline use"
         echo "  --continue                     Continue from a previously interrupted build"
         echo "  --remove-existing-images       Delete previously created boot images in the deploy directory"
         echo "  -h, --help                     Show this help message and exit"
@@ -77,7 +71,6 @@ trap cleanup EXIT
 
 # Run actual build
 "$BUILD_SCRIPT" \
-    $([ "$BUILD_DOCKER_IMAGES" = true ] && echo "--build-docker-images") \
     $([ "$CONTINUE_BUILD" = true ] && echo "--continue") \
     $([ "$REMOVE_DEPLOY" = true ] && echo "--remove-existing")
 

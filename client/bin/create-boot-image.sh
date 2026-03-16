@@ -7,7 +7,6 @@ set -e
 SENSOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../sensos" && pwd)"
 PI_GEN_DIR="${SENSOS_DIR}/../pi-gen"
 CONFIG_FILE="${PI_GEN_DIR}/config"
-BUILD_DOCKER_IMAGES=false
 
 STAGE_SRC="${SENSOS_DIR}/stage-base/00-sensos"
 STAGE_DST="${PI_GEN_DIR}/stage2/04-sensos"
@@ -20,7 +19,6 @@ usage() {
     echo
     echo "Options:"
     echo "  --remove-existing              Delete previously created boot images in the deploy directory"
-    echo "  --build-docker-images          Build and store docker images for offline use"
     echo "  --continue                     Continue from a previously interrupted build"
     echo "  -h, --help                     Show this help message and exit"
     echo
@@ -31,10 +29,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
     --remove-existing)
         REMOVE_DEPLOY=true
-        shift
-        ;;
-    --build-docker-images)
-        BUILD_DOCKER_IMAGES=true
         shift
         ;;
     --continue)
@@ -131,24 +125,6 @@ if [ "$REMOVE_DEPLOY" = true ]; then
     try_rm_rf_contents ./deploy
 fi
 
-TARGET_PLATFORM="linux/arm64"
-
-if [ "$BUILD_DOCKER_IMAGES" = true ]; then
-    echo "Finding all Dockerfiles..."
-    DOCKERFILES=$(find "./stage2/04-sensos/files/docker" -name 'Dockerfile')
-    for dockerfile in $DOCKERFILES; do
-        context_dir=$(dirname "$dockerfile")
-        image_tag="sensos-client-$(basename "$context_dir" | tr '_' '-')"
-
-        echo "Building image for Dockerfile at $dockerfile with tag $image_tag..."
-        docker buildx build --platform linux/arm64 -t $image_tag --load "$context_dir"
-
-        output_tarball="$context_dir/${image_tag}.tar.gz"
-        echo "Saving image $image_tag to $output_tarball..."
-        docker save $image_tag | gzip >"$output_tarball"
-    done
-fi
-
 if [ "$CONTINUE_BUILD" = true ]; then
     echo "Continuing previous build..."
     CONTINUE=1 ./build-docker.sh
@@ -161,5 +137,5 @@ fi
 echo "Cleaning up copied stage..."
 try_rm_rf "$STAGE_DST"
 
-echo "Build complete. All images have been built and saved as tar.gz files alongside their Dockerfiles."
+echo "Build complete."
 exit 0

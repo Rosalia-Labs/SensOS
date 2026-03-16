@@ -6,10 +6,10 @@ import os
 import re
 import sys
 import time
-import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import List
 
@@ -26,6 +26,7 @@ STATE_ROOT = Path("/sensos/data/birdnet")
 DB_PATH = STATE_ROOT / "birdnet.db"
 MODEL_ROOT = Path("/sensos/birdnet/BirdNET_v2.4_tflite")
 MODEL_PATH = MODEL_ROOT / "audio-model.tflite"
+META_MODEL_PATH = MODEL_ROOT / "meta-model.tflite"
 LABELS_PATH = MODEL_ROOT / "labels" / "en_us.txt"
 LOCATION_CONF = Path("/sensos/etc/location.conf")
 
@@ -55,6 +56,7 @@ class Detection:
     end_frame: int
     label: str
     score: float
+    likely_score: float | None
 
 
 @dataclass
@@ -64,6 +66,7 @@ class LabelRun:
     end_frame: int
     label: str
     peak_score: float
+    peak_likely_score: float | None
 
 
 def now_iso() -> str:
@@ -99,14 +102,38 @@ def scale_by_max_value(audio: np.ndarray) -> np.ndarray:
     return (audio / scale).astype(np.float32)
 
 
-def invoke_birdnet_top_label(audio: np.ndarray, model: BirdNETModel) -> tuple[str, float]:
+def invoke_birdnet_top_label(
+    audio: np.ndarray,
+    model: BirdNETModel,
+    meta_model: BirdNETModel | None,
+    latitude: float | None,
+    longitude: float | None,
+    observed_on: date,
+) -> tuple[str, float, float | None]:
     input_data = np.expand_dims(audio, axis=0).astype(np.float32)
     model.interpreter.set_tensor(model.input_details[0]["index"], input_data)
     model.interpreter.invoke()
     scores = model.interpreter.get_tensor(model.output_details[0]["index"])
     scores_flat = flat_sigmoid(scores.flatten())
     top_index = int(np.argmax(scores_flat))
-    return model.labels[top_index], float(scores_flat[top_index])
+    likely_score = None
+    if (
+        meta_model is not None
+        and latitude is not None
+        and longitude is not None
+        and not (latitude == 0 and longitude == 0)
+    ):
+        week = min(max(observed_on.isocalendar()[1], 1), 48)
+        sample = np.expand_dims(
+            np.array([latitude, longitude, week], dtype=np.float32), 0
+        )
+        meta_model.interpreter.set_tensor(meta_model.input_details[0]["index"], sample)
+        meta_model.interpreter.invoke()
+        likely_scores = meta_model.interpreter.get_tensor(
+            meta_model.output_details[0]["index"]
+        )[0]
+        likely_score = float(likely_scores[top_index])
+    return model.labels[top_index], float(scores_flat[top_index]), likely_score
 
 
 def ensure_runtime_dirs() -> None:
@@ -146,6 +173,7 @@ def connect_db() -> sqlite3.Connection:
             end_sec REAL NOT NULL,
             top_label TEXT NOT NULL,
             top_score REAL NOT NULL,
+            top_likely_score REAL,
             UNIQUE (source_path, window_index)
         )
         """
@@ -162,11 +190,14 @@ def connect_db() -> sqlite3.Connection:
             start_sec REAL NOT NULL,
             end_sec REAL NOT NULL,
             peak_score REAL NOT NULL,
+            peak_likely_score REAL,
             flac_path TEXT NOT NULL,
             UNIQUE (source_path, run_index)
         )
         """
     )
+    ensure_column(conn, "detections", "top_likely_score", "REAL")
+    ensure_column(conn, "flac_runs", "peak_likely_score", "REAL")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_detections_source ON detections (source_path, window_index)"
     )
@@ -175,6 +206,14 @@ def connect_db() -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_type: str) -> None:
+    columns = {
+        row[1] for row in conn.execute(f"PRAGMA table_info({table_name})")
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
 
 def find_next_wav() -> Path | None:
@@ -252,6 +291,16 @@ def location_token() -> str:
     return f"{lat}_{lon}"
 
 
+def location_coordinates() -> tuple[float | None, float | None]:
+    config = read_kv_config(str(LOCATION_CONF))
+    try:
+        latitude = float(config["LATITUDE"])
+        longitude = float(config["LONGITUDE"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    return latitude, longitude
+
+
 def source_start_datetime(source_path: Path) -> datetime | None:
     match = re.search(r"(\d{8}T\d{6})", source_path.stem)
     if match is None:
@@ -272,27 +321,62 @@ def filename_time_token(source_path: Path, run: LabelRun, sample_rate: int) -> s
     return run_dt.strftime("%Y%m%dT%H%M%SZ")
 
 
+def source_observation_date(source_path: Path) -> date:
+    start_dt = source_start_datetime(source_path)
+    if start_dt is None:
+        return datetime.now(timezone.utc).date()
+    return start_dt.date()
+
+
+def format_score_token(value: float | None, prefix: str) -> str:
+    if value is None:
+        return f"{prefix}na"
+    return f"{prefix}{value:.3f}"
+
+
 def to_mono(audio: np.ndarray) -> np.ndarray:
     if audio.ndim == 1:
         return audio.astype(np.float32)
     return audio.astype(np.float32).mean(axis=1)
 
 
-def collect_detections(audio_mono: np.ndarray, frames: int, model: BirdNETModel) -> List[Detection]:
+def collect_detections(
+    audio_mono: np.ndarray,
+    frames: int,
+    model: BirdNETModel,
+    meta_model: BirdNETModel | None,
+    latitude: float | None,
+    longitude: float | None,
+    observed_on: date,
+) -> List[Detection]:
     detections: List[Detection] = []
     if frames < WINDOW_FRAMES:
         padded = np.zeros(WINDOW_FRAMES, dtype=np.float32)
         padded[:frames] = audio_mono[:frames]
-        label, score = invoke_birdnet_top_label(scale_by_max_value(padded), model)
-        return [Detection(0, 0, frames, label, score)]
+        label, score, likely_score = invoke_birdnet_top_label(
+            scale_by_max_value(padded),
+            model,
+            meta_model,
+            latitude,
+            longitude,
+            observed_on,
+        )
+        return [Detection(0, 0, frames, label, score, likely_score)]
 
     window_index = 0
     for start in range(0, frames - WINDOW_FRAMES + 1, STRIDE_FRAMES):
         end = start + WINDOW_FRAMES
-        label, score = invoke_birdnet_top_label(
-            scale_by_max_value(audio_mono[start:end]), model
+        label, score, likely_score = invoke_birdnet_top_label(
+            scale_by_max_value(audio_mono[start:end]),
+            model,
+            meta_model,
+            latitude,
+            longitude,
+            observed_on,
         )
-        detections.append(Detection(window_index, start, end, label, score))
+        detections.append(
+            Detection(window_index, start, end, label, score, likely_score)
+        )
         window_index += 1
     return detections
 
@@ -308,6 +392,7 @@ def build_runs(detections: List[Detection]) -> List[LabelRun]:
         end_frame=detections[0].end_frame,
         label=detections[0].label,
         peak_score=detections[0].score,
+        peak_likely_score=detections[0].likely_score,
     )
 
     for detection in detections[1:]:
@@ -316,6 +401,13 @@ def build_runs(detections: List[Detection]) -> List[LabelRun]:
         if same_label and overlaps:
             current.end_frame = max(current.end_frame, detection.end_frame)
             current.peak_score = max(current.peak_score, detection.score)
+            if detection.likely_score is not None:
+                if current.peak_likely_score is None:
+                    current.peak_likely_score = detection.likely_score
+                else:
+                    current.peak_likely_score = max(
+                        current.peak_likely_score, detection.likely_score
+                    )
             continue
 
         runs.append(current)
@@ -325,6 +417,7 @@ def build_runs(detections: List[Detection]) -> List[LabelRun]:
             end_frame=detection.end_frame,
             label=detection.label,
             peak_score=detection.score,
+            peak_likely_score=detection.likely_score,
         )
 
     runs.append(current)
@@ -346,6 +439,8 @@ def write_flac_runs(source_path: Path, audio: np.ndarray, sample_rate: int, runs
             f"{loc_token}_"
             f"{run.run_index:03d}_"
             f"{sanitize_label(run.label)}_"
+            f"{format_score_token(run.peak_score, 's')}_"
+            f"{format_score_token(run.peak_likely_score, 'o')}_"
             f"{start_sec:09.3f}-{end_sec:09.3f}.flac"
         )
         flac_path = out_dir / filename
@@ -387,7 +482,12 @@ def delete_bad_source(path: Path) -> None:
         print(f"⚠️ Failed to delete unreadable source file {path}: {unlink_error}", file=sys.stderr)
 
 
-def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path) -> None:
+def process_wav(
+    model: BirdNETModel,
+    meta_model: BirdNETModel | None,
+    conn: sqlite3.Connection,
+    source_path: Path,
+) -> None:
     source_key = relative_source(source_path)
     info = sf.info(source_path)
     if info.samplerate != SAMPLE_RATE:
@@ -419,15 +519,24 @@ def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path
 
     audio, sample_rate = sf.read(source_path, dtype="int32", always_2d=True)
     mono = to_mono(audio)
-    detections = collect_detections(mono, len(mono), model)
+    latitude, longitude = location_coordinates()
+    detections = collect_detections(
+        mono,
+        len(mono),
+        model,
+        meta_model,
+        latitude,
+        longitude,
+        source_observation_date(source_path),
+    )
     runs = build_runs(detections)
     written_runs = write_flac_runs(source_path, audio, sample_rate, runs)
 
     conn.executemany(
         """
         INSERT INTO detections (
-            source_path, window_index, start_frame, end_frame, start_sec, end_sec, top_label, top_score
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            source_path, window_index, start_frame, end_frame, start_sec, end_sec, top_label, top_score, top_likely_score
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -439,6 +548,7 @@ def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path
                 d.end_frame / sample_rate,
                 d.label,
                 d.score,
+                d.likely_score,
             )
             for d in detections
         ],
@@ -446,8 +556,8 @@ def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path
     conn.executemany(
         """
         INSERT INTO flac_runs (
-            source_path, run_index, label, start_frame, end_frame, start_sec, end_sec, peak_score, flac_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_path, run_index, label, start_frame, end_frame, start_sec, end_sec, peak_score, peak_likely_score, flac_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -459,6 +569,7 @@ def process_wav(model: BirdNETModel, conn: sqlite3.Connection, source_path: Path
                 run.start_frame / sample_rate,
                 run.end_frame / sample_rate,
                 run.peak_score,
+                run.peak_likely_score,
                 flac_path.relative_to(INPUT_ROOT.parent).as_posix(),
             )
             for run, flac_path in written_runs
@@ -492,6 +603,7 @@ def main() -> None:
     ensure_runtime_dirs()
     conn = connect_db()
     model = None
+    meta_model = None
 
     while True:
         next_wav = None
@@ -506,6 +618,13 @@ def main() -> None:
             if model is None:
                 print(f"🧠 Loading BirdNET model from {MODEL_PATH}")
                 model = load_birdnet_model(MODEL_PATH, LABELS_PATH)
+                if META_MODEL_PATH.exists():
+                    print(f"🧭 Loading BirdNET meta-model from {META_MODEL_PATH}")
+                    meta_model = load_birdnet_model(META_MODEL_PATH, LABELS_PATH)
+                else:
+                    print(
+                        f"⚠️ BirdNET meta-model missing at {META_MODEL_PATH}. Occupancy scores disabled."
+                    )
 
             next_wav = find_next_wav()
             if next_wav is None:
@@ -518,7 +637,7 @@ def main() -> None:
                 continue
 
             print(f"🎧 Processing {next_wav}")
-            process_wav(model, conn, next_wav)
+            process_wav(model, meta_model, conn, next_wav)
             print(f"✅ Finished {next_wav}")
         except Exception as e:
             if next_wav is not None and next_wav.exists():
