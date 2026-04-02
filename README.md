@@ -1,5 +1,15 @@
 # SensOS
 
+> [!IMPORTANT]
+> This repository is moving into maintenance mode.
+> New feature development is continuing in the separate repositories:
+> - [sensos-server](https://github.com/Rosalia-Labs/sensos-server)
+> - [sensos-client](https://github.com/Rosalia-Labs/sensos-client)
+> - [sensos-pigen](https://github.com/Rosalia-Labs/sensos-pigen)
+> - [sensos-rpiboot](https://github.com/Rosalia-Labs/sensos-rpiboot)
+>
+> This monorepo remains available for historical reference, legacy deployments, and maintenance fixes.
+
 **SensOS** is an operating system overlay designed to orchestrate fleets of Raspberry Pi computers.  
 
 It is developed by [Rosalia Labs, LLC](https://rosalialabs.com) to support applications in environmental sensing and biodiversity monitoring, where robust, scalable deployments of low-power computing are essential.
@@ -33,6 +43,8 @@ Although created for environmental monitoring, SensOS is a general-purpose syste
 
 ## Getting Started
 
+For new work, start with the split repositories listed above rather than this monorepo.
+
 Clone the repository and initialize its submodules (SensOS depends on [`pi-gen`](https://github.com/RPi-Distro/pi-gen), included here as a submodule and pinned to a tagged release):
 
 ```bash
@@ -49,6 +61,9 @@ Once cloned, you can use the included scripts (e.g. `./client/bin/generate-confi
 ---
 
 ## Contributing
+
+For substantial new feature work, please contribute in the appropriate split repository.
+This repository is intended primarily for maintenance updates and legacy support.
 
 SensOS is open to contributions. We welcome:
 

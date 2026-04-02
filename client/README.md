@@ -1,5 +1,11 @@
 # Client
 
+> [!IMPORTANT]
+> The client portion of SensOS is moving to the dedicated repository:
+> [Rosalia-Labs/sensos-client](https://github.com/Rosalia-Labs/sensos-client)
+>
+> This directory is kept for maintenance and legacy monorepo users.
+
 This directory contains the client portion of SensOS. It includes [pi-gen](https://github.com/RPi-Distro/pi-gen) as a submodule.
 
 # Basic instructions
