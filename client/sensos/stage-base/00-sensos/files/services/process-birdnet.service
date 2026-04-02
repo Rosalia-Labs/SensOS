@@ -1,0 +1,19 @@
+[Unit]
+Description=Run BirdNET over queued WAV files and emit FLAC label runs
+After=multi-user.target ensure-sensos-dir.service sensos-arecord.service
+Requires=ensure-sensos-dir.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sensos-runner
+ExecStart=/sensos/python/venv/bin/python /usr/local/bin/process-birdnet.py
+WorkingDirectory=/sensos/data
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

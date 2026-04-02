@@ -46,12 +46,22 @@ HOSTNAME_VAL="$(hostname || true)"
 MACHINE_ID="$(cat /etc/machine-id 2>/dev/null || true)"
 CPU_SERIAL="$(awk '/Serial/ {print $3}' /proc/cpuinfo 2>/dev/null || true)"
 CREATED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+LOCAL_TIME="$(date +"%Y-%m-%d %H:%M:%S %Z" 2>/dev/null || true)"
+TIMEZONE_VAL="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+MODEL_VAL="$(tr -d '\0' </proc/device-tree/model 2>/dev/null || true)"
+KERNEL_VAL="$(uname -r 2>/dev/null || true)"
+SENSOS_VERSION="$(grep '^VERSION=' /sensos/VERSION 2>/dev/null | head -n1 | cut -d'=' -f2- | tr -d '"')"
 
 {
   echo "Device Hostname: ${HOSTNAME_VAL:-unknown}"
   echo "Device Machine ID: ${MACHINE_ID:-unknown}"
   [[ -n "${CPU_SERIAL:-}" ]] && echo "CPU Serial: $CPU_SERIAL"
+  [[ -n "${MODEL_VAL:-}" ]] && echo "Device Model: $MODEL_VAL"
+  [[ -n "${KERNEL_VAL:-}" ]] && echo "Kernel Version: $KERNEL_VAL"
+  [[ -n "${SENSOS_VERSION:-}" ]] && echo "SensOS Version: $SENSOS_VERSION"
   echo "Created At: $CREATED_AT"
+  [[ -n "${LOCAL_TIME:-}" ]] && echo "Local Time At Cache: $LOCAL_TIME"
+  [[ -n "${TIMEZONE_VAL:-}" ]] && echo "Timezone: $TIMEZONE_VAL"
 
   # Optional include list (whitelist) — still redacted by default
   if [[ -n "${INCLUDE_STRING// /}" ]]; then

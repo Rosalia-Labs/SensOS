@@ -20,7 +20,7 @@ DISABLE_FIRST_BOOT_USER_RENAME="1"
 WPA_COUNTRY="US"
 DEPLOY_COMPRESSION="none"
 ENABLE_HOTSPOT="0"
-IMAGE_SIZE="8192"
+IMAGE_SIZE=""
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -103,7 +103,7 @@ while [[ $# -gt 0 ]]; do
         echo "  --wpa-country <value>                      (default: $WPA_COUNTRY)"
         echo "  --deploy-compression <value>               (default: $DEPLOY_COMPRESSION)"
         echo "  --enable-wifi-ap                           Enable AP (default: disabled)"
-        echo "  --image-size <value>                       (default: $IMAGE_SIZE MB)"
+        echo "  --image-size <value>                       Override pi-gen image size in MB"
         echo "  --help                                     Display this help message"
         exit 0
         ;;
@@ -134,7 +134,10 @@ DISABLE_FIRST_BOOT_USER_RENAME="$DISABLE_FIRST_BOOT_USER_RENAME"
 WPA_COUNTRY="$WPA_COUNTRY"
 DEPLOY_COMPRESSION="$DEPLOY_COMPRESSION"
 ENABLE_HOTSPOT="$ENABLE_HOTSPOT"
-IMG_SIZE="$((IMAGE_SIZE * 1048576))"
 EOF
+
+if [ -n "$IMAGE_SIZE" ]; then
+    echo "IMG_SIZE=\"$((IMAGE_SIZE * 1048576))\"" | tee -a "$CONFIG_FILE"
+fi
 
 echo -e "\nConfig file written.\n"

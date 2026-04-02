@@ -1,5 +1,15 @@
 # Contributing to SensOS
 
+> [!IMPORTANT]
+> This repository is in maintenance mode.
+> New feature work should generally go to the split repositories:
+> - [sensos-server](https://github.com/Rosalia-Labs/sensos-server)
+> - [sensos-client](https://github.com/Rosalia-Labs/sensos-client)
+> - [sensos-pigen](https://github.com/Rosalia-Labs/sensos-pigen)
+> - [sensos-rpiboot](https://github.com/Rosalia-Labs/sensos-rpiboot)
+>
+> Use this repository for maintenance fixes, legacy support, and historical context.
+
 Thank you for your interest in contributing to **SensOS**!  
 This project was created by [Rosalia Labs, LLC](https://rosalialabs.com) to support environmental sensing and biodiversity monitoring, and we welcome contributions from the community.
 
@@ -7,7 +17,7 @@ This project was created by [Rosalia Labs, LLC](https://rosalialabs.com) to supp
 
 - **Report issues** – If you encounter bugs, unclear documentation, or unexpected behavior, please [open an issue](../../issues).
 - **Improve documentation** – Clear docs make the project more accessible. Suggestions, corrections, or tutorials are very welcome.
-- **Submit code** – Pull requests that fix bugs, add features, or improve maintainability are encouraged.
+- **Submit code** – Pull requests that fix bugs, improve maintainability, or support legacy users are encouraged here. New features should usually target the split repositories listed above.
 - **Share feedback** – If you’re using SensOS in research, monitoring, or other projects, let us know! Your experience helps guide development.
 
 ## Getting Started

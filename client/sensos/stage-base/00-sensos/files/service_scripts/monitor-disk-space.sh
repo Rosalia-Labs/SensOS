@@ -15,7 +15,6 @@ MOUNTPOINTS=("/" "/sensos/data")
 SERVICES=(
     "sensos-arecord   500   1000"
     "read-i2c-sensors 500   1000"
-    "sensos-container 100   800"
 )
 
 # Find the minimum available MB across all mountpoints
