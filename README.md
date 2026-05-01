@@ -1,10 +1,5 @@
 # SensOS
 
-SensOS is organized as multiple focused repositories.
-This repository is the umbrella landing page and historical archive.
-
-## Project Context And Rationale
-
 SensOS supports a client-server model for environmental sensing.
 Field devices run the client runtime to collect and forward observations, while a centralized server provides fleet management, configuration control, data aggregation, and reporting.
 
@@ -12,6 +7,9 @@ This architecture is designed for building sensing networks, not just single dev
 Centralized coordination improves consistency across deployments and makes it practical to compare conditions across sites over time.
 
 For broader scientific context on networked sensing and distributed observation systems, see Keitt and Abelson in *Science*.
+
+SensOS is organized as multiple focused repositories.
+This repository is the umbrella landing page and historical archive.
 
 ## Start Here
 
