@@ -1,30 +1,30 @@
 # SensOS
 
-SensOS is now organized as multiple focused repositories.
+SensOS is organized as multiple focused repositories.
 This repository is the umbrella landing page and historical archive.
 
 ## Start Here
 
-- Server/control plane: `../sensos-server`
-- Client/runtime software: `../sensos-client`
-- Image build pipeline (Pi-gen): `../sensos-pigen`
+- Server/control plane: [Rosalia-Labs/sensos-server](https://github.com/Rosalia-Labs/sensos-server)
+- Client/runtime software: [Rosalia-Labs/sensos-client](https://github.com/Rosalia-Labs/sensos-client)
+- Image build pipeline (Pi-gen): [Rosalia-Labs/sensos-pigen](https://github.com/Rosalia-Labs/sensos-pigen)
 
 ## Recommended Paths
 
 ### Deploy or operate a server
 
 1. Go to `sensos-server`
-2. Follow server docs and command guides under `sensos-server/docs/`
+2. Follow the docs and command guides in that repository
 
 ### Configure and run a client device
 
 1. Go to `sensos-client`
-2. Follow client setup and command docs under `sensos-client/docs/`
+2. Follow setup and command docs in that repository
 
 ### Build test or deployment images
 
 1. Go to `sensos-pigen`
-2. Follow image build workflow in that repo
+2. Follow image build workflow in that repository
 
 ## Migration And History
 
